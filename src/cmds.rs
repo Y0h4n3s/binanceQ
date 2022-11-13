@@ -1,13 +1,11 @@
-use actix_web::http::StatusCode;
-use actix_web::HttpResponse;
-use actix_web::web::Json;
+
 use binance::account::TimeInForce;
 use binance::api::Binance;
 use binance::futures::account::FuturesAccount;
 use binance::futures::market::FuturesMarket;
 use serde::{Serialize, Deserialize};
 use crate::MARKET;
-use actix_web::post;
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct OpenRequest {
 	pub side: String,
