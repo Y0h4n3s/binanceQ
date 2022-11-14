@@ -12,6 +12,8 @@ use binance::futures::userstream::FuturesUserStream;
 use binance::userstream::UserStream;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use binance::model::SpotFuturesTransferType;
+use binance::savings::Savings;
 
 pub struct RiskManagerConfig {
     pub max_daily_losses: usize,
@@ -27,6 +29,7 @@ pub struct RiskManager {
     pub user_stream: UserStream,
     pub futures_user_stream: FuturesUserStream,
     pub symbols: Vec<Symbol>,
+    pub savings: Savings
 }
 
 impl RiskManager {
@@ -40,7 +43,7 @@ impl RiskManager {
             FuturesUserStream::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
         let futures_market =
             FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
-
+        let savings = Savings::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
         let symbols =
             match request_with_retries::<ExchangeInformation>(5, || binance.exchange_info()) {
                 Ok(e) => e.symbols,
@@ -56,6 +59,7 @@ impl RiskManager {
             user_stream,
             futures_user_stream,
             symbols,
+            savings
         }
     }
     pub async fn passes_max_daily_loss(&self) -> bool {
@@ -112,28 +116,56 @@ impl RiskManager {
     }
 
     pub async fn close_all_positions(&self) {
-        let tasks = self.execute_over_symbols::<()>(|symbol, market, account| {
-            let position_info = account.position_information(symbol.symbol.clone());
-            if let Ok(positions) = position_info {
-                for position in positions {
-                    println!("Closing position: {:?}", position);
+        println!("Closing open positions");
+        let mut closed = false;
+        while !closed {
+            let tasks = self.execute_over_symbols::<bool>(|symbol, market, account| {
+                let position_info = account.position_information(symbol.symbol.clone());
+                if let Ok(positions) = position_info {
+                    for position in positions {
+                        if position.position_amount <= 0.0 {
+                            continue;
+                        }
+                        println!("Closing position: {:?}", position);
+                        if (position.entry_price > position.mark_price && position.unrealized_profit > 0.0) || (position.entry_price < position.mark_price && position.unrealized_profit < 0.0) {
+                            account.market_buy(symbol.symbol.clone(), position.position_amount);
+                        } else if (position.entry_price < position.mark_price && position.unrealized_profit > 0.0) || (position.entry_price > position.mark_price && position.unrealized_profit < 0.0) {
+                            account.market_sell(symbol.symbol.clone(), position.position_amount);
+                        } else {
+                            return false
+                        }
+                
+                    }
                 }
-            }
-        });
+                return true;
+            }).await;
+            
+            closed = futures::future::join_all(tasks).await.into_iter().all(|t| t);
+        }
+        
     }
     pub async fn end_day(&self) {
+        println!("Ending day, You're Done!");
         let futures_balance = self.futures_account.account_balance();
+        if let Ok(balance) = futures_balance {
+            for bal in balance {
+                if bal.balance > 0.0 {
+                    self.savings.transfer_funds(bal.asset,  bal.balance, SpotFuturesTransferType::UsdtFuturesToSpot);
+    
+                }
+            }
+    
+        }
     }
     pub async fn manage(&self) {
         loop {
-            if self.passes_max_daily_loss().await {
-                println!("Passes max daily loss");
-            } else {
+            if !self.passes_max_daily_loss().await {
                 println!("Does not pass max daily loss");
                 self.close_all_positions().await;
                 self.end_day().await
-                
             }
+            
+            
             std::thread::sleep(std::time::Duration::from_secs(15));
         }
     }
