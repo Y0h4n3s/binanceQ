@@ -2,6 +2,9 @@ mod cmds;
 mod bracket_order;
 mod mongodb;
 mod studies;
+mod managers;
+mod helpers;
+mod errors;
 
 use std::{env, io};
 use std::cmp::Ordering;
@@ -19,8 +22,9 @@ use binance::model::SymbolPrice;
 use console::Term;
 use once_cell::sync::Lazy;
 use rust_decimal::prelude::*;
+use crate::managers::risk_manager::{RiskManager, RiskManagerConfig};
 use crate::studies::{Study, ob_study::ObStudy, vol_study::VolStudy, oi_study::OiStudy, StudyConfig, StudyTypes};
-
+use futures::executor::block_on;
 
 const MARKET: [&str;4] = ["BTCUSDT","SOLUSDT","XRPUSDT","APTUSDT"];
 const MARKET_QTY_PRECISION: [u32;4] = [3,0,1,1];
@@ -64,23 +68,29 @@ fn main() {
         tf2: 5
     };
     
-    let oi_study: Arc<OiStudy> = Arc::new(OiStudy::new( KEY.clone(), &study_config));
-    let ob_study:  Arc<ObStudy>  =  Arc::new(ObStudy::new( KEY.clone(), &study_config));
-    let vol_study:  Arc<VolStudy>  = Arc::new(VolStudy::new(KEY.clone(), &study_config));
-    let join_handles = vec![
-        std::thread::spawn(move || {
-            ob_study.start_log();
-        }),
-        std::thread::spawn(move ||{
-            oi_study.start_log();
-        }),
-        std::thread::spawn(move || {
-            vol_study.start_log();
-        })
-    ];
-    for handle in join_handles {
-        handle.join().unwrap();
-    }
+    // let oi_study: Arc<OiStudy> = Arc::new(OiStudy::new( KEY.clone(), &study_config));
+    // let ob_study:  Arc<ObStudy>  =  Arc::new(ObStudy::new( KEY.clone(), &study_config));
+    // let vol_study:  Arc<VolStudy>  = Arc::new(VolStudy::new(KEY.clone(), &study_config));
+    // let join_handles = vec![
+    //     std::thread::spawn(move || {
+    //         ob_study.start_log();
+    //     }),
+    //     std::thread::spawn(move ||{
+    //         oi_study.start_log();
+    //     }),
+    //     std::thread::spawn(move || {
+    //         vol_study.start_log();
+    //     })
+    // ];
+    // for handle in join_handles {
+    //     handle.join().unwrap();
+    // }
     
+    let rm = RiskManager::new(KEY.clone(), RiskManagerConfig {
+        max_risk_per_trade: 0.05,
+        max_daily_losses: 3
+    });
+    
+    block_on(rm.manage());
     
 }
