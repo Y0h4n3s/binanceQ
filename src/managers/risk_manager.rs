@@ -14,6 +14,8 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use binance::model::SpotFuturesTransferType;
 use binance::savings::Savings;
+use async_trait::async_trait;
+use crate::managers::Manager;
 
 pub struct RiskManagerConfig {
     pub max_daily_losses: usize,
@@ -64,7 +66,7 @@ impl RiskManager {
     }
     pub async fn passes_max_daily_loss(&self) -> bool {
         let mut tasks = self
-            .execute_over_symbols(|symbol, futures_market, futures_account| loop {
+            .execute_over_futures_symbols(|symbol, futures_market, futures_account| loop {
                 let t_trades_result =
                     futures_account.get_user_trades(symbol.symbol.clone(), None, None, None, None);
                 if let Ok(trades) = t_trades_result {
@@ -96,76 +98,39 @@ impl RiskManager {
         return results < self.config.max_daily_losses;
     }
 
-    pub async fn execute_over_symbols<R>(
-        &self,
-        f: impl Fn(Symbol, FuturesMarket, FuturesAccount) -> R + Send + Copy + 'static,
-    ) -> Vec<JoinHandle<R>>
-    where
-        R: Send + Copy + 'static,
-    {
-        let mut tasks = vec![];
-        for symbol in &self.symbols {
-            let futures_account = self.futures_account.clone();
-            let futures_market = self.futures_market.clone();
-            let symbol = symbol.clone();
-            tasks.push(async_std::task::spawn(async move {
-                f(symbol, futures_market, futures_account)
-            }))
-        }
-        return tasks;
-    }
 
-    pub async fn close_all_positions(&self) {
-        println!("Closing open positions");
-        let mut closed = false;
-        while !closed {
-            let tasks = self.execute_over_symbols::<bool>(|symbol, market, account| {
-                let position_info = account.position_information(symbol.symbol.clone());
-                if let Ok(positions) = position_info {
-                    for position in positions {
-                        if position.position_amount <= 0.0 {
-                            continue;
-                        }
-                        println!("Closing position: {:?}", position);
-                        if (position.entry_price > position.mark_price && position.unrealized_profit > 0.0) || (position.entry_price < position.mark_price && position.unrealized_profit < 0.0) {
-                            account.market_buy(symbol.symbol.clone(), position.position_amount);
-                        } else if (position.entry_price < position.mark_price && position.unrealized_profit > 0.0) || (position.entry_price > position.mark_price && position.unrealized_profit < 0.0) {
-                            account.market_sell(symbol.symbol.clone(), position.position_amount);
-                        } else {
-                            return false
-                        }
-                
-                    }
-                }
-                return true;
-            }).await;
-            
-            closed = futures::future::join_all(tasks).await.into_iter().all(|t| t);
-        }
-        
+
+
+
+}
+#[async_trait]
+impl Manager for RiskManager {
+    fn get_symbols(&self) -> Vec<Symbol> {
+        self.symbols.clone()
     }
-    pub async fn end_day(&self) {
-        println!("Ending day, You're Done!");
-        let futures_balance = self.futures_account.account_balance();
-        if let Ok(balance) = futures_balance {
-            for bal in balance {
-                if bal.balance > 0.0 {
-                    self.savings.transfer_funds(bal.asset,  bal.balance, SpotFuturesTransferType::UsdtFuturesToSpot);
     
-                }
-            }
-    
-        }
+    fn get_futures_account(&self) -> FuturesAccount {
+        self.futures_account.clone()
     }
-    pub async fn manage(&self) {
+    
+    fn get_futures_market(&self) -> FuturesMarket {
+        self.futures_market.clone()
+    }
+    
+    fn get_savings(&self) -> Savings {
+        self.savings.clone()
+    }
+    
+    
+    async fn manage(&self) {
         loop {
             if !self.passes_max_daily_loss().await {
                 println!("Does not pass max daily loss");
                 self.close_all_positions().await;
                 self.end_day().await
             }
-            
-            
+        
+        
             std::thread::sleep(std::time::Duration::from_secs(15));
         }
     }

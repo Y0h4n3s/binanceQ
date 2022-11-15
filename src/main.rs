@@ -25,6 +25,8 @@ use rust_decimal::prelude::*;
 use crate::managers::risk_manager::{RiskManager, RiskManagerConfig};
 use crate::studies::{Study, ob_study::ObStudy, vol_study::VolStudy, oi_study::OiStudy, StudyConfig, StudyTypes};
 use futures::executor::block_on;
+use crate::managers::Manager;
+use crate::managers::money_manager::{MoneyManager, MoneyManagerConfig, PositionSizeF};
 
 const MARKET: [&str;4] = ["BTCUSDT","SOLUSDT","XRPUSDT","APTUSDT"];
 const MARKET_QTY_PRECISION: [u32;4] = [3,0,1,1];
@@ -90,7 +92,13 @@ fn main() {
         max_risk_per_trade: 0.05,
         max_daily_losses: 3
     });
-    
-    block_on(rm.manage());
+    let mm = MoneyManager::new(KEY.clone(), MoneyManagerConfig {
+        constant_size: None,
+        max_position_size: None,
+        min_position_size: None,
+        position_size_f: PositionSizeF::Constant,
+        leverage: 50
+    });
+    block_on(mm.manage());
     
 }
