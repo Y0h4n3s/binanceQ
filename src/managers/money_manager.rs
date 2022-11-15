@@ -41,7 +41,8 @@ pub struct ReturnStep {
 	pub actual_trade: TradeHistory,
 	pub f: PositionSizeF,
 	pub trade_with_f: TradeHistory,
-	pub balance: f64,
+	pub actual_balance: f64,
+	pub balance_with_f: f64,
 }
 pub struct ReturnHistory {
 	pub f: PositionSizeF,
@@ -52,9 +53,9 @@ pub struct ReturnHistory {
 impl ReturnHistory {
 	pub fn to_csv(&self) -> String {
 		let mut csv = String::new();
-		csv.push_str("symbol,order_id,id,buyer,price,qty,quote_qty,pnl,qty_after,quote_qty_after,pnl_after,f, balance_after");
+		csv.push_str("symbol,order_id,id,buyer,price,qty,quote_qty,pnl,commission,balance,qty_after,quote_qty_after,pnl_after,commission,balance_after,f");
 		for i in 0..self.returns.len() {
-			csv.push_str(&format!("\n{},{},{},{},{},{},{},{},{},{},{},{:?},{}", self.returns[i].actual_trade.symbol, self.returns[i].actual_trade.order_id,self.returns[i].actual_trade.id,self.returns[i].actual_trade.buyer, self.returns[i].actual_trade.price, self.returns[i].actual_trade.qty, self.returns[i].actual_trade.quote_qty, self.returns[i].actual_trade.realized_pnl, self.returns[i].trade_with_f.qty, self.returns[i].trade_with_f.quote_qty, self.returns[i].trade_with_f.realized_pnl, self.f, self.returns[i].balance));
+			csv.push_str(&format!("\n{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{:?}", self.returns[i].actual_trade.symbol, self.returns[i].actual_trade.order_id,self.returns[i].actual_trade.id,self.returns[i].actual_trade.buyer, self.returns[i].actual_trade.price, self.returns[i].actual_trade.qty, self.returns[i].actual_trade.quote_qty, self.returns[i].actual_trade.realized_pnl, self.returns[i].actual_trade.commission,self.returns[i].actual_balance, self.returns[i].trade_with_f.qty, self.returns[i].trade_with_f.quote_qty, self.returns[i].trade_with_f.realized_pnl,self.returns[i].trade_with_f.commission,  self.returns[i].balance_with_f, self.f,));
 		}
 		csv
 		
@@ -130,19 +131,24 @@ impl MoneyManager {
 			history.first().unwrap().0.quote_qty
 		};
 		let mut balance = self.config.initial_quote_balance;
-		
+		let mut actual_balance = balance;
 		for i in 0..history.len() {
 			let (trade, symbol) = history[i].clone();
 			let mut trade_with_f = trade.clone();
 			trade_with_f.quote_qty = size;
 			trade_with_f.qty = to_precision(size / trade.price, symbol.base_asset_precision as usize);
 			trade_with_f.realized_pnl = (trade_with_f.quote_qty / trade.quote_qty) * trade.realized_pnl;
-			balance = balance + trade_with_f.realized_pnl;
+			trade_with_f.commission = (trade_with_f.quote_qty / trade.quote_qty) * trade.commission;
+			
+			balance = balance + trade_with_f.realized_pnl - trade_with_f.commission;
+			actual_balance = actual_balance + trade.realized_pnl - trade.commission;
+			
 			returns.returns.push(ReturnStep {
 				actual_trade: trade,
 				f: PositionSizeF::Constant,
 				trade_with_f,
-				balance
+				balance_with_f: balance,
+				actual_balance
 			})
 		}
 		returns
@@ -155,6 +161,7 @@ impl MoneyManager {
 			returns: vec![]
 		};
 		let mut balance = self.config.initial_quote_balance;
+		let mut actual_balance = balance;
 		
 		for i in 0..history.len() {
 			let (trade, symbol) = history[i].clone();
@@ -170,13 +177,15 @@ impl MoneyManager {
 				trade_with_f.quote_qty = to_precision(trade.price * trade_with_f.qty, symbol.quote_precision as usize);
 			}
 			trade_with_f.realized_pnl = (trade_with_f.quote_qty / trade.quote_qty) * trade.realized_pnl;
-			balance = balance + trade_with_f.realized_pnl;
-			
+			trade_with_f.commission = (trade_with_f.quote_qty / trade.quote_qty) * trade.commission;
+			balance = balance + trade_with_f.realized_pnl - trade_with_f.commission;
+			actual_balance = actual_balance + trade.realized_pnl - trade.commission;
 			returns.returns.push(ReturnStep {
 				actual_trade: trade,
 				f: PositionSizeF::MaxLevered,
 				trade_with_f,
-				balance
+				balance_with_f: balance,
+				actual_balance
 			})
 		}
 		returns
