@@ -32,7 +32,8 @@ pub struct MoneyManagerConfig {
 	pub min_position_size: Option<f64>,
 	pub constant_size: Option<f64>,
 	pub max_position_size: Option<f64>,
-	pub leverage: usize
+	pub leverage: usize,
+	pub initial_quote_balance: f64
 	
 }
 
@@ -121,15 +122,11 @@ impl MoneyManager {
 			history: history.clone(),
 			returns: vec![]
 		};
-		if history.is_empty() {
-			return returns
-		}
 		let size = if self.config.constant_size.is_some() {
 			self.config.constant_size.unwrap()
 		} else {
 			history.first().unwrap().quote_qty
 		};
-		
 		for i in 0..history.len() {
 			let trade = history[i].clone();
 			let mut trade_with_f = trade.clone();
@@ -145,11 +142,46 @@ impl MoneyManager {
 		returns
 	}
 	
+	pub fn returns_for_max_levered(&self, history: &mut Vec<TradeHistory>) -> ReturnHistory {
+		let mut returns = ReturnHistory {
+			f: PositionSizeF::MaxLevered,
+			history: history.clone(),
+			returns: vec![]
+		};
+		let mut balance = self.config.initial_quote_balance;
+		
+		for i in 0..history.len() {
+			let trade = history[i].clone();
+			let mut trade_with_f = trade.clone();
+			trade_with_f.quote_qty = balance * self.config.leverage as f64;
+			trade_with_f.qty = trade_with_f.quote_qty / trade.price;
+			trade_with_f.realized_pnl = (trade_with_f.quote_qty / trade.quote_qty) * trade.realized_pnl;
+			balance = balance + trade_with_f.realized_pnl;
+			
+			returns.returns.push(ReturnStep {
+				actual_trade: trade,
+				f: PositionSizeF::MaxLevered,
+				trade_with_f
+			})
+		}
+		returns
+	}
+	
 	pub fn compile_history_over_f(&self, f: PositionSizeF, history:  &mut Vec<TradeHistory>) -> ReturnHistory {
+		if history.is_empty() {
+			return ReturnHistory {
+				f,
+				history: vec![],
+				returns: vec![]
+			}
+		}
 		history.sort_by(|a, b| a.time.cmp(&b.time));
 		match f {
 			PositionSizeF::Constant => {
 				self.returns_for_constant(history)
+			}
+			PositionSizeF::MaxLevered => {
+				self.returns_for_max_levered(history)
 			}
 			
 				_ => {
@@ -204,7 +236,7 @@ impl Manager for MoneyManager {
 	}
 	
 	async fn manage(&self) {
-		println!("{}", self.simulate_returns_for_f(PositionSizeF::Constant).await.to_csv());
+		println!("{}", self.simulate_returns_for_f(PositionSizeF::MaxLevered).await.to_csv());
 		loop {
 			if !self.passes_position_size().await {
 				println!("Does not pass max daily loss");

@@ -97,7 +97,8 @@ fn main() {
         max_position_size: None,
         min_position_size: None,
         position_size_f: PositionSizeF::Constant,
-        leverage: 50
+        leverage: 50,
+        initial_quote_balance: 1.15
     });
     block_on(mm.manage());
     
