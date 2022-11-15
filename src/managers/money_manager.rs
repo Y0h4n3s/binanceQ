@@ -1,5 +1,4 @@
-
-
+use std::cmp::max;
 use crate::helpers::request_with_retries;
 use crate::AccessKey;
 use async_std::prelude::*;
@@ -190,7 +189,49 @@ impl MoneyManager {
 		}
 		returns
 	}
-	
+	pub fn returns_for_larry(&self, history: &mut Vec<(TradeHistory, Symbol)>) -> ReturnHistory {
+		let mut returns = ReturnHistory {
+			f: PositionSizeF::Larry,
+			history: history.clone().into_iter().map(|(a, _)| a.clone()).collect(),
+			returns: vec![]
+		};
+		let mut balance = self.config.initial_quote_balance;
+		let mut actual_balance = balance;
+		let mut max_loss = balance * self.config.leverage as f64 * 0.02;
+		for i in 0..history.len() {
+			let (trade, symbol) = history[i].clone();
+			let mut trade_with_f = trade.clone();
+			
+			let entry_price = if trade.realized_pnl != 0.0 {
+				
+				((trade.realized_pnl - (trade.price * trade.qty)) / trade.qty).abs()
+			} else {
+				trade.price
+			};
+			trade_with_f.quote_qty = to_precision((balance * self.config.leverage as f64 * 0.17) / max_loss, symbol.quote_precision as usize);
+			trade_with_f.qty = to_precision(trade_with_f.quote_qty / entry_price, symbol.base_asset_precision as usize);
+			if trade.realized_pnl != 0.0 {
+				trade_with_f.quote_qty = to_precision(trade.price * trade_with_f.qty, symbol.quote_precision as usize);
+			}
+			trade_with_f.realized_pnl = (trade_with_f.quote_qty / trade.quote_qty) * trade.realized_pnl;
+			max_loss = if trade_with_f.realized_pnl > max_loss {
+				trade.realized_pnl
+			} else {
+				max_loss
+			};
+			trade_with_f.commission = (trade_with_f.quote_qty / trade.quote_qty) * trade.commission;
+			balance = balance + trade_with_f.realized_pnl - trade_with_f.commission;
+			actual_balance = actual_balance + trade.realized_pnl - trade.commission;
+			returns.returns.push(ReturnStep {
+				actual_trade: trade,
+				f: PositionSizeF::MaxLevered,
+				trade_with_f,
+				balance_with_f: balance,
+				actual_balance
+			})
+		}
+		returns
+	}
 	pub fn compile_history_over_f(&self, f: PositionSizeF, history:  &mut Vec<(TradeHistory, Symbol)>) -> ReturnHistory {
 		if history.is_empty() {
 			return ReturnHistory {
@@ -206,6 +247,9 @@ impl MoneyManager {
 			}
 			PositionSizeF::MaxLevered => {
 				self.returns_for_max_levered(history)
+			}
+			PositionSizeF::Larry => {
+				self.returns_for_larry(history)
 			}
 			
 				_ => {
@@ -260,7 +304,7 @@ impl Manager for MoneyManager {
 	}
 	
 	async fn manage(&self) {
-		println!("{}", self.simulate_returns_for_f(PositionSizeF::MaxLevered).await.to_csv());
+		println!("{}", self.simulate_returns_for_f(PositionSizeF::Larry).await.to_csv());
 		loop {
 			if !self.passes_position_size().await {
 				println!("Does not pass max daily loss");
