@@ -18,7 +18,7 @@ use binance::model::SpotFuturesTransferType;
 use binance::savings::Savings;
 use crate::managers::Manager;
 use async_trait::async_trait;
-
+use crate::helpers::*;
 #[derive(Debug)]
 pub enum PositionSizeF {
 	Kelly,
@@ -41,6 +41,7 @@ pub struct ReturnStep {
 	pub actual_trade: TradeHistory,
 	pub f: PositionSizeF,
 	pub trade_with_f: TradeHistory,
+	pub balance: f64,
 }
 pub struct ReturnHistory {
 	pub f: PositionSizeF,
@@ -51,9 +52,9 @@ pub struct ReturnHistory {
 impl ReturnHistory {
 	pub fn to_csv(&self) -> String {
 		let mut csv = String::new();
-		csv.push_str("symbol,buyer,price,qty,quote_qty,pnl,qty_after,quote_qty_after,pnl_after,f");
+		csv.push_str("symbol,order_id,id,buyer,price,qty,quote_qty,pnl,qty_after,quote_qty_after,pnl_after,f, balance_after");
 		for i in 0..self.returns.len() {
-			csv.push_str(&format!("\n{},{},{},{},{},{},{},{},{},{:?}", self.returns[i].actual_trade.symbol, self.returns[i].actual_trade.buyer, self.returns[i].actual_trade.price, self.returns[i].actual_trade.qty, self.returns[i].actual_trade.quote_qty, self.returns[i].actual_trade.realized_pnl, self.returns[i].trade_with_f.qty, self.returns[i].trade_with_f.quote_qty, self.returns[i].trade_with_f.realized_pnl, self.f));
+			csv.push_str(&format!("\n{},{},{},{},{},{},{},{},{},{},{},{:?},{}", self.returns[i].actual_trade.symbol, self.returns[i].actual_trade.order_id,self.returns[i].actual_trade.id,self.returns[i].actual_trade.buyer, self.returns[i].actual_trade.price, self.returns[i].actual_trade.qty, self.returns[i].actual_trade.quote_qty, self.returns[i].actual_trade.realized_pnl, self.returns[i].trade_with_f.qty, self.returns[i].trade_with_f.quote_qty, self.returns[i].trade_with_f.realized_pnl, self.f, self.returns[i].balance));
 		}
 		csv
 		
@@ -72,6 +73,7 @@ pub struct MoneyManager {
 	pub savings: Savings
 }
 
+// TODO: add fees to calculations, 2 functions, with_taker_fees and with_maker_fees
 impl MoneyManager {
 	pub fn new(key: AccessKey, config: MoneyManagerConfig) -> Self {
 		let futures_account =
@@ -116,58 +118,71 @@ impl MoneyManager {
 		return results < 1;
 	}
 	
-	pub fn returns_for_constant(&self, history: &mut Vec<TradeHistory>) -> ReturnHistory {
+	pub fn returns_for_constant(&self, history: &mut Vec<(TradeHistory, Symbol)>) -> ReturnHistory {
 		let mut returns = ReturnHistory {
 			f: PositionSizeF::Constant,
-			history: history.clone(),
+			history: history.clone().into_iter().map(|(a, _)| a.clone()).collect(),
 			returns: vec![]
 		};
 		let size = if self.config.constant_size.is_some() {
 			self.config.constant_size.unwrap()
 		} else {
-			history.first().unwrap().quote_qty
+			history.first().unwrap().0.quote_qty
 		};
+		let mut balance = self.config.initial_quote_balance;
+		
 		for i in 0..history.len() {
-			let trade = history[i].clone();
+			let (trade, symbol) = history[i].clone();
 			let mut trade_with_f = trade.clone();
 			trade_with_f.quote_qty = size;
-			trade_with_f.qty = size / trade.price;
+			trade_with_f.qty = to_precision(size / trade.price, symbol.base_asset_precision as usize);
 			trade_with_f.realized_pnl = (trade_with_f.quote_qty / trade.quote_qty) * trade.realized_pnl;
+			balance = balance + trade_with_f.realized_pnl;
 			returns.returns.push(ReturnStep {
 				actual_trade: trade,
 				f: PositionSizeF::Constant,
-				trade_with_f
+				trade_with_f,
+				balance
 			})
 		}
 		returns
 	}
 	
-	pub fn returns_for_max_levered(&self, history: &mut Vec<TradeHistory>) -> ReturnHistory {
+	pub fn returns_for_max_levered(&self, history: &mut Vec<(TradeHistory, Symbol)>) -> ReturnHistory {
 		let mut returns = ReturnHistory {
 			f: PositionSizeF::MaxLevered,
-			history: history.clone(),
+			history: history.clone().into_iter().map(|(a, _)| a.clone()).collect(),
 			returns: vec![]
 		};
 		let mut balance = self.config.initial_quote_balance;
 		
 		for i in 0..history.len() {
-			let trade = history[i].clone();
+			let (trade, symbol) = history[i].clone();
 			let mut trade_with_f = trade.clone();
-			trade_with_f.quote_qty = balance * self.config.leverage as f64;
-			trade_with_f.qty = trade_with_f.quote_qty / trade.price;
+			let entry_price = if trade.realized_pnl != 0.0 {
+				((trade.realized_pnl - (trade.price * trade.qty)) / trade.qty).abs()
+			} else {
+				trade.price
+			};
+			trade_with_f.quote_qty = to_precision(balance * self.config.leverage as f64, symbol.quote_precision as usize);
+			trade_with_f.qty = to_precision(trade_with_f.quote_qty / entry_price, symbol.base_asset_precision as usize);
+			if trade.realized_pnl != 0.0 {
+				trade_with_f.quote_qty = to_precision(trade.price * trade_with_f.qty, symbol.quote_precision as usize);
+			}
 			trade_with_f.realized_pnl = (trade_with_f.quote_qty / trade.quote_qty) * trade.realized_pnl;
 			balance = balance + trade_with_f.realized_pnl;
 			
 			returns.returns.push(ReturnStep {
 				actual_trade: trade,
 				f: PositionSizeF::MaxLevered,
-				trade_with_f
+				trade_with_f,
+				balance
 			})
 		}
 		returns
 	}
 	
-	pub fn compile_history_over_f(&self, f: PositionSizeF, history:  &mut Vec<TradeHistory>) -> ReturnHistory {
+	pub fn compile_history_over_f(&self, f: PositionSizeF, history:  &mut Vec<(TradeHistory, Symbol)>) -> ReturnHistory {
 		if history.is_empty() {
 			return ReturnHistory {
 				f,
@@ -175,7 +190,7 @@ impl MoneyManager {
 				returns: vec![]
 			}
 		}
-		history.sort_by(|a, b| a.time.cmp(&b.time));
+		history.sort_by(|a, b| a.0.time.cmp(&b.0.time));
 		match f {
 			PositionSizeF::Constant => {
 				self.returns_for_constant(history)
@@ -187,21 +202,21 @@ impl MoneyManager {
 				_ => {
 					ReturnHistory {
 						f,
-						history: history.to_vec(),
+						history: vec![],
 						returns: vec![]
 					}
 				}
 		}
 	}
 	pub async fn simulate_returns_for_f(&self, f: PositionSizeF) -> ReturnHistory {
-		let mut past_trades : Vec<TradeHistory> = Vec::new();
+		let mut past_trades : Vec<(TradeHistory, Symbol)> = Vec::new();
 		let mut tasks = self
-			  .execute_over_futures_symbols::<Vec<TradeHistory>>(|symbol, futures_market, futures_account| loop {
+			  .execute_over_futures_symbols::<Vec<(TradeHistory, Symbol)>>(|symbol, futures_market, futures_account| loop {
 				  if symbol.quote_asset.ne("USDT") && symbol.quote_asset.ne("BUSD") {
 					  return vec![]
 				  }
 				  if let Ok(past_trades_for_symbol) = futures_account.get_user_trades(symbol.symbol.clone(), None, None, None, None) {
-					 return past_trades_for_symbol
+					 return past_trades_for_symbol.into_iter().map(|t| (t, symbol.clone())).collect()
 				  }
 			  })
 			  .await;
@@ -209,7 +224,7 @@ impl MoneyManager {
 			  .await
 			  .into_iter()
 			  .flatten()
-			  .collect::<Vec<TradeHistory>>();
+			  .collect::<Vec<(TradeHistory, Symbol)>>();
 		
 		self.compile_history_over_f(f, &mut past_trades)
 		

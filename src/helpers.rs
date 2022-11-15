@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::time::Duration;
 use crate::errors::{Error, ErrorKind, Result};
 use binance::errors::Result as BinanceResult;
@@ -20,4 +21,8 @@ pub fn request_with_retries<R>(retries: usize, request: impl Fn() -> BinanceResu
 		}
 	}
 	
+}
+
+pub fn to_precision(num: f64, precision: usize) -> f64 {
+	f64::from_str(format!("{:.*}", precision, num).as_str()).unwrap()
 }
