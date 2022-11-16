@@ -1,4 +1,4 @@
-use std::cmp::max;
+use std::cmp::{max, Ordering};
 use crate::helpers::request_with_retries;
 use crate::AccessKey;
 use async_std::prelude::*;
@@ -74,6 +74,7 @@ pub struct MoneyManager {
 }
 
 // TODO: add fees to calculations, 2 functions, with_taker_fees and with_maker_fees
+// TODO: implement position sizer for all strategies
 impl MoneyManager {
 	pub fn new(key: AccessKey, config: MoneyManagerConfig) -> Self {
 		let futures_account =
@@ -240,7 +241,6 @@ impl MoneyManager {
 				returns: vec![]
 			}
 		}
-		history.sort_by(|a, b| a.0.time.cmp(&b.0.time));
 		match f {
 			PositionSizeF::Constant => {
 				self.returns_for_constant(history)
@@ -262,24 +262,73 @@ impl MoneyManager {
 		}
 	}
 	pub async fn simulate_returns_for_f(&self, f: PositionSizeF) -> ReturnHistory {
-		let mut past_trades : Vec<(TradeHistory, Symbol)> = Vec::new();
+		let mut past_trades : Vec<(TradeHistory, Symbol)> = self.get_trade_history_with_symbol().await;
+		
+		self.compile_history_over_f(f, &mut past_trades)
+		
+	}
+	
+	pub async fn get_trade_history_with_symbol(&self) -> Vec<(TradeHistory, Symbol)> {
 		let mut tasks = self
 			  .execute_over_futures_symbols::<Vec<(TradeHistory, Symbol)>>(|symbol, futures_market, futures_account| loop {
 				  if symbol.quote_asset.ne("USDT") && symbol.quote_asset.ne("BUSD") {
 					  return vec![]
 				  }
 				  if let Ok(past_trades_for_symbol) = futures_account.get_user_trades(symbol.symbol.clone(), None, None, None, None) {
-					 return past_trades_for_symbol.into_iter().map(|t| (t, symbol.clone())).collect()
+					  return past_trades_for_symbol.into_iter().map(|t| (t, symbol.clone())).collect()
 				  }
 			  })
 			  .await;
-		past_trades = futures::future::join_all(tasks)
+		let mut results = futures::future::join_all(tasks)
 			  .await
 			  .into_iter()
 			  .flatten()
+			  
 			  .collect::<Vec<(TradeHistory, Symbol)>>();
+		results.sort_by(|a, b| a.0.time.cmp(&b.0.time));
+		results
 		
-		self.compile_history_over_f(f, &mut past_trades)
+	}
+	
+	pub async fn print_next_size(&self) {
+		let history = self.get_trade_history_with_symbol().await;
+		println!("Next size Constant: {}", self.get_next_size_for_f(PositionSizeF::Constant, &history));
+		println!("Next size Max Levered: {}", self.get_next_size_for_f(PositionSizeF::MaxLevered, &history));
+		println!("Next size Larry: {}", self.get_next_size_for_f(PositionSizeF::Larry, &history));
+	}
+	pub fn get_next_size_for_f(&self, f: PositionSizeF, history: &Vec<(TradeHistory, Symbol)>) -> f64 {
+		if history.len() <= 0 {
+			return 0.0
+		}
+		if let Ok(balance) = self.futures_account.account_balance() {
+			let usdt_balance = balance.iter().find(|b| b.asset.eq("USDT")).unwrap();
+			match f {
+				PositionSizeF::Constant => {
+					return usdt_balance.balance
+				}
+				PositionSizeF::MaxLevered => {
+					return usdt_balance.balance * self.config.leverage as f64
+				}
+				PositionSizeF::Larry => {
+					let mut returns = self.returns_for_larry(&mut history.clone());
+					if returns.history.is_empty() {
+						return 0.0
+					}
+					returns.history.sort_by(|a, b| if a.realized_pnl > b.realized_pnl {Ordering::Greater} else {Ordering::Less});
+					let mut max_loss = returns.history.last().unwrap().realized_pnl.abs();
+					while max_loss < 1.0 {
+						max_loss = max_loss * 10.0;
+					}
+					(usdt_balance.balance * self.config.leverage as f64 * 0.17) / max_loss
+					
+				}
+				_ => {
+					0.0
+				}
+			}
+		} else {
+			return 0.0
+		}
 		
 	}
 	
@@ -304,7 +353,7 @@ impl Manager for MoneyManager {
 	}
 	
 	async fn manage(&self) {
-		println!("{}", self.simulate_returns_for_f(PositionSizeF::Larry).await.to_csv());
+		self.print_next_size().await;
 		loop {
 			if !self.passes_position_size().await {
 				println!("Does not pass max daily loss");

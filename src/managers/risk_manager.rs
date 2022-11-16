@@ -73,12 +73,13 @@ impl RiskManager {
                     let todays_trades = trades
                         .iter()
                         .filter(|t| {
+                            
                             let yesterday = SystemTime::now()
                                 .duration_since(UNIX_EPOCH)
                                 .unwrap()
-                                .as_secs()
-                                - 86400;
-                            t.time > yesterday
+                                .as_millis()
+                                - 86400000;
+                            t.time as u128 > yesterday
                         })
                         .collect::<Vec<_>>();
                     return todays_trades
@@ -86,7 +87,6 @@ impl RiskManager {
                         .filter(|t| t.realized_pnl < 0.0)
                         .count();
                 } else {
-                    eprintln!("Error getting trades: {:?}", t_trades_result.unwrap_err());
                 }
             })
             .await;
@@ -127,11 +127,15 @@ impl Manager for RiskManager {
             if !self.passes_max_daily_loss().await {
                 println!("Does not pass max daily loss");
                 self.close_all_positions().await;
-                self.end_day().await
+                self.end_day().await;
+                std::thread::sleep(std::time::Duration::from_secs(10000));
+    
+            } else {
+                println!("Be patient, what is the probability price goes to x before y?");
             }
         
         
-            std::thread::sleep(std::time::Duration::from_secs(15));
+            std::thread::sleep(std::time::Duration::from_secs(45));
         }
     }
 }
