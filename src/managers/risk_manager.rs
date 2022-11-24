@@ -64,22 +64,16 @@ impl RiskManager {
             savings
         }
     }
-    pub async fn passes_max_daily_loss(&self) -> bool {
+    pub async fn passes_max_daily_loss(&self, start_time: u128) -> bool {
         let mut tasks = self
-            .execute_over_futures_symbols(|symbol, futures_market, futures_account| loop {
+            .execute_over_futures_symbols(move |symbol, futures_market, futures_account| loop {
                 let t_trades_result =
                     futures_account.get_user_trades(symbol.symbol.clone(), None, None, None, None);
                 if let Ok(trades) = t_trades_result {
                     let todays_trades = trades
                         .iter()
                         .filter(|t| {
-                            
-                            let yesterday = SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_millis()
-                                - 86400000;
-                            t.time as u128 > yesterday
+                            t.time as u128 > start_time
                         })
                         .collect::<Vec<_>>();
                     return todays_trades
@@ -123,8 +117,12 @@ impl Manager for RiskManager {
     
     
     async fn manage(&self) {
+        let start_time = SystemTime::now()
+              .duration_since(UNIX_EPOCH)
+              .unwrap()
+              .as_millis();
         loop {
-            if !self.passes_max_daily_loss().await {
+            if !self.passes_max_daily_loss(start_time).await {
                 println!("Does not pass max daily loss");
                 self.close_all_positions().await;
                 self.end_day().await;

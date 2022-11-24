@@ -5,6 +5,8 @@ mod studies;
 mod managers;
 mod helpers;
 mod errors;
+mod market_classifier;
+mod loader;
 
 use std::{env, io};
 use std::cmp::Ordering;
@@ -12,6 +14,7 @@ use std::mem::take;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use async_std::stream::Extend;
 use binance::account::{Account, OrderSide, TimeInForce};
 use binance::api::Binance;
 use binance::futures::account::{CustomOrderRequest, FuturesAccount, OrderType};
@@ -23,10 +26,11 @@ use console::Term;
 use once_cell::sync::Lazy;
 use rust_decimal::prelude::*;
 use crate::managers::risk_manager::{RiskManager, RiskManagerConfig};
-use crate::studies::{Study, ob_study::ObStudy, vol_study::VolStudy, oi_study::OiStudy, StudyConfig, StudyTypes};
+use crate::studies::{Study, StudyConfig, StudyTypes};
 use futures::executor::block_on;
 use crate::managers::Manager;
 use crate::managers::money_manager::{MoneyManager, MoneyManagerConfig, PositionSizeF};
+use crate::market_classifier::{MarketClassifer, MarketClassiferConfig};
 
 const MARKET: [&str;4] = ["BTCUSDT","SOLUSDT","XRPUSDT","APTUSDT"];
 const MARKET_QTY_PRECISION: [u32;4] = [3,0,1,1];
@@ -64,29 +68,9 @@ static KEY: Lazy<AccessKey> = Lazy::new(|| {
 
 fn main() {
     
-    let study_config = StudyConfig {
-        symbol: "XRPUSDT".to_string(),
-        tf1: 1,
-        tf2: 5
-    };
-    
-    // let oi_study: Arc<OiStudy> = Arc::new(OiStudy::new( KEY.clone(), &study_config));
-    // let ob_study:  Arc<ObStudy>  =  Arc::new(ObStudy::new( KEY.clone(), &study_config));
-    // let vol_study:  Arc<VolStudy>  = Arc::new(VolStudy::new(KEY.clone(), &study_config));
-    // let join_handles = vec![
-    //     std::thread::spawn(move || {
-    //         ob_study.start_log();
-    //     }),
-    //     std::thread::spawn(move ||{
-    //         oi_study.start_log();
-    //     }),
-    //     std::thread::spawn(move || {
-    //         vol_study.start_log();
-    //     })
-    // ];
-    // for handle in join_handles {
-    //     handle.join().unwrap();
-    // }
+
+    let mongo_client = mongodb::client::MongoClient::new();
+    mongo_client.reset_db();
     
     let rm = RiskManager::new(KEY.clone(), RiskManagerConfig {
         max_risk_per_trade: 0.05,
@@ -100,6 +84,16 @@ fn main() {
         leverage: 50,
         initial_quote_balance: 1.15
     });
-    block_on(mm.manage());
+    let mc = MarketClassifer::new(KEY.clone(), MarketClassiferConfig {
+    });
+    
+    let mut threads = vec![];
+    let loaders = loader::start_loader(KEY.clone(), "DOGEUSDT".to_string(), 1, 60, 300, true, 4 * 60 * 60 * 1000);
+    std::iter::Extend::extend(&mut threads, loaders);
+    
+    
+    for thread in threads {
+        thread.join().unwrap();
+    }
     
 }

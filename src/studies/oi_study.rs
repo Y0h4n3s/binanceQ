@@ -1,3 +1,4 @@
+use std::thread::JoinHandle;
 use std::time::{Duration, UNIX_EPOCH};
 use binance::api::Binance;
 use binance::futures::market::FuturesMarket;
@@ -31,28 +32,36 @@ impl Study for OiStudy {
 		
 	}
 	
-	
-	fn start_log(&self)  {
-		let mongo_client = MongoClient::new();
-		loop {
-			let oi_result = self.market.open_interest(&self.config.symbol);
-			if let Ok(oi) = oi_result {
-				mongo_client.open_interest.update_one(doc! {
-					"timestamp": bson::to_bson(&std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap(),
-				}, doc! {
-					"$set": {
-						"value": oi.open_interest,
-						"timestamp": bson::to_bson(&std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap(),
-					}
-				},                             Some(UpdateOptions::builder().upsert(true).build())
-				).unwrap();
-				println!("OI: {:?}", oi);
-			}
-			// std::thread::sleep(Duration::from_secs(5));
-			
-			
-		}
-	
+	fn log_history(&self) -> JoinHandle<()> {
+		todo!("OiStudy::log_history()")
+	}
+	fn start_log(&self) -> Vec<JoinHandle<()>> {
+		let mut handles = vec![];
+		
+		// for tf in vec![self.config.tf1, self.config.tf2, self.config.tf3] {
+		// 	handles.push(std::thread::spawn(move || {
+		// 		let mongo_client = MongoClient::new();
+		// 		loop {
+		// 			let oi_result = self.market.open_interest(&self.config.symbol);
+		// 			if let Ok(oi) = oi_result {
+		// 				mongo_client.open_interest.update_one(doc! {
+		// 			"timestamp": bson::to_bson(&std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap(),
+		// 		}, doc! {
+		// 			"$set": {
+		// 				"value": oi.open_interest,
+		// 				"timestamp": bson::to_bson(&std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap(),
+		// 			}
+		// 		},                             Some(UpdateOptions::builder().upsert(true).build())
+		// 				).unwrap();
+		// 				println!("OI: {:?}", oi);
+		// 			}
+		// 			std::thread::sleep(Duration::from_secs(tf));
+		//
+		//
+		// 		}
+		// 	}))
+		// }
+		return handles;
 	}
 	
 	fn get_change(&self) -> Self::Change {
