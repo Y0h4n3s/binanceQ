@@ -1,3 +1,5 @@
+#![feature(iterator_try_collect)]
+
 mod cmds;
 mod bracket_order;
 mod mongodb;
@@ -26,7 +28,7 @@ use console::Term;
 use once_cell::sync::Lazy;
 use rust_decimal::prelude::*;
 use crate::managers::risk_manager::{RiskManager, RiskManagerConfig};
-use crate::studies::{Study, StudyConfig, StudyTypes};
+use crate::studies::{Study, StudyConfig, StudyTypes, atr_study::ATRStudy};
 use futures::executor::block_on;
 use crate::managers::Manager;
 use crate::managers::money_manager::{MoneyManager, MoneyManagerConfig, PositionSizeF};
@@ -71,6 +73,14 @@ fn main() {
 
     let mongo_client = mongodb::client::MongoClient::new();
     mongo_client.reset_db();
+    let config = StudyConfig {
+        symbol: "XRPUSTDT".to_string(),
+        tf1: 1,
+        tf2: 60,
+        tf3: 300
+    };
+    let atr_study = ATRStudy::new(KEY.clone(), &config);
+    
     
     let rm = RiskManager::new(KEY.clone(), RiskManagerConfig {
         max_risk_per_trade: 0.05,
@@ -88,8 +98,11 @@ fn main() {
     });
     
     let mut threads = vec![];
-    let loaders = loader::start_loader(KEY.clone(), "DOGEUSDT".to_string(), 1, 60, 300, true, 4 * 60 * 60 * 1000);
-    std::iter::Extend::extend(&mut threads, loaders);
+    loader::load_history(KEY.clone(), "DOGEUSDT".to_string(),  1 * 60 * 60 * 1000);
+    println!("History loader finished");
+    
+    threads.push(loader::start_loader(KEY.clone(), "DOGEUSDT".to_string(), 1));
+    std::iter::Extend::extend(&mut threads, atr_study.start_log());
     
     
     for thread in threads {

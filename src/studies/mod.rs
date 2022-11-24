@@ -1,13 +1,14 @@
 pub mod oi_study;
 pub mod ob_study;
 pub mod vol_study;
-mod atr_study;
+pub mod atr_study;
 
 use std::thread::JoinHandle;
 use binance::futures::account::FuturesAccount;
 use binance::futures::market::FuturesMarket;
 use serde::{Serialize, Deserialize};
 use crate::AccessKey;
+use crate::mongodb::models::TradeEntry;
 
 pub enum Sentiment {
 	VeryBullish,
@@ -16,7 +17,7 @@ pub enum Sentiment {
 	Bearish,
 	VeryBearish,
 }
-
+const RANGE: u64 = 9;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Side {
 	Bid,
@@ -54,6 +55,7 @@ pub trait Study {
 	type Change;
 	fn new(key: AccessKey, config: &StudyConfig) -> Self;
 	fn log_history(&self) -> JoinHandle<()>;
+	
 	fn start_log(&self) -> Vec<JoinHandle<()>>;
 	fn get_change(&self) -> Self::Change;
 	fn sentiment(&self) -> Sentiment;

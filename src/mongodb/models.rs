@@ -5,12 +5,14 @@ use serde::{Serialize, Deserialize};
 
 
 
-
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ATREntry {
     pub tf: u64,
     pub atr: f64,
     pub delta: f64,
     pub symbol: String,
+    pub step_id: u64,
+    pub close_time: u64
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BookSideEntry {
