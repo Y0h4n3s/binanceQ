@@ -8,6 +8,7 @@ use crate::managers::risk_manager::{RiskManager, RiskManagerConfig};
 use crate::market_classifier::{MarketClassifer, MarketClassiferConfig};
 use crate::studies::{atr_study::ATRStudy, Study, StudyConfig};
 use crate::studies::choppiness_study::ChoppinessStudy;
+use crate::types::AccessKey;
 
 mod cmds;
 mod bracket_order;
@@ -18,27 +19,16 @@ mod helpers;
 mod errors;
 mod market_classifier;
 mod loader;
+mod emitter;
+mod types;
 
 const MARKET: [&str;4] = ["BTCUSDT","SOLUSDT","XRPUSDT","APTUSDT"];
 const MARKET_QTY_PRECISION: [u32;4] = [3,0,1,1];
 const MARKET_PRICE_PRECISION: [u32;4] = [1,2,4,3];
 const BASE_SIZE: f64 = 0.05;
-struct Config {
-    stop_loss_percent: f64,
-    target_percent: f64,
-    stop_loss: f64,
-    target: f64,
-    qty_precision: usize,
-    price_precision: usize,
-    traded_market: String,
-    margin: f64,
-}
 
-#[derive(Debug, Clone)]
-pub struct AccessKey {
-    api_key: String,
-    secret_key: String,
-}
+
+
 
 
 

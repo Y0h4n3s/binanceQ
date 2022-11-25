@@ -10,10 +10,12 @@ use binance::futures::model::{ExchangeInformation, Symbol};
 use binance::futures::userstream::FuturesUserStream;
 use binance::savings::Savings;
 use binance::userstream::UserStream;
+use kanal::AsyncReceiver;
 
 use crate::AccessKey;
 use crate::helpers::request_with_retries;
 use crate::managers::Manager;
+use crate::types::TfTrades;
 
 pub struct RiskManagerConfig {
     pub max_daily_losses: usize,
@@ -29,11 +31,12 @@ pub struct RiskManager {
     pub user_stream: UserStream,
     pub futures_user_stream: FuturesUserStream,
     pub symbols: Vec<Symbol>,
-    pub savings: Savings
+    pub savings: Savings,
+    pub tf_events: AsyncReceiver<TfTrades>
 }
 
 impl RiskManager {
-    pub fn new(key: AccessKey, config: RiskManagerConfig) -> Self {
+    pub fn new(key: AccessKey, config: RiskManagerConfig, tf_events: AsyncReceiver<TfTrades>) -> Self {
         let futures_account =
             FuturesAccount::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
         let binance = FuturesGeneral::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
@@ -59,7 +62,8 @@ impl RiskManager {
             user_stream,
             futures_user_stream,
             symbols,
-            savings
+            savings,
+            tf_events
         }
     }
     pub async fn passes_max_daily_loss(&self, start_time: u128) -> bool {

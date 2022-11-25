@@ -1,4 +1,4 @@
-use mongodb::sync::Client;
+use mongodb::Client;
 
 use crate::mongodb::models::{ATREntry, BookSideEntry, ChoppinessIndexEntry, OpenInterestEntry, TradeEntry};
 

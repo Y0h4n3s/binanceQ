@@ -10,11 +10,14 @@ use binance::futures::model::{ExchangeInformation, Symbol, TradeHistory};
 use binance::futures::userstream::FuturesUserStream;
 use binance::savings::Savings;
 use binance::userstream::UserStream;
-
+use kanal::AsyncReceiver;
+use crate::emitter::EventEmitter;
 use crate::AccessKey;
+use crate::emitter::TfTradeEmitter;
 use crate::helpers::*;
 use crate::helpers::request_with_retries;
 use crate::managers::Manager;
+use crate::types::{GlobalConfig, TfTrades};
 
 #[derive(Debug)]
 pub enum PositionSizeF {
@@ -68,13 +71,15 @@ pub struct MoneyManager {
 	pub user_stream: UserStream,
 	pub futures_user_stream: FuturesUserStream,
 	pub symbols: Vec<Symbol>,
-	pub savings: Savings
+	pub savings: Savings,
+	pub tf_events: AsyncReceiver<TfTrades>
 }
 
 // TODO: add fees to calculations, 2 functions, with_taker_fees and with_maker_fees
 // TODO: implement position sizer for all strategies
 impl MoneyManager {
-	pub fn new(key: AccessKey, config: MoneyManagerConfig) -> Self {
+	pub fn new(global_config: GlobalConfig, config: MoneyManagerConfig, tf_events: AsyncReceiver<TfTrades>) -> Self {
+		let key = global_config.key.clone();
 		let futures_account =
 			  FuturesAccount::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
 		let binance = FuturesGeneral::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
@@ -100,7 +105,8 @@ impl MoneyManager {
 			user_stream,
 			futures_user_stream,
 			symbols,
-			savings
+			savings,
+			tf_events
 		}
 	}
 	pub async fn passes_position_size(&self) -> bool {
