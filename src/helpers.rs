@@ -46,6 +46,9 @@ pub fn to_tf_chunks(tf: u64, mut data: Vec<TradeEntry>) -> Vec<Vec<TradeEntry>> 
 		chunks.push(data[last_i..i].to_vec());
 		last_i = i;
 	}
+	if chunks.len() <= 0 {
+		chunks.push(data);
+	}
 	chunks
 	
 }

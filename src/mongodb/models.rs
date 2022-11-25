@@ -8,7 +8,7 @@ use serde::{Serialize, Deserialize};
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ATREntry {
     pub tf: u64,
-    pub atr: f64,
+    pub value: f64,
     pub delta: f64,
     pub symbol: String,
     pub step_id: u64,

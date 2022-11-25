@@ -80,7 +80,7 @@ impl Study for ATRStudy {
 						let delta = ((atr_values[i].0 - atr_values[i-1].0) * 100.0) / atr_values[i-1].0;
 						atr_entries.push(ATREntry {
 							tf,
-							atr: *v,
+							value: *v,
 							delta,
 							symbol: symbol.clone(),
 							step_id: i as u64,
@@ -112,65 +112,66 @@ impl Study for ATRStudy {
 						"step_id": -1
 					}).limit(1).build())).unwrap().next();
 					
-					println!("last_atr: {:?} {}", last_atrr, trades.len());
-					if trades.len() <= 0 || last_atrr.is_none() || last_atrr.clone().unwrap().is_err() {
+					if last_atrr.is_none() || last_atrr.clone().unwrap().is_err() {
 						std::thread::sleep(Duration::from_secs(tf));
 						continue;
 					}
 					let last_atr = last_atrr.unwrap().unwrap();
-						let mut atr_values = vec![];
-						let k = 2.0 / (RANGE as f64 + 1.0);
-						for span in to_tf_chunks(tf,  trades.clone()) {
-							let mut high: f64 = 0.0;
-							let mut low: f64 = f64::MAX;
-							for trade in span.iter() {
-								high = high.max(trade.price);
-								low = low.min( trade.price);
-							}
-							let tr = (high - low);
-							let close_time =  span.iter().map(|t| t.timestamp).max().unwrap();
-							if high == low {
-								atr_values.push((last_atr.atr, close_time));
-							} else {
-								atr_values.push((k * tr + (1.0 - k) * last_atr.atr, close_time));
-							}
-							
+					let mut atr_values = vec![];
+					let k = 2.0 / (RANGE as f64 + 1.0);
+					for span in to_tf_chunks(tf,  trades.clone()) {
+						let mut high: f64 = 0.0;
+						let mut low: f64 = f64::MAX;
+						for trade in span.iter() {
+							high = high.max(trade.price);
+							low = low.min( trade.price);
 						}
-						let mut atr_entries = vec![];
-						let mut atr_i =
-							last_atr.step_id + 1;
-						
-						for (i, (v, close_time)) in atr_values.iter().enumerate() {
-							if i == 0 {
-								continue;
-							}
-							let delta = ((atr_values[i].0 - atr_values[i-1].0) * 100.0) / atr_values[i-1].0;
-							atr_entries.push(ATREntry {
-								tf,
-								atr: *v,
-								delta,
-								symbol: symbol.clone(),
-								step_id: atr_i as u64,
-								close_time: *close_time,
-							});
-							atr_i += 1;
-						}
-						if atr_entries.len() == 0 {
-							
-							atr_entries.push(ATREntry {
-								tf,
-								atr: last_atr.atr,
-								delta: last_atr.delta,
-								symbol: symbol.clone(),
-								step_id: last_atr.step_id + 1,
-								close_time:  trades.clone().iter().map(|t| t.timestamp).max().unwrap(),
-							});
+						let tr = (high - low);
+						let close_time =  span.iter().map(|t| t.timestamp).max().unwrap();
+						if high == low {
+							atr_values.push((last_atr.value, close_time));
 						} else {
-							last_time = trades.iter().map(|t| t.timestamp).max().unwrap();
-							
+							atr_values.push((k * tr + (1.0 - k) * last_atr.value, close_time));
 						}
-					mongo_client.atr.insert_many(atr_entries, None).unwrap();
-					std::thread::sleep(Duration::from_secs(tf));
+						
+					}
+					let mut atr_entries = vec![];
+					let mut atr_i =
+						last_atr.step_id + 1;
+					
+					for (i, (v, close_time)) in atr_values.iter().enumerate() {
+						if i == 0 {
+							continue;
+						}
+						let delta = ((atr_values[i].0 - atr_values[i-1].0) * 100.0) / atr_values[i-1].0;
+						atr_entries.push(ATREntry {
+							tf,
+							value: *v,
+							delta,
+							symbol: symbol.clone(),
+							step_id: atr_i as u64,
+							close_time: *close_time,
+						});
+						atr_i += 1;
+					}
+					if atr_entries.len() == 0 {
+						
+						atr_entries.push(ATREntry {
+							tf,
+							value: last_atr.value,
+							delta: last_atr.delta,
+							symbol: symbol.clone(),
+							step_id: last_atr.step_id + 1,
+							close_time:  last_atr.close_time + tf * 1000,
+						});
+						last_time = last_atr.close_time + tf * 1000;
+						
+					} else {
+						last_time = trades.iter().map(|t| t.timestamp).max().unwrap();
+						
+					}
+				mongo_client.atr.insert_many(atr_entries, None).unwrap();
+				std::thread::sleep(Duration::from_secs(tf));
 					
 					
 				}
