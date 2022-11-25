@@ -1,13 +1,9 @@
 use std::thread::JoinHandle;
-use std::time::{Duration, UNIX_EPOCH};
+
 use binance::api::Binance;
 use binance::futures::market::FuturesMarket;
-use mongodb::bson::doc;
-use mongodb::bson;
-use mongodb::options::UpdateOptions;
+
 use crate::{AccessKey, StudyConfig};
-use crate::mongodb::client::MongoClient;
-use crate::mongodb::models::Side;
 use crate::studies::{Sentiment, Study};
 
 pub struct OiStudy {
@@ -21,7 +17,7 @@ pub struct OiStudy {
 
 impl Study for OiStudy {
 	const ID: crate::studies::StudyTypes = crate::studies::StudyTypes::OiStudy;
-	type Change = (f64);
+	type Change = f64;
 	
 	fn new(key: AccessKey, config: &StudyConfig) -> Self {
 		OiStudy {

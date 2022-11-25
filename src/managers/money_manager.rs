@@ -1,8 +1,6 @@
-use std::cmp::{max, Ordering};
-use crate::helpers::request_with_retries;
-use crate::AccessKey;
-use async_std::prelude::*;
-use async_std::task::JoinHandle;
+use std::cmp::{ Ordering};
+
+use async_trait::async_trait;
 use binance::account::Account;
 use binance::api::Binance;
 use binance::futures::account::FuturesAccount;
@@ -10,14 +8,14 @@ use binance::futures::general::FuturesGeneral;
 use binance::futures::market::FuturesMarket;
 use binance::futures::model::{ExchangeInformation, Symbol, TradeHistory};
 use binance::futures::userstream::FuturesUserStream;
-use binance::userstream::UserStream;
-use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use binance::model::SpotFuturesTransferType;
 use binance::savings::Savings;
-use crate::managers::Manager;
-use async_trait::async_trait;
+use binance::userstream::UserStream;
+
+use crate::AccessKey;
 use crate::helpers::*;
+use crate::helpers::request_with_retries;
+use crate::managers::Manager;
+
 #[derive(Debug)]
 pub enum PositionSizeF {
 	Kelly,
@@ -106,7 +104,7 @@ impl MoneyManager {
 		}
 	}
 	pub async fn passes_position_size(&self) -> bool {
-		let mut tasks = self
+		let tasks = self
 			  .execute_over_futures_symbols(|symbol, futures_market, futures_account| loop {
 				  return 1
 			  })
@@ -269,7 +267,7 @@ impl MoneyManager {
 	}
 	
 	pub async fn get_trade_history_with_symbol(&self) -> Vec<(TradeHistory, Symbol)> {
-		let mut tasks = self
+		let tasks = self
 			  .execute_over_futures_symbols::<Vec<(TradeHistory, Symbol)>>(|symbol, futures_market, futures_account| loop {
 				  if symbol.quote_asset.ne("USDT") && symbol.quote_asset.ne("BUSD") {
 					  return vec![]

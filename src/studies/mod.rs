@@ -1,14 +1,14 @@
+use std::thread::JoinHandle;
+
+use serde::{Deserialize, Serialize};
+
+use crate::AccessKey;
+
 pub mod oi_study;
 pub mod ob_study;
 pub mod vol_study;
 pub mod atr_study;
-
-use std::thread::JoinHandle;
-use binance::futures::account::FuturesAccount;
-use binance::futures::market::FuturesMarket;
-use serde::{Serialize, Deserialize};
-use crate::AccessKey;
-use crate::mongodb::models::TradeEntry;
+pub mod choppiness_study;
 
 pub enum Sentiment {
 	VeryBullish,
@@ -28,6 +28,7 @@ pub enum StudyTypes {
 	ObStudy,
 	VolStudy,
 	ATRStudy,
+	ChoppinessStudy,
 }
 pub enum IndicatorTypes {
 	ATR,
@@ -55,7 +56,6 @@ pub trait Study {
 	type Change;
 	fn new(key: AccessKey, config: &StudyConfig) -> Self;
 	fn log_history(&self) -> JoinHandle<()>;
-	
 	fn start_log(&self) -> Vec<JoinHandle<()>>;
 	fn get_change(&self) -> Self::Change;
 	fn sentiment(&self) -> Sentiment;

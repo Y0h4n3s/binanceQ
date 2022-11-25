@@ -1,17 +1,15 @@
-use binance::api::Binance;
-use binance::futures::market::FuturesMarket;
-use binance::futures::model::AggTrades::AllAggTrades;
-use binance::futures::model::{AggTrade, AggTrades};
-use mongodb::bson;
-use mongodb::bson::doc;
-use std::thread::{yield_now, JoinHandle};
+use std::thread::{JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use binance::api::Binance;
+use binance::futures::market::FuturesMarket;
+use binance::futures::model::{AggTrade};
+use binance::futures::model::AggTrades::AllAggTrades;
+use mongodb::results::InsertManyResult;
+
+use crate::AccessKey;
 use crate::mongodb::client::MongoClient;
 use crate::mongodb::models::TradeEntry;
-use crate::AccessKey;
-use mongodb::options::UpdateOptions;
-use mongodb::results::InsertManyResult;
 
 pub fn insert_trade_entries(
     trades: &Vec<AggTrade>,

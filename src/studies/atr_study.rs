@@ -1,20 +1,17 @@
-use std::cmp::{max, min};
 use std::thread::JoinHandle;
+use std::time::{Duration, UNIX_EPOCH};
+
 use binance::api::Binance;
 use binance::futures::market::FuturesMarket;
-use binance::futures::model::Trades::AllTrades;
-use mongodb::bson::doc;
-use mongodb::options::{FindOptions, UpdateOptions};
-use crate::{AccessKey, StudyConfig};
-use crate::mongodb::client::MongoClient;
-use crate::studies::{Indicator, RANGE, Sentiment, Study};
-use std::time::{Duration, UNIX_EPOCH};
-use binance::api::Futures::AggTrades;
-use binance::futures::model::AggTrade;
-use binance::futures::model::AggTrades::AllAggTrades;
 use mongodb::bson;
+use mongodb::bson::doc;
+use mongodb::options::{FindOptions};
+
+use crate::{AccessKey, StudyConfig};
 use crate::helpers::to_tf_chunks;
+use crate::mongodb::client::MongoClient;
 use crate::mongodb::models::ATREntry;
+use crate::studies::{RANGE, Sentiment, Study};
 
 pub struct ATRStudy {
 	market: FuturesMarket,
@@ -25,7 +22,7 @@ pub struct ATRStudy {
 
 
 impl Study for ATRStudy {
-	const ID: crate::studies::StudyTypes = crate::studies::StudyTypes::ObStudy;
+	const ID: crate::studies::StudyTypes = crate::studies::StudyTypes::ATRStudy;
 	type Change = (f64, f64);
 	
 	fn new(key: AccessKey, config: &StudyConfig) -> Self {
@@ -58,7 +55,7 @@ impl Study for ATRStudy {
 							high = high.max(trade.price);
 							low = low.min( trade.price);
 						}
-						let tr = (high - low);
+						let tr = high - low;
 						let close_time =  span.iter().map(|t| t.timestamp).max().unwrap();
 						if atr_values.is_empty() {
 							atr_values.push((tr, close_time));
@@ -126,7 +123,7 @@ impl Study for ATRStudy {
 							high = high.max(trade.price);
 							low = low.min( trade.price);
 						}
-						let tr = (high - low);
+						let tr = high - low;
 						let close_time =  span.iter().map(|t| t.timestamp).max().unwrap();
 						if high == low {
 							atr_values.push((last_atr.value, close_time));

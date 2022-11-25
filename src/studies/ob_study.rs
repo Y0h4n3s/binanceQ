@@ -1,13 +1,11 @@
 use std::thread::JoinHandle;
+
 use binance::api::Binance;
 use binance::futures::market::FuturesMarket;
-use mongodb::bson::doc;
-use mongodb::options::UpdateOptions;
+
 use crate::{AccessKey, StudyConfig};
-use crate::mongodb::client::MongoClient;
-use crate::studies::{Sentiment, Study, Side};
-use mongodb::bson;
-use std::time::{Duration, UNIX_EPOCH};
+use crate::studies::{Sentiment, Study};
+
 pub struct ObStudy {
 	market: FuturesMarket,
 	key: AccessKey,

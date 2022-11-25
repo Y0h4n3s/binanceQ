@@ -1,9 +1,15 @@
-
+use serde::{Deserialize, Serialize};
 use serde_with::*;
-use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
 
-
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ChoppinessIndexEntry {
+    pub tf: u64,
+    pub value: f64,
+    pub delta: f64,
+    pub symbol: String,
+    pub step_id: u64,
+    pub close_time: u64
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ATREntry {
@@ -16,6 +22,10 @@ pub struct ATREntry {
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BookSideEntry {
+    pub tf: u64,
+    pub delta: f64,
+    pub symbol: String,
+    pub step_id: u64,
     pub value: f64,
     pub side: Side,
     pub timestamp: u64

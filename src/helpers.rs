@@ -1,7 +1,9 @@
 use std::str::FromStr;
 use std::time::Duration;
-use crate::errors::{Error, ErrorKind, Result};
+
 use binance::errors::Result as BinanceResult;
+
+use crate::errors::{ ErrorKind, Result};
 use crate::mongodb::models::TradeEntry;
 
 pub fn request_with_retries<R>(retries: usize, request: impl Fn() -> BinanceResult<R>) -> Result<R>

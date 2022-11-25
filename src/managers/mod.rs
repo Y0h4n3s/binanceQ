@@ -1,10 +1,11 @@
 use async_std::task::JoinHandle;
+use async_trait::async_trait;
 use binance::futures::account::FuturesAccount;
 use binance::futures::market::FuturesMarket;
 use binance::futures::model::Symbol;
 use binance::model::SpotFuturesTransferType;
 use binance::savings::Savings;
-use async_trait::async_trait;
+
 pub mod risk_manager;
 pub mod money_manager;
 

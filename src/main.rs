@@ -1,5 +1,14 @@
 #![feature(iterator_try_collect)]
 
+use std::{env};
+use once_cell::sync::Lazy;
+
+use crate::managers::money_manager::{MoneyManager, MoneyManagerConfig, PositionSizeF};
+use crate::managers::risk_manager::{RiskManager, RiskManagerConfig};
+use crate::market_classifier::{MarketClassifer, MarketClassiferConfig};
+use crate::studies::{atr_study::ATRStudy, Study, StudyConfig};
+use crate::studies::choppiness_study::ChoppinessStudy;
+
 mod cmds;
 mod bracket_order;
 mod mongodb;
@@ -9,30 +18,6 @@ mod helpers;
 mod errors;
 mod market_classifier;
 mod loader;
-
-use std::{env, io};
-use std::cmp::Ordering;
-use std::mem::take;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::time::Duration;
-use async_std::stream::Extend;
-use binance::account::{Account, OrderSide, TimeInForce};
-use binance::api::Binance;
-use binance::futures::account::{CustomOrderRequest, FuturesAccount, OrderType};
-use binance::futures::market::FuturesMarket;
-use binance::futures::model::AccountBalance;
-use binance::market::Market;
-use binance::model::SymbolPrice;
-use console::Term;
-use once_cell::sync::Lazy;
-use rust_decimal::prelude::*;
-use crate::managers::risk_manager::{RiskManager, RiskManagerConfig};
-use crate::studies::{Study, StudyConfig, StudyTypes, atr_study::ATRStudy};
-use futures::executor::block_on;
-use crate::managers::Manager;
-use crate::managers::money_manager::{MoneyManager, MoneyManagerConfig, PositionSizeF};
-use crate::market_classifier::{MarketClassifer, MarketClassiferConfig};
 
 const MARKET: [&str;4] = ["BTCUSDT","SOLUSDT","XRPUSDT","APTUSDT"];
 const MARKET_QTY_PRECISION: [u32;4] = [3,0,1,1];
@@ -80,7 +65,7 @@ fn main() {
         tf3: 300
     };
     let atr_study = ATRStudy::new(KEY.clone(), &config);
-    
+    let choppiness_study = ChoppinessStudy::new(KEY.clone(), &config);
     
     let rm = RiskManager::new(KEY.clone(), RiskManagerConfig {
         max_risk_per_trade: 0.05,
@@ -98,11 +83,12 @@ fn main() {
     });
     
     let mut threads = vec![];
-    loader::load_history(KEY.clone(), "DOGEUSDT".to_string(),  1 * 60 * 60 * 1000);
+    loader::load_history(KEY.clone(), "DOGEUSDT".to_string(),  12 * 60 * 60 * 1000);
     println!("History loader finished");
     
     threads.push(loader::start_loader(KEY.clone(), "DOGEUSDT".to_string(), 1));
     std::iter::Extend::extend(&mut threads, atr_study.start_log());
+    std::iter::Extend::extend(&mut threads, choppiness_study.start_log());
     
     
     for thread in threads {

@@ -1,7 +1,6 @@
-use crate::helpers::request_with_retries;
-use crate::AccessKey;
-use async_std::prelude::*;
-use async_std::task::JoinHandle;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use async_trait::async_trait;
 use binance::account::Account;
 use binance::api::Binance;
 use binance::futures::account::FuturesAccount;
@@ -9,12 +8,11 @@ use binance::futures::general::FuturesGeneral;
 use binance::futures::market::FuturesMarket;
 use binance::futures::model::{ExchangeInformation, Symbol};
 use binance::futures::userstream::FuturesUserStream;
-use binance::userstream::UserStream;
-use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use binance::model::SpotFuturesTransferType;
 use binance::savings::Savings;
-use async_trait::async_trait;
+use binance::userstream::UserStream;
+
+use crate::AccessKey;
+use crate::helpers::request_with_retries;
 use crate::managers::Manager;
 
 pub struct RiskManagerConfig {
@@ -65,7 +63,7 @@ impl RiskManager {
         }
     }
     pub async fn passes_max_daily_loss(&self, start_time: u128) -> bool {
-        let mut tasks = self
+        let tasks = self
             .execute_over_futures_symbols(move |symbol, futures_market, futures_account| loop {
                 let t_trades_result =
                     futures_account.get_user_trades(symbol.symbol.clone(), None, None, None, None);

@@ -1,24 +1,20 @@
-use crate::helpers::{request_with_retries, to_precision};
-use crate::AccessKey;
-use async_std::prelude::*;
-use async_std::task::JoinHandle;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use binance::account::Account;
 use binance::api::Binance;
 use binance::futures::account::FuturesAccount;
 use binance::futures::general::FuturesGeneral;
 use binance::futures::market::FuturesMarket;
-use binance::futures::model::{AggTrade, ExchangeInformation, Symbol, Trade};
-use binance::futures::userstream::FuturesUserStream;
-use binance::userstream::UserStream;
-use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use binance::model::SpotFuturesTransferType;
-use binance::savings::Savings;
-use async_trait::async_trait;
+use binance::futures::model::{AggTrade, ExchangeInformation, Symbol};
 use binance::futures::model::AggTrades::AllAggTrades;
-use binance::futures::model::Trades::AllTrades;
+use binance::futures::userstream::FuturesUserStream;
+use binance::savings::Savings;
+use binance::userstream::UserStream;
 use image::RgbImage;
-use ndarray::{Array1, Array2, Array3};
+use ndarray::{ Array2, Array3};
+
+use crate::AccessKey;
+use crate::helpers::{request_with_retries, to_precision};
 
 pub struct MarketClassiferConfig {
 }

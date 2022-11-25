@@ -1,5 +1,6 @@
 use mongodb::sync::Client;
-use crate::mongodb::models::{ATREntry, BookSideEntry, OpenInterestEntry, TradeEntry};
+
+use crate::mongodb::models::{ATREntry, BookSideEntry, ChoppinessIndexEntry, OpenInterestEntry, TradeEntry};
 
 pub struct MongoClient {
     pub database: mongodb::sync::Database,
@@ -7,6 +8,7 @@ pub struct MongoClient {
     pub book_side: mongodb::sync::Collection<BookSideEntry>,
     pub trades: mongodb::sync::Collection<TradeEntry>,
     pub atr: mongodb::sync::Collection<ATREntry>,
+    pub choppiness: mongodb::sync::Collection<ChoppinessIndexEntry>,
 }
 
 impl MongoClient {
@@ -23,12 +25,14 @@ impl MongoClient {
         let book_side = database.collection::<BookSideEntry>("book_side");
         let trades = database.collection::<TradeEntry>("trade");
         let atr = database.collection::<ATREntry>("atr");
+        let choppiness = database.collection::<ChoppinessIndexEntry>("choppiness");
         MongoClient {
             database,
             open_interest,
             book_side,
             trades,
-            atr
+            atr,
+            choppiness
         }
     }
     pub fn reset_db(&self) {

@@ -1,19 +1,19 @@
-
-use binance::account::TimeInForce;
-use binance::api::Binance;
-use binance::futures::account::FuturesAccount;
-use binance::futures::market::FuturesMarket;
-use serde::{Serialize, Deserialize};
-use crate::MARKET;
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct OpenRequest {
-	pub side: String,
-	pub stop: f64,
-	pub profit: u64,
-	pub msg: String
-}
 //
+// use binance::account::TimeInForce;
+// use binance::api::Binance;
+// use binance::futures::account::FuturesAccount;
+// use binance::futures::market::FuturesMarket;
+// use serde::{Serialize, Deserialize};
+// use crate::MARKET;
+//
+// #[derive(Debug, Deserialize, Serialize)]
+// pub struct OpenRequest {
+// 	pub side: String,
+// 	pub stop: f64,
+// 	pub profit: u64,
+// 	pub msg: String
+// }
+// //
 // #[post("/open")]
 // pub async fn create(order_req: Json<OpenRequest>) -> HttpResponse {
 // 	let api_key = Some("ftcpi3OSjk26htxak54hqkZ6e9vdHq2Vd7oN83VZN39UcYmw1VwVkibug52oGIs4".into());
