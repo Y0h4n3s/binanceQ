@@ -1,4 +1,4 @@
-use kanal::AsyncSender;
+use kanal::{AsyncReceiver, AsyncSender};
 use crate::mongodb::models::TradeEntry;
 use async_trait::async_trait;
 use mongodb::bson::doc;
@@ -6,12 +6,15 @@ use crate::helpers::to_tf_chunks;
 use crate::mongodb::client::MongoClient;
 use crate::types::{TfTrade, TfTrades};
 
+#[async-trait()]
+pub trait EventSink<EventType> {
+	async fn listen(&self, receiver: AsyncReceiver<EventType>);
+}
 
 #[async-trait()]
-pub trait EventEmitter {
-	type EventType;
-	fn subscribe(&mut self, sender: AsyncSender<Self::EventType>);
-	async fn listen(&self);
+pub trait EventEmitter<EventType> {
+	fn subscribe(&mut self, sender: AsyncSender<EventType>);
+	async fn emit(&self);
 }
 pub struct TfTradeEmitter {
 	pub subscribers: Vec<AsyncSender<TfTrades>>,
@@ -26,14 +29,14 @@ impl TfTradeEmitter {
 		}
 	}
 }
-impl EventEmitter for TfTradeEmitter {
-	type EventType = TfTrades;
 
-	fn subscribe(&mut self, sender: AsyncSender<Self::EventType>) {
+impl EventEmitter<TfTrades> for TfTradeEmitter {
+
+	fn subscribe(&mut self, sender: AsyncSender<TfTrades>) {
 		self.subscribers.push(sender);
 	}
 	
-	async fn listen(&self) {
+	async fn emit(&self) {
 		let mongo_client = MongoClient::new();
 		let mut last_timestamp = 0_u64;
 		let mut last_id = 1_u64;

@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -10,9 +12,11 @@ use binance::futures::model::{ExchangeInformation, Symbol};
 use binance::futures::userstream::FuturesUserStream;
 use binance::savings::Savings;
 use binance::userstream::UserStream;
-use kanal::AsyncReceiver;
+use kanal::{AsyncReceiver, AsyncSender};
+use tokio::sync::RwLock;
 
 use crate::AccessKey;
+use crate::emitter::{EventEmitter, EventSink};
 use crate::helpers::request_with_retries;
 use crate::managers::Manager;
 use crate::types::TfTrades;
@@ -22,6 +26,9 @@ pub struct RiskManagerConfig {
     pub max_risk_per_trade: f64,
 }
 
+enum ExecutionCommand {
+    OpenLongPosition,
+}
 pub struct RiskManager {
     pub config: RiskManagerConfig,
     pub futures_account: FuturesAccount,
@@ -32,11 +39,19 @@ pub struct RiskManager {
     pub futures_user_stream: FuturesUserStream,
     pub symbols: Vec<Symbol>,
     pub savings: Savings,
-    pub tf_events: AsyncReceiver<TfTrades>
+    pub command_queue: Arc<RwLock<VecDeque<ExecutionCommand>>>
 }
 
+impl EventSink<TfTrades> for RiskManager {
+    // Act on trade events
+    async fn listen(&self, reciever: AsyncReceiver<TfTrades>)  {
+        todo!()
+    }
+}
+
+
 impl RiskManager {
-    pub fn new(key: AccessKey, config: RiskManagerConfig, tf_events: AsyncReceiver<TfTrades>) -> Self {
+    pub fn new(key: AccessKey, config: RiskManagerConfig, execution_queue: Arc<RwLock<VecDeque<ExecutionCommand>>>) -> Self {
         let futures_account =
             FuturesAccount::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
         let binance = FuturesGeneral::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
@@ -63,7 +78,7 @@ impl RiskManager {
             futures_user_stream,
             symbols,
             savings,
-            tf_events
+            command_queue: Arc::new(RwLock::new(VecDeque::new()))
         }
     }
     pub async fn passes_max_daily_loss(&self, start_time: u128) -> bool {
@@ -123,6 +138,7 @@ impl Manager for RiskManager {
               .duration_since(UNIX_EPOCH)
               .unwrap()
               .as_millis();
+      
         loop {
             if !self.passes_max_daily_loss(start_time).await {
                 println!("Does not pass max daily loss");

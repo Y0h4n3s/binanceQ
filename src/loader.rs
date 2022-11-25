@@ -5,6 +5,7 @@ use binance::api::Binance;
 use binance::futures::market::FuturesMarket;
 use binance::futures::model::{AggTrade};
 use binance::futures::model::AggTrades::AllAggTrades;
+use binance::futures::websockets::FuturesWebSockets;
 use mongodb::results::InsertManyResult;
 
 use crate::AccessKey;
@@ -67,6 +68,8 @@ pub fn load_history(key: AccessKey, symbol: String, fetch_history_span: u64) {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+// TODO: use websockets for this
 pub fn start_loader(key: AccessKey, symbol: String, tf1: u64) -> JoinHandle<()> {
     let market = FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
 	std::thread::Builder::new().name("loader".to_string()).spawn(move || {

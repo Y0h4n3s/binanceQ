@@ -8,6 +8,7 @@ use binance::savings::Savings;
 
 pub mod risk_manager;
 pub mod money_manager;
+pub mod strategy_manager;
 
 #[async_trait]
 pub trait Manager {

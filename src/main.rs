@@ -21,6 +21,7 @@ mod market_classifier;
 mod loader;
 mod emitter;
 mod types;
+mod strategies;
 
 const MARKET: [&str;4] = ["BTCUSDT","SOLUSDT","XRPUSDT","APTUSDT"];
 const MARKET_QTY_PRECISION: [u32;4] = [3,0,1,1];

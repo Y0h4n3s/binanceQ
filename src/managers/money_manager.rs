@@ -11,7 +11,7 @@ use binance::futures::userstream::FuturesUserStream;
 use binance::savings::Savings;
 use binance::userstream::UserStream;
 use kanal::AsyncReceiver;
-use crate::emitter::EventEmitter;
+use crate::emitter::{EventEmitter, EventSink};
 use crate::AccessKey;
 use crate::emitter::TfTradeEmitter;
 use crate::helpers::*;
@@ -72,13 +72,16 @@ pub struct MoneyManager {
 	pub futures_user_stream: FuturesUserStream,
 	pub symbols: Vec<Symbol>,
 	pub savings: Savings,
-	pub tf_events: AsyncReceiver<TfTrades>
 }
-
+impl EventSink<TfTrades> for MoneyManager {
+	async fn listen(&self, receiver: AsyncReceiver<TfTrades>) {
+		todo!()
+	}
+}
 // TODO: add fees to calculations, 2 functions, with_taker_fees and with_maker_fees
 // TODO: implement position sizer for all strategies
 impl MoneyManager {
-	pub fn new(global_config: GlobalConfig, config: MoneyManagerConfig, tf_events: AsyncReceiver<TfTrades>) -> Self {
+	pub fn new(global_config: GlobalConfig, config: MoneyManagerConfig) -> Self {
 		let key = global_config.key.clone();
 		let futures_account =
 			  FuturesAccount::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
@@ -106,7 +109,6 @@ impl MoneyManager {
 			futures_user_stream,
 			symbols,
 			savings,
-			tf_events
 		}
 	}
 	pub async fn passes_position_size(&self) -> bool {
