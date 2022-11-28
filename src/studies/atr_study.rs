@@ -8,11 +8,13 @@ use mongodb::bson;
 use mongodb::bson::doc;
 use mongodb::options::{FindOptions};
 use async_trait::async_trait;
-use crate::{AccessKey, StudyConfig};
+use kanal::AsyncReceiver;
+use crate::{AccessKey, EventSink, StudyConfig};
 use crate::helpers::to_tf_chunks;
 use crate::mongodb::client::MongoClient;
 use crate::mongodb::models::ATREntry;
 use crate::studies::{RANGE, Sentiment, Study};
+use crate::types::TfTrades;
 
 pub struct ATRStudy {
 	market: FuturesMarket,
@@ -195,6 +197,16 @@ impl Study for ATRStudy {
 	
 	fn sentiment_with_two<T, U>(&self, other1: T, other2: U) -> Sentiment where T: Study, U: Study {
 		todo!()
+	}
+}
+
+impl EventSink<TfTrades> for ATRStudy {
+	fn get_receiver(&self) -> AsyncReceiver<TfTrades> {
+		todo!()
+	}
+	
+	async fn handle_event(&self, event_msg: TfTrades) {
+	
 	}
 }
 

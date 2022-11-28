@@ -70,6 +70,7 @@ pub trait Study {
 }
 
 
+
 pub trait Indicator {
 	const ID: IndicatorTypes;
 	type ValueType;

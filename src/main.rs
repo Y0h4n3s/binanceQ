@@ -1,14 +1,17 @@
 #![feature(iterator_try_collect)]
 
 use std::{env};
+use futures::stream::FuturesUnordered;
 use once_cell::sync::Lazy;
+use crate::events::{EventEmitter, EventSink, TfTradeEmitter};
 
 use crate::managers::money_manager::{MoneyManager, MoneyManagerConfig, PositionSizeF};
 use crate::managers::risk_manager::{RiskManager, RiskManagerConfig};
+use crate::managers::strategy_manager::StrategyManager;
 use crate::market_classifier::{MarketClassifer, MarketClassiferConfig};
 use crate::studies::{atr_study::ATRStudy, Study, StudyConfig};
 use crate::studies::choppiness_study::ChoppinessStudy;
-use crate::types::AccessKey;
+use crate::types::{AccessKey, GlobalConfig};
 
 mod cmds;
 mod bracket_order;
@@ -52,6 +55,39 @@ async fn async_main() {
 
     let mongo_client = mongodb::client::MongoClient::new().await;
     mongo_client.reset_db().await;
+    let global_config = GlobalConfig {
+        tf1: 1,
+        tf2: 50,
+        tf3: 300,
+        key: KEY.clone()
+    };
+    
+    let trades_channel = kanal::bounded_async(100);
+    let execution_commands_channel = kanal::bounded_async(100);
+    let risk_manager = RiskManager::new(global_config.clone(), RiskManagerConfig {
+        max_daily_losses: 100,
+        max_risk_per_trade: 0.01,
+    }, trades_channel.1.clone(), execution_commands_channel.1.clone());
+    let strategy_manager = StrategyManager::new(global_config.clone(), trades_channel.1.clone(), execution_commands_channel.1.clone());
+    let money_manager = MoneyManager::new(global_config.clone(), MoneyManagerConfig {
+        position_size_f: PositionSizeF::Kelly,
+        min_position_size: None,
+        constant_size: None,
+        max_position_size: None,
+        leverage: 0,
+        initial_quote_balance: 0.0
+    }, trades_channel.1.clone());
+    EventSink::listen(risk_manager.clone()).await;
+    let futures = FuturesUnordered::new();
+    for tf in vec![global_config.tf1, global_config.tf2, global_config.tf3] {
+        let mut tf_trades = TfTradeEmitter::new(tf);
+        tf_trades.subscribe(trades_channel.0.clone());
+        futures.push(tf_trades.emit())
+    }
+    
+    
+    
+    
     let config = StudyConfig {
         symbol: "XRPUSTDT".to_string(),
         tf1: 1,

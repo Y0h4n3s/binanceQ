@@ -15,7 +15,7 @@ use binance::userstream::UserStream;
 use kanal::{AsyncReceiver, AsyncSender};
 use tokio::sync::RwLock;
 
-use crate::AccessKey;
+use crate::{AccessKey, GlobalConfig};
 use crate::events::{EventEmitter, EventSink};
 use crate::helpers::request_with_retries;
 use crate::managers::Manager;
@@ -28,8 +28,12 @@ pub struct RiskManagerConfig {
 
 pub enum ExecutionCommand {
     OpenLongPosition,
+    OpenShortPosition,
+    CloseLongPosition,
+    CloseShortPosition,
 }
 pub struct RiskManager {
+    pub global_config: GlobalConfig,
     pub config: RiskManagerConfig,
     pub futures_account: FuturesAccount,
     pub account: Account,
@@ -39,23 +43,54 @@ pub struct RiskManager {
     pub futures_user_stream: FuturesUserStream,
     pub symbols: Vec<Symbol>,
     pub savings: Savings,
-    pub command_queue: Arc<RwLock<VecDeque<ExecutionCommand>>>
+    tf_trades: AsyncReceiver<TfTrades>,
+    execution_commands: AsyncReceiver<ExecutionCommand>,
 }
 #[async_trait]
-impl EventSink<'_, TfTrades> for RiskManager {
-    fn get_receiver(&self) -> AsyncReceiver<TfTrades> {
-        todo!()
+impl EventSink<ExecutionCommand> for RiskManager {
+    fn get_receiver(&self) -> AsyncReceiver<ExecutionCommand> {
+        self.execution_commands()
     }
-    // Act on trade events
+    
+    async fn handle_event(&self, event_msg: ExecutionCommand) {
+        match event_msg {
+            ExecutionCommand::OpenLongPosition => {
+                let mut command_queue = self.command_queue.write().await;
+                command_queue.push_back(ExecutionCommand::OpenLongPosition);
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl EventSink<TfTrades> for RiskManager {
+    fn get_receiver(&self) -> AsyncReceiver<TfTrades> {
+        self.tf_trades()
+    }
+    // Act on trade events for risk manager
     async fn handle_event(&self, event: TfTrades) {
-        todo!()
+        for trade in event {
+            match trade.tf {
+                x if x == self.global_config.tf1 => {
+                
+                }
+                x if x == self.global_config.tf2 => {
+        
+                }
+                x if x == self.global_config.tf3 => {
+        
+                }
+                _ => {}
+            }
+        }
     }
     
 }
 
-
+//TODO: create a binance account struct that holds all the binance account info
 impl RiskManager {
-    pub fn new(key: AccessKey, config: RiskManagerConfig, execution_queue: Arc<RwLock<VecDeque<ExecutionCommand>>>) -> Self {
+    pub fn new(global_config: GlobalConfig, config: RiskManagerConfig, tf_trades: AsyncReceiver<TfTrades>, execution_commands: AsyncReceiver<ExecutionCommand>) -> Self {
+        let key = &global_config.key;
         let futures_account =
             FuturesAccount::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
         let binance = FuturesGeneral::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
@@ -73,6 +108,7 @@ impl RiskManager {
             };
 
         RiskManager {
+            global_config,
             config,
             futures_account,
             binance,
@@ -82,7 +118,8 @@ impl RiskManager {
             futures_user_stream,
             symbols,
             savings,
-            command_queue: Arc::new(RwLock::new(VecDeque::new()))
+            tf_trades,
+            execution_commands,
         }
     }
     pub async fn passes_max_daily_loss(&self, start_time: u128) -> bool {

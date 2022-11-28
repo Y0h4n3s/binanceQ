@@ -10,7 +10,7 @@ use binance::futures::model::{ExchangeInformation, Symbol, TradeHistory};
 use binance::futures::userstream::FuturesUserStream;
 use binance::savings::Savings;
 use binance::userstream::UserStream;
-use kanal::AsyncReceiver;
+use kanal::{AsyncReceiver, AsyncSender};
 use crate::events::{EventEmitter, EventSink};
 use crate::AccessKey;
 use crate::events::TfTradeEmitter;
@@ -63,6 +63,7 @@ impl ReturnHistory {
 }
 
 pub struct MoneyManager {
+	pub global_config: GlobalConfig,
 	pub config: MoneyManagerConfig,
 	pub futures_account: FuturesAccount,
 	pub account: Account,
@@ -72,22 +73,36 @@ pub struct MoneyManager {
 	pub futures_user_stream: FuturesUserStream,
 	pub symbols: Vec<Symbol>,
 	pub savings: Savings,
+	tf_trades: AsyncReceiver<TfTrades>,
 }
 #[async_trait]
-impl EventSink<'_, TfTrades> for MoneyManager {
+impl EventSink<TfTrades> for MoneyManager {
 	fn get_receiver(&self) -> AsyncReceiver<TfTrades> {
 		todo!()
 	}
 	
-	async fn handle_event(&self, event_msg: TfTrades) {
-		todo!()
+	async fn handle_event(&self, event: TfTrades) {
+		for trade in event {
+			match trade.tf {
+				x if x == self.global_config.tf1 => {
+				
+				}
+				x if x == self.global_config.tf2 => {
+				
+				}
+				x if x == self.global_config.tf3 => {
+				
+				}
+				_ => {}
+			}
+		}
 	}
 	
 }
 // TODO: add fees to calculations, 2 functions, with_taker_fees and with_maker_fees
 // TODO: implement position sizer for all strategies
 impl MoneyManager {
-	pub fn new(global_config: GlobalConfig, config: MoneyManagerConfig) -> Self {
+	pub fn new(global_config: GlobalConfig, config: MoneyManagerConfig, tf_trades: AsyncReceiver<TfTrades>) -> Self {
 		let key = global_config.key.clone();
 		let futures_account =
 			  FuturesAccount::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
@@ -106,6 +121,7 @@ impl MoneyManager {
 			  };
 		
 		MoneyManager {
+			global_config,
 			config,
 			futures_account,
 			binance,
@@ -115,6 +131,7 @@ impl MoneyManager {
 			futures_user_stream,
 			symbols,
 			savings,
+			tf_trades
 		}
 	}
 	pub async fn passes_position_size(&self) -> bool {

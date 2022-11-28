@@ -8,11 +8,13 @@ use crate::helpers::to_tf_chunks;
 use crate::mongodb::client::MongoClient;
 use crate::types::{TfTrade, TfTrades};
 
+
+
 #[async_trait]
-pub trait EventSink<'a, EventType: Send + Clone + 'a> {
+pub trait EventSink<EventType: Send> {
 	fn get_receiver(&self) -> AsyncReceiver<EventType>;
 	async fn handle_event(&self, event_msg: EventType);
-	async fn listen(&'a self) {
+	async fn listen(&self) {
 		let receiver = self.get_receiver();
 		while let Ok(event) = receiver.recv().await {
 			self.handle_event(event).await;
@@ -26,7 +28,7 @@ pub trait EventEmitter<EventType> {
 	async fn emit(&self);
 }
 pub struct TfTradeEmitter {
-	pub subscribers: Vec<AsyncSender<TfTrades>>,
+	subscribers: Vec<AsyncSender<TfTrades>>,
 	pub tf: u64,
 }
 
