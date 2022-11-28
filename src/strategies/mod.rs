@@ -1,6 +1,6 @@
 pub mod chop_directional;
 
-enum StrategyEdge {
+pub enum StrategyEdge {
 	Long,
 	Short,
 	CloseLong,

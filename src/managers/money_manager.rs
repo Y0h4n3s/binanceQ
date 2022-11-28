@@ -11,9 +11,9 @@ use binance::futures::userstream::FuturesUserStream;
 use binance::savings::Savings;
 use binance::userstream::UserStream;
 use kanal::AsyncReceiver;
-use crate::emitter::{EventEmitter, EventSink};
+use crate::events::{EventEmitter, EventSink};
 use crate::AccessKey;
-use crate::emitter::TfTradeEmitter;
+use crate::events::TfTradeEmitter;
 use crate::helpers::*;
 use crate::helpers::request_with_retries;
 use crate::managers::Manager;
@@ -73,10 +73,16 @@ pub struct MoneyManager {
 	pub symbols: Vec<Symbol>,
 	pub savings: Savings,
 }
-impl EventSink<TfTrades> for MoneyManager {
-	async fn listen(&self, receiver: AsyncReceiver<TfTrades>) {
+#[async_trait]
+impl EventSink<'_, TfTrades> for MoneyManager {
+	fn get_receiver(&self) -> AsyncReceiver<TfTrades> {
 		todo!()
 	}
+	
+	async fn handle_event(&self, event_msg: TfTrades) {
+		todo!()
+	}
+	
 }
 // TODO: add fees to calculations, 2 functions, with_taker_fees and with_maker_fees
 // TODO: implement position sizer for all strategies

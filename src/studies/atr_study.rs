@@ -1,12 +1,13 @@
-use std::thread::JoinHandle;
+use tokio::task::JoinHandle;
 use std::time::{Duration, UNIX_EPOCH};
 
 use binance::api::Binance;
 use binance::futures::market::FuturesMarket;
+use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use mongodb::bson;
 use mongodb::bson::doc;
 use mongodb::options::{FindOptions};
-
+use async_trait::async_trait;
 use crate::{AccessKey, StudyConfig};
 use crate::helpers::to_tf_chunks;
 use crate::mongodb::client::MongoClient;
@@ -20,7 +21,7 @@ pub struct ATRStudy {
 }
 
 
-
+#[async_trait]
 impl Study for ATRStudy {
 	const ID: crate::studies::StudyTypes = crate::studies::StudyTypes::ATRStudy;
 	type Change = (f64, f64);
@@ -34,13 +35,13 @@ impl Study for ATRStudy {
 		
 	}
 	
-	fn log_history(&self) -> JoinHandle<()> {
+	async fn log_history(&self) -> JoinHandle<()> {
 		let timeframes = vec![self.config.tf1, self.config.tf2, self.config.tf3];
 		let symbol = self.config.symbol.clone();
-		std::thread::Builder::new().name("atr_study_log_history".to_string()).spawn(move || {
-			let mongo_client = MongoClient::new();
-			if let Ok(mut past_trades) = mongo_client.trades.find(None, None) {
-				let mut trades = past_trades.try_collect().unwrap_or_else(|_| vec![]);
+		tokio::spawn( async move  {
+			let mongo_client = MongoClient::new().await;
+			if let Ok(mut past_trades) = mongo_client.trades.find(None, None).await {
+				let mut trades = past_trades.try_collect().await.unwrap_or_else(|_| vec![]);
 				
 				for tf in timeframes {
 					let mut atr_values = vec![];
@@ -85,29 +86,29 @@ impl Study for ATRStudy {
 						})
 					}
 					
-					mongo_client.atr.insert_many(atr_entries, None).unwrap();
+					mongo_client.atr.insert_many(atr_entries, None).await;
 				}
 				
 			}
-		}).unwrap()
+		})
 	}
 	
 	
-	fn start_log(&self) -> Vec<JoinHandle<()>> {
+	async fn start_log(&self) -> Vec<JoinHandle<()>> {
 		let mut handles = vec![];
-		handles.push(self.log_history());
+		handles.push(self.log_history().await);
 		for tf in vec![self.config.tf1, self.config.tf2, self.config.tf3] {
 			let symbol = self.config.symbol.clone();
-			handles.push(std::thread::Builder::new().name("atr_study_log".to_string()).spawn( move || {
-				let mongo_client = MongoClient::new();
+			handles.push(tokio::spawn(async move {
+				let mongo_client = MongoClient::new().await;
 				let mut last_time = UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
 				loop {
 					
-					let mut agg_trades = mongo_client.trades.find(doc! {"timestamp": {"$gt": bson::to_bson(&last_time).unwrap()}}, None).unwrap();
-					let mut trades = agg_trades.try_collect().unwrap_or_else(|_| vec![]);
+					let mut agg_trades = mongo_client.trades.find(doc! {"timestamp": {"$gt": bson::to_bson(&last_time).unwrap()}}, None).await.unwrap();
+					let mut trades = agg_trades.try_collect().await.unwrap_or_else(|_| vec![]);
 					let mut last_atrr = mongo_client.atr.find(doc! {"symbol": symbol.clone(), "tf": bson::to_bson(&tf).unwrap()}, Some(FindOptions::builder().sort(doc! {
 						"step_id": -1
-					}).limit(1).build())).unwrap().next();
+					}).limit(1).build())).await.unwrap().next().await;
 					
 					if last_atrr.is_none() || last_atrr.clone().unwrap().is_err() {
 						std::thread::sleep(Duration::from_secs(tf));
@@ -167,13 +168,13 @@ impl Study for ATRStudy {
 						last_time = trades.iter().map(|t| t.timestamp).max().unwrap();
 						
 					}
-				mongo_client.atr.insert_many(atr_entries, None).unwrap();
-				std::thread::sleep(Duration::from_secs(tf));
+				mongo_client.atr.insert_many(atr_entries, None).await;
+				tokio::time::sleep(Duration::from_secs(tf));
 					
 					
 				}
 				
-			}).unwrap())
+			}))
 		}
 		handles
 		

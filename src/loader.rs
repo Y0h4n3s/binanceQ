@@ -1,6 +1,5 @@
-use std::thread::{JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
+use tokio::task::JoinHandle;
 use binance::api::Binance;
 use binance::futures::market::FuturesMarket;
 use binance::futures::model::{AggTrade};
@@ -12,11 +11,11 @@ use crate::AccessKey;
 use crate::mongodb::client::MongoClient;
 use crate::mongodb::models::TradeEntry;
 
-pub fn insert_trade_entries(
+pub async fn insert_trade_entries(
     trades: &Vec<AggTrade>,
     symbol: String,
 ) -> mongodb::error::Result<InsertManyResult> {
-    let client = MongoClient::new();
+    let client = MongoClient::new().await;
     let mut entries = vec![];
     for (i, t) in trades.iter().enumerate() {
         if i == 0 {
@@ -34,10 +33,10 @@ pub fn insert_trade_entries(
         };
         entries.push(entry);
     }
-    client.trades.insert_many(entries, None)
+    client.trades.insert_many(entries, None).await
 }
 
-pub fn load_history(key: AccessKey, symbol: String, fetch_history_span: u64) {
+pub async fn load_history(key: AccessKey, symbol: String, fetch_history_span: u64) {
     let market = FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
 
     let starting_time = SystemTime::now()
@@ -58,21 +57,21 @@ pub fn load_history(key: AccessKey, symbol: String, fetch_history_span: u64) {
                     if trades.len() <= 2 {
                         continue;
                     }
-                    if let Ok(_) = insert_trade_entries(&trades, symbol.clone()) {
+                    if let Ok(_) = insert_trade_entries(&trades, symbol.clone()).await {
                         start_time = trades.last().unwrap().time + 1;
                     }
                 }
             }
         }
 
-        std::thread::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50));
     }
 }
 
 // TODO: use websockets for this
-pub fn start_loader(key: AccessKey, symbol: String, tf1: u64) -> JoinHandle<()> {
+pub async fn start_loader(key: AccessKey, symbol: String, tf1: u64) -> JoinHandle<()> {
     let market = FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
-	std::thread::Builder::new().name("loader".to_string()).spawn(move || {
+	tokio::spawn(async move {
         let mut last_id = None;
         let mut start_time = Some(
             SystemTime::now()
@@ -90,7 +89,7 @@ pub fn start_loader(key: AccessKey, symbol: String, tf1: u64) -> JoinHandle<()> 
                         if trades.len() <= 2 {
                             continue;
                         }
-                        if let Ok(_) = insert_trade_entries(&trades, symbol.clone()) {
+                        if let Ok(_) = insert_trade_entries(&trades, symbol.clone()).await {
                             last_id = Some(trades.last().unwrap().agg_id + 1);
                             // println!("{}: {} {:?}", tf1, first_id.agg_id,  last_id.unwrap());
                         }
@@ -100,7 +99,7 @@ pub fn start_loader(key: AccessKey, symbol: String, tf1: u64) -> JoinHandle<()> 
             if start_time.is_some() {
                 start_time = None;
             }
-            std::thread::sleep(Duration::from_secs(tf1));
+            tokio::time::sleep(Duration::from_secs(tf1));
         }
-    }).unwrap()
+    })
 }

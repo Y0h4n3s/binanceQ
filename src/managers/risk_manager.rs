@@ -16,7 +16,7 @@ use kanal::{AsyncReceiver, AsyncSender};
 use tokio::sync::RwLock;
 
 use crate::AccessKey;
-use crate::emitter::{EventEmitter, EventSink};
+use crate::events::{EventEmitter, EventSink};
 use crate::helpers::request_with_retries;
 use crate::managers::Manager;
 use crate::types::TfTrades;
@@ -26,7 +26,7 @@ pub struct RiskManagerConfig {
     pub max_risk_per_trade: f64,
 }
 
-enum ExecutionCommand {
+pub enum ExecutionCommand {
     OpenLongPosition,
 }
 pub struct RiskManager {
@@ -41,12 +41,16 @@ pub struct RiskManager {
     pub savings: Savings,
     pub command_queue: Arc<RwLock<VecDeque<ExecutionCommand>>>
 }
-
-impl EventSink<TfTrades> for RiskManager {
-    // Act on trade events
-    async fn listen(&self, reciever: AsyncReceiver<TfTrades>)  {
+#[async_trait]
+impl EventSink<'_, TfTrades> for RiskManager {
+    fn get_receiver(&self) -> AsyncReceiver<TfTrades> {
         todo!()
     }
+    // Act on trade events
+    async fn handle_event(&self, event: TfTrades) {
+        todo!()
+    }
+    
 }
 
 

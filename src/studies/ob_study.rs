@@ -1,5 +1,5 @@
-use std::thread::JoinHandle;
-
+use tokio::task::JoinHandle;
+use async_trait::async_trait;
 use binance::api::Binance;
 use binance::futures::market::FuturesMarket;
 
@@ -13,7 +13,7 @@ pub struct ObStudy {
 }
 
 
-
+#[async_trait]
 impl Study for ObStudy {
 	const ID: crate::studies::StudyTypes = crate::studies::StudyTypes::ObStudy;
 	type Change = (f64, f64);
@@ -27,12 +27,12 @@ impl Study for ObStudy {
 
 	}
 
-	fn log_history(&self) -> JoinHandle<()> {
+	async fn log_history(&self) -> JoinHandle<()> {
 		todo!()
 	}
 
 
-	fn start_log(&self) -> Vec<JoinHandle<()>> {
+	async fn start_log(&self) -> Vec<JoinHandle<()>> {
 		let mut handles = vec![];
 		
 		

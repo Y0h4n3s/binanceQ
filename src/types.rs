@@ -2,6 +2,7 @@ use crate::mongodb::models::TradeEntry;
 
 pub type TfTrades = Vec<TfTrade>;
 
+#[derive(Debug, Clone)]
 pub struct TfTrade {
 	pub tf: u64,
 	pub id: u64,

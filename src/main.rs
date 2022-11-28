@@ -19,7 +19,7 @@ mod helpers;
 mod errors;
 mod market_classifier;
 mod loader;
-mod emitter;
+mod events;
 mod types;
 mod strategies;
 
@@ -43,12 +43,15 @@ static KEY: Lazy<AccessKey> = Lazy::new(|| {
 });
 
 
-
 fn main() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async_main());
+}
+async fn async_main() {
     
 
-    let mongo_client = mongodb::client::MongoClient::new();
-    mongo_client.reset_db();
+    let mongo_client = mongodb::client::MongoClient::new().await;
+    mongo_client.reset_db().await;
     let config = StudyConfig {
         symbol: "XRPUSTDT".to_string(),
         tf1: 1,
@@ -58,32 +61,16 @@ fn main() {
     let atr_study = ATRStudy::new(KEY.clone(), &config);
     let choppiness_study = ChoppinessStudy::new(KEY.clone(), &config);
     
-    let rm = RiskManager::new(KEY.clone(), RiskManagerConfig {
-        max_risk_per_trade: 0.05,
-        max_daily_losses: 3
-    });
-    let mm = MoneyManager::new(KEY.clone(), MoneyManagerConfig {
-        constant_size: None,
-        max_position_size: None,
-        min_position_size: None,
-        position_size_f: PositionSizeF::Constant,
-        leverage: 50,
-        initial_quote_balance: 1.15
-    });
-    let mc = MarketClassifer::new(KEY.clone(), MarketClassiferConfig {
-    });
-    
     let mut threads = vec![];
     loader::load_history(KEY.clone(), "DOGEUSDT".to_string(),  12 * 60 * 60 * 1000);
     println!("History loader finished");
     
-    threads.push(loader::start_loader(KEY.clone(), "DOGEUSDT".to_string(), 1));
-    std::iter::Extend::extend(&mut threads, atr_study.start_log());
-    std::iter::Extend::extend(&mut threads, choppiness_study.start_log());
+    threads.push(loader::start_loader(KEY.clone(), "DOGEUSDT".to_string(), 1).await);
+    std::iter::Extend::extend(&mut threads, atr_study.start_log().await);
+    std::iter::Extend::extend(&mut threads, choppiness_study.start_log().await);
     
+    futures::future::join_all(threads).await;
     
-    for thread in threads {
-        thread.join().unwrap();
-    }
+
     
 }

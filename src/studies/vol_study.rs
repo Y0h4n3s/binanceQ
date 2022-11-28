@@ -31,7 +31,7 @@
 //
 //
 // 	fn start_log(&self)  {
-// 		let mongo_client = MongoClient::new();
+// 		let mongo_client = MongoClient::new().await;
 // 		let last_id = None;
 // 		loop {
 // 			let trades_result = self.market.get_historical_trades(&self.config.symbol, last_id, None);

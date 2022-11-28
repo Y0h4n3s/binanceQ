@@ -1,11 +1,12 @@
-use std::thread::JoinHandle;
+use tokio::task::JoinHandle;
 use std::time::{Duration, UNIX_EPOCH};
 
 use binance::api::Binance;
 use binance::futures::market::FuturesMarket;
+use futures::{TryFutureExt, TryStreamExt};
 use mongodb::bson;
 use mongodb::bson::doc;
-
+use async_trait::async_trait;
 use crate::{AccessKey, StudyConfig};
 use crate::helpers::to_tf_chunks;
 use crate::mongodb::client::MongoClient;
@@ -21,7 +22,7 @@ pub struct ChoppinessStudy {
 impl ChoppinessStudy {
 }
 
-
+#[async_trait]
 impl Study for ChoppinessStudy {
 	const ID: crate::studies::StudyTypes = crate::studies::StudyTypes::ChoppinessStudy;
 	type Change = (f64, f64);
@@ -35,13 +36,13 @@ impl Study for ChoppinessStudy {
 		
 	}
 	
-	fn log_history(&self) -> JoinHandle<()> {
+	async fn log_history(&self) -> JoinHandle<()> {
 		let timeframes = vec![self.config.tf1, self.config.tf2, self.config.tf3];
 		let symbol = self.config.symbol.clone();
-		std::thread::Builder::new().name("choppiness_study_log_history".to_string()).spawn(move || {
-			let mongo_client = MongoClient::new();
-			if let Ok(mut past_trades) = mongo_client.trades.find(None, None) {
-				let mut trades = past_trades.try_collect().unwrap_or_else(|_| vec![]);
+		tokio::spawn(async move {
+			let mongo_client = MongoClient::new().await;
+			if let Ok(mut past_trades) = mongo_client.trades.find(None, None).await {
+				let mut trades = past_trades.try_collect().await.unwrap_or_else(|_| vec![]);
 				for tf in timeframes {
 					let mut choppiness_entries: Vec<ChoppinessIndexEntry> = vec![];
 					let tf_trades =  to_tf_chunks(tf, trades.clone());
@@ -106,32 +107,32 @@ impl Study for ChoppinessStudy {
 						continue
 					}
 					
-					mongo_client.choppiness.insert_many(choppiness_entries, None).unwrap();
+					mongo_client.choppiness.insert_many(choppiness_entries, None).await;
 				}
 				
 			}
-		}).unwrap()
+		})
 	}
 	
 	
-	fn start_log(&self) -> Vec<JoinHandle<()>> {
+	async fn start_log(&self) -> Vec<JoinHandle<()>> {
 		let mut handles = vec![];
-		handles.push(self.log_history());
+		handles.push(self.log_history().await);
 		for tf in vec![self.config.tf1, self.config.tf2, self.config.tf3] {
 			let symbol = self.config.symbol.clone();
-			handles.push(std::thread::Builder::new().name("choppiness_study_log".to_string()).spawn( move || {
-				let mongo_client = MongoClient::new();
-				let mut last_time = UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
+			handles.push(tokio::spawn( async move {
+				let mongo_client = MongoClient::new().await;
+				let last_time = UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
 				loop {
 					
-					let mut agg_trades = mongo_client.trades.find(doc! {"timestamp": {"$gt": bson::to_bson(&last_time).unwrap()}}, None).unwrap();
+					let agg_trades = mongo_client.trades.find(doc! {"timestamp": {"$gt": bson::to_bson(&last_time).unwrap()}}, None).await;
 					
 					std::thread::sleep(Duration::from_secs(tf));
 					
 					
 				}
 				
-			}).unwrap())
+			}))
 		}
 		handles
 		

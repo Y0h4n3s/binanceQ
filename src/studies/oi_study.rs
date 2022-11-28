@@ -1,8 +1,8 @@
-use std::thread::JoinHandle;
+use tokio::task::JoinHandle;
 
 use binance::api::Binance;
 use binance::futures::market::FuturesMarket;
-
+use async_trait::async_trait;
 use crate::{AccessKey, StudyConfig};
 use crate::studies::{Sentiment, Study};
 
@@ -14,7 +14,7 @@ pub struct OiStudy {
 
 
 
-
+#[async_trait]
 impl Study for OiStudy {
 	const ID: crate::studies::StudyTypes = crate::studies::StudyTypes::OiStudy;
 	type Change = f64;
@@ -28,15 +28,15 @@ impl Study for OiStudy {
 		
 	}
 	
-	fn log_history(&self) -> JoinHandle<()> {
+	async fn log_history(&self) -> JoinHandle<()> {
 		todo!("OiStudy::log_history()")
 	}
-	fn start_log(&self) -> Vec<JoinHandle<()>> {
+	async fn start_log(&self) -> Vec<JoinHandle<()>> {
 		let mut handles = vec![];
 		
 		// for tf in vec![self.config.tf1, self.config.tf2, self.config.tf3] {
 		// 	handles.push(std::thread::spawn(move || {
-		// 		let mongo_client = MongoClient::new();
+		// 		let mongo_client = MongoClient::new().await;
 		// 		loop {
 		// 			let oi_result = self.market.open_interest(&self.config.symbol);
 		// 			if let Ok(oi) = oi_result {

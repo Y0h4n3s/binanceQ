@@ -1,7 +1,7 @@
-use std::thread::JoinHandle;
+use tokio::task::JoinHandle;
 
 use serde::{Deserialize, Serialize};
-
+use async_trait::async_trait;
 use crate::AccessKey;
 
 pub mod oi_study;
@@ -51,12 +51,14 @@ impl From<&StudyConfig> for StudyConfig {
 		}
 	}
 }
+
+#[async_trait]
 pub trait Study {
 	const ID: StudyTypes;
 	type Change;
 	fn new(key: AccessKey, config: &StudyConfig) -> Self;
-	fn log_history(&self) -> JoinHandle<()>;
-	fn start_log(&self) -> Vec<JoinHandle<()>>;
+	async fn log_history(&self) -> JoinHandle<()>;
+	async fn start_log(&self) -> Vec<JoinHandle<()>>;
 	fn get_change(&self) -> Self::Change;
 	fn sentiment(&self) -> Sentiment;
 	fn sentiment_with_one<T>(&self, other: T) -> Sentiment
