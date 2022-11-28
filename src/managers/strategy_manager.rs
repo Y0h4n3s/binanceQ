@@ -7,7 +7,7 @@ use crate::strategies::{SignalGenerator, Strategy, StrategyEdge};
 
 
 
-pub struct StrategyManager<S: SignalGenerator> {
+pub struct StrategyManager<S: SignalGenerator + EventEmitter<StrategyEdge>> {
 	global_config: GlobalConfig,
 	pub open_long_strategies: Vec<S>,
 	pub open_short_strategies: Vec<S>,
@@ -32,7 +32,7 @@ impl EventEmitter<ExecutionCommand> for StrategyManager<T> {
 			s.subscribe(self.open_long_signals.0.clone());
 			signal_workers.push(s.emit());
 			signal_workers.push(async move {
-				while let Some(signal) = self.open_long_signals.1.recv().await {
+				while let Some(_) = self.open_long_signals.1.recv().await {
 					for sender in command_subscribers {
 						sender.send(ExecutionCommand::OpenLongPosition).await;
 					}
@@ -44,7 +44,7 @@ impl EventEmitter<ExecutionCommand> for StrategyManager<T> {
 			s.subscribe(self.open_short_signals.0.clone());
 			signal_workers.push(s.emit());
 			signal_workers.push(async move {
-				while let Some(signal) = self.open_short_signals.1.recv().await {
+				while let Some(_) = self.open_short_signals.1.recv().await {
 					for sender in command_subscribers {
 						sender.send(ExecutionCommand::OpenShortPosition).await;
 					}
@@ -55,7 +55,7 @@ impl EventEmitter<ExecutionCommand> for StrategyManager<T> {
 			s.subscribe(self.close_long_signals.0.clone());
 			signal_workers.push(s.emit());
 			signal_workers.push(async move {
-				while let Some(signal) = self.close_long_signals.1.recv().await {
+				while let Some(_) = self.close_long_signals.1.recv().await {
 					for sender in command_subscribers {
 						sender.send(ExecutionCommand::CloseLongPosition).await;
 					}
@@ -66,7 +66,7 @@ impl EventEmitter<ExecutionCommand> for StrategyManager<T> {
 			s.subscribe(self.close_short-signals.0.clone());
 			signal_workers.push(s.emit());
 			signal_workers.push(async move {
-				while let Some(signal) = self.close_short_signals.1.recv().await {
+				while let Some(_) = self.close_short_signals.1.recv().await {
 					for sender in command_subscribers {
 						sender.send(ExecutionCommand::CloseShortPosition).await;
 					}
