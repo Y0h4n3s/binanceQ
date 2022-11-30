@@ -77,8 +77,8 @@ pub struct MoneyManager {
 }
 #[async_trait]
 impl EventSink<TfTrades> for MoneyManager {
-	fn get_receiver(&self) -> AsyncReceiver<TfTrades> {
-		todo!()
+	fn get_receiver(&self) -> &AsyncReceiver<TfTrades> {
+		&self.tf_trades
 	}
 	
 	async fn handle_event(&self, event: TfTrades) {

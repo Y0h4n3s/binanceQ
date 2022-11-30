@@ -17,56 +17,23 @@ pub struct OiStudy {
 #[async_trait]
 impl Study for OiStudy {
 	const ID: crate::studies::StudyTypes = crate::studies::StudyTypes::OiStudy;
-	type Change = f64;
-	
-	fn new(key: AccessKey, config: &StudyConfig) -> Self {
-		OiStudy {
-			market: FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone())),
-			key: key.clone(),
-			config: StudyConfig::from(config)
-		}
-		
-	}
+	type Entry = f64;
 	
 	async fn log_history(&self) -> JoinHandle<()> {
 		todo!("OiStudy::log_history()")
 	}
-	async fn start_log(&self) -> Vec<JoinHandle<()>> {
-		let mut handles = vec![];
-		
-		// for tf in vec![self.config.tf1, self.config.tf2, self.config.tf3] {
-		// 	handles.push(std::thread::spawn(move || {
-		// 		let mongo_client = MongoClient::new().await;
-		// 		loop {
-		// 			let oi_result = self.market.open_interest(&self.config.symbol);
-		// 			if let Ok(oi) = oi_result {
-		// 				mongo_client.open_interest.update_one(doc! {
-		// 			"timestamp": bson::to_bson(&std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap(),
-		// 		}, doc! {
-		// 			"$set": {
-		// 				"value": oi.open_interest,
-		// 				"timestamp": bson::to_bson(&std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()).unwrap(),
-		// 			}
-		// 		},                             Some(UpdateOptions::builder().upsert(true).build())
-		// 				).unwrap();
-		// 				println!("OI: {:?}", oi);
-		// 			}
-		// 			std::thread::sleep(Duration::from_secs(tf));
-		//
-		//
-		// 		}
-		// 	}))
-		// }
-		return handles;
-	}
 	
-	fn get_change(&self) -> Self::Change {
+	fn get_entry_for_tf(&self, tf: u64) -> Self::Entry {
+		todo!()
+	}
+	fn get_n_entries_for_tf(&self, n: u64, tf: u64) -> Vec<Self::Entry> {
 		todo!()
 	}
 	
 	fn sentiment(&self) -> Sentiment {
 		Sentiment::Neutral
 	}
+	
 	fn sentiment_with_one<T>(&self, other: T) -> Sentiment where T: Study {
 		
 		todo!()

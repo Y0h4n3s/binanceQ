@@ -26,6 +26,7 @@ pub struct RiskManagerConfig {
     pub max_risk_per_trade: f64,
 }
 
+#[derive(Clone)]
 pub enum ExecutionCommand {
     OpenLongPosition,
     OpenShortPosition,
@@ -48,24 +49,23 @@ pub struct RiskManager {
 }
 #[async_trait]
 impl EventSink<ExecutionCommand> for RiskManager {
-    fn get_receiver(&self) -> AsyncReceiver<ExecutionCommand> {
-        self.execution_commands()
+    fn get_receiver(&self) -> &AsyncReceiver<ExecutionCommand> {
+        &self.execution_commands
     }
     
     async fn handle_event(&self, event_msg: ExecutionCommand) {
         match event_msg {
             ExecutionCommand::OpenLongPosition => {
-                let mut command_queue = self.command_queue.write().await;
-                command_queue.push_back(ExecutionCommand::OpenLongPosition);
             }
+            _ => {}
         }
     }
 }
 
 #[async_trait]
 impl EventSink<TfTrades> for RiskManager {
-    fn get_receiver(&self) -> AsyncReceiver<TfTrades> {
-        self.tf_trades()
+    fn get_receiver(&self) -> &AsyncReceiver<TfTrades> {
+        &self.tf_trades
     }
     // Act on trade events for risk manager
     async fn handle_event(&self, event: TfTrades) {

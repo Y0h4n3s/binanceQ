@@ -3,23 +3,20 @@ use kanal::AsyncSender;
 use crate::{ATRStudy, ChoppinessStudy, EventEmitter, GlobalConfig, Study};
 use crate::strategies::{SignalGenerator, StrategyEdge};
 use async_trait::async_trait;
+use rand::Rng;
 
 #[derive(Clone)]
-pub struct ChopDirectionalStrategy {
+pub struct RandomStrategy {
 	subscribers: Vec<AsyncSender<StrategyEdge>>,
-	atr_study: Box<ATRStudy>,
-	choppiness_study: Box<ChoppinessStudy>,
 	global_config: GlobalConfig,
 	signal_interval: u64,
 	
 }
 
-impl ChopDirectionalStrategy {
-	pub fn new(global_config: GlobalConfig, atr_study: Box<ATRStudy>, choppiness_study: Box<ChoppinessStudy>) -> Self {
+impl RandomStrategy {
+	pub fn new(global_config: GlobalConfig) -> Self {
 		Self {
 			subscribers: vec![],
-			atr_study: atr_study,
-			choppiness_study: choppiness_study,
 			global_config,
 			signal_interval: 2
 		}
@@ -27,7 +24,7 @@ impl ChopDirectionalStrategy {
 }
 
 #[async_trait]
-impl EventEmitter<StrategyEdge> for ChopDirectionalStrategy {
+impl EventEmitter<StrategyEdge> for RandomStrategy {
 	fn subscribe(&mut self, sender: AsyncSender<StrategyEdge>) {
 		self.subscribers.push(sender)
 	}
@@ -41,15 +38,12 @@ impl EventEmitter<StrategyEdge> for ChopDirectionalStrategy {
 	}
 }
 #[async_trait]
-impl SignalGenerator for ChopDirectionalStrategy {
+impl SignalGenerator for RandomStrategy {
 	
 	async fn get_signal(&self) -> StrategyEdge {
-		// calculate here
-		let chop = self.choppiness_study.get_entry_for_tf(self.global_config.tf3);
-		if chop.value > 60.0 && chop.delta > 20.0 {
-			StrategyEdge::Long
-		} else {
-			StrategyEdge::Neutral
-		}
+		let choices = [StrategyEdge::Long, StrategyEdge::Short, StrategyEdge::CloseLong, StrategyEdge::CloseShort, StrategyEdge::Neutral];
+		let mut rng = rand::thread_rng();
+		
+		return choices[rng.gen_range(0..5)]
 	}
 }

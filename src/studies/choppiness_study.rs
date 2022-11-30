@@ -7,35 +7,41 @@ use futures::{TryFutureExt, TryStreamExt};
 use mongodb::bson;
 use mongodb::bson::doc;
 use async_trait::async_trait;
-use crate::{AccessKey, StudyConfig};
+use kanal::AsyncReceiver;
+use crate::{AccessKey, EventSink, GlobalConfig, StudyConfig};
 use crate::helpers::to_tf_chunks;
 use crate::mongodb::client::MongoClient;
 use crate::mongodb::models::{ChoppinessIndexEntry};
 use crate::studies::{RANGE, Sentiment, Study};
+use crate::types::TfTrades;
 
+#[derive(Clone)]
 pub struct ChoppinessStudy {
 	market: FuturesMarket,
-	key: AccessKey,
+	global_config: GlobalConfig,
 	config: StudyConfig,
+	tf_trades: AsyncReceiver<TfTrades>,
+	
 }
 
 impl ChoppinessStudy {
+	pub fn new(global_config: GlobalConfig, config: &StudyConfig, tf_trades: AsyncReceiver<TfTrades>) -> Self {
+		Self {
+			market: FuturesMarket::new(Some(global_config.key.api_key.clone()), Some(global_config.key.secret_key.clone())),
+			global_config,
+			config: StudyConfig::from(config),
+			tf_trades
+		}
+		
+	}
 }
 
 #[async_trait]
 impl Study for ChoppinessStudy {
 	const ID: crate::studies::StudyTypes = crate::studies::StudyTypes::ChoppinessStudy;
-	type Change = (f64, f64);
+	type Entry = ChoppinessIndexEntry;
 	
-	fn new(key: AccessKey, config: &StudyConfig) -> Self {
-		Self {
-			market: FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone())),
-			key: key.clone(),
-			config: StudyConfig::from(config),
-		}
-		
-	}
-	
+
 	async fn log_history(&self) -> JoinHandle<()> {
 		let timeframes = vec![self.config.tf1, self.config.tf2, self.config.tf3];
 		let symbol = self.config.symbol.clone();
@@ -115,34 +121,6 @@ impl Study for ChoppinessStudy {
 	}
 	
 	
-	async fn start_log(&self) -> Vec<JoinHandle<()>> {
-		let mut handles = vec![];
-		handles.push(self.log_history().await);
-		for tf in vec![self.config.tf1, self.config.tf2, self.config.tf3] {
-			let symbol = self.config.symbol.clone();
-			handles.push(tokio::spawn( async move {
-				let mongo_client = MongoClient::new().await;
-				let last_time = UNIX_EPOCH.elapsed().unwrap().as_millis() as u64;
-				loop {
-					
-					let agg_trades = mongo_client.trades.find(doc! {"timestamp": {"$gt": bson::to_bson(&last_time).unwrap()}}, None).await;
-					
-					std::thread::sleep(Duration::from_secs(tf));
-					
-					
-				}
-				
-			}))
-		}
-		handles
-		
-		
-	}
-	
-	fn get_change(&self) -> Self::Change {
-		todo!()
-	}
-	
 	fn sentiment(&self) -> Sentiment {
 		Sentiment::Neutral
 	}
@@ -154,6 +132,24 @@ impl Study for ChoppinessStudy {
 	fn sentiment_with_two<T, U>(&self, other1: T, other2: U) -> Sentiment where T: Study, U: Study {
 		todo!()
 	}
+	
+	fn get_entry_for_tf(&self, tf: u64) -> Self::Entry {
+		todo!()
+	}
+	
+	fn get_n_entries_for_tf(&self, n: u64, tf: u64) -> Vec<Self::Entry> {
+		todo!()
+	}
 }
 
+#[async_trait]
+impl EventSink<TfTrades> for ChoppinessStudy {
+	fn get_receiver(&self) -> &AsyncReceiver<TfTrades> {
+		&self.tf_trades
+	}
+	
+	async fn handle_event(&self, event_msg: TfTrades) {
+		todo!()
+	}
+}
 

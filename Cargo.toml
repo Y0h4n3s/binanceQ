@@ -21,4 +21,5 @@ error-chain = "0.12.4"
 ndarray = "0.15.6"
 image = "0.24.5"
 kanal = "0.1.0-pre7"
+rand = "0.8.5"
 mongodb = {version = "2.1.0", features = ["tokio-runtime"]}

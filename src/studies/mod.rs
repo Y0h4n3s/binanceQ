@@ -33,7 +33,7 @@ pub enum StudyTypes {
 pub enum IndicatorTypes {
 	ATR,
 }
-
+#[derive(Clone)]
 pub struct StudyConfig {
 	pub symbol: String,
 	pub tf1: u64,
@@ -55,11 +55,10 @@ impl From<&StudyConfig> for StudyConfig {
 #[async_trait]
 pub trait Study {
 	const ID: StudyTypes;
-	type Change;
-	fn new(key: AccessKey, config: &StudyConfig) -> Self;
+	type Entry;
 	async fn log_history(&self) -> JoinHandle<()>;
-	async fn start_log(&self) -> Vec<JoinHandle<()>>;
-	fn get_change(&self) -> Self::Change;
+	fn get_entry_for_tf(&self, tf: u64) -> Self::Entry;
+	fn get_n_entries_for_tf(&self, n: u64, tf: u64) -> Vec<Self::Entry>;
 	fn sentiment(&self) -> Sentiment;
 	fn sentiment_with_one<T>(&self, other: T) -> Sentiment
 		where T: Study;

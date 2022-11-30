@@ -3,16 +3,17 @@ use kanal::{AsyncReceiver, AsyncSender};
 use crate::events::EventEmitter;
 use crate::GlobalConfig;
 use crate::managers::risk_manager::ExecutionCommand;
-use crate::strategies::{SignalGenerator, Strategy, StrategyEdge};
+use crate::strategies::{SignalGenerator, StrategyEdge};
+use async_trait::async_trait;
+use futures::StreamExt;
 
 
-
-pub struct StrategyManager<S: SignalGenerator + EventEmitter<StrategyEdge>> {
+pub struct StrategyManager {
 	global_config: GlobalConfig,
-	pub open_long_strategies: Vec<S>,
-	pub open_short_strategies: Vec<S>,
-	pub close_long_strategies: Vec<S>,
-	pub close_short_strategies: Vec<S>,
+	pub open_long_strategies: Vec<Box<dyn EventEmitter<StrategyEdge> >>,
+	pub open_short_strategies: Vec<Box<dyn EventEmitter<StrategyEdge>>>,
+	pub close_long_strategies: Vec<Box<dyn EventEmitter<StrategyEdge>>>,
+	pub close_short_strategies: Vec<Box<dyn EventEmitter<StrategyEdge> >>,
 	pub command_subscribers: Vec<AsyncSender<ExecutionCommand>>,
 	open_long_signals: (AsyncSender<StrategyEdge>, AsyncReceiver<StrategyEdge>),
 	open_short_signals: (AsyncSender<StrategyEdge>, AsyncReceiver<StrategyEdge>),
@@ -20,64 +21,50 @@ pub struct StrategyManager<S: SignalGenerator + EventEmitter<StrategyEdge>> {
 	close_short_signals: (AsyncSender<StrategyEdge>, AsyncReceiver<StrategyEdge>)
 }
 
-impl EventEmitter<ExecutionCommand> for StrategyManager<T> {
+
+
+#[async_trait]
+impl EventEmitter<ExecutionCommand> for StrategyManager {
 	fn subscribe(&mut self, sender: AsyncSender<ExecutionCommand>) {
 		self.command_subscribers.push(sender);
 	}
 	
 	async fn emit(&self) {
 		let command_subscribers = self.command_subscribers.clone();
-		let mut signal_workers = vec![];
+		let mut futures = FuturesUnordered::new();
 		for mut s in self.open_long_strategies {
 			s.subscribe(self.open_long_signals.0.clone());
-			signal_workers.push(s.emit());
-			signal_workers.push(async move {
-				while let Some(_) = self.open_long_signals.1.recv().await {
-					for sender in command_subscribers {
-						sender.send(ExecutionCommand::OpenLongPosition).await;
-					}
-				}
-			});
-			
+			let r = &self.open_long_signals.1;
+			futures.push(s.emit());
+			futures.push(Box::pin(StrategyManager::recv_commands(r, command_subscribers.first().unwrap().clone(), ExecutionCommand::OpenLongPosition)));
 		}
 		for mut s in self.open_short_strategies {
 			s.subscribe(self.open_short_signals.0.clone());
-			signal_workers.push(s.emit());
-			signal_workers.push(async move {
-				while let Some(_) = self.open_short_signals.1.recv().await {
-					for sender in command_subscribers {
-						sender.send(ExecutionCommand::OpenShortPosition).await;
-					}
-				}
-			});
+			let r = &self.open_short_signals.1;
+			futures.push(s.emit());
+			futures.push(Box::pin(StrategyManager::recv_commands(r, command_subscribers.first().unwrap().clone(), ExecutionCommand::OpenShortPosition)));
+			
 		}
 		for mut s in self.close_long_strategies {
 			s.subscribe(self.close_long_signals.0.clone());
-			signal_workers.push(s.emit());
-			signal_workers.push(async move {
-				while let Some(_) = self.close_long_signals.1.recv().await {
-					for sender in command_subscribers {
-						sender.send(ExecutionCommand::CloseLongPosition).await;
-					}
-				}
-			});
+			futures.push(s.emit());
+			let r = &self.close_long_signals.1;
+			futures.push(Box::pin(StrategyManager::recv_commands(r, command_subscribers.first().unwrap().clone(), ExecutionCommand::CloseLongPosition)));
+			
 		}
 		for mut s in self.close_short_strategies {
-			s.subscribe(self.close_short-signals.0.clone());
-			signal_workers.push(s.emit());
-			signal_workers.push(async move {
-				while let Some(_) = self.close_short_signals.1.recv().await {
-					for sender in command_subscribers {
-						sender.send(ExecutionCommand::CloseShortPosition).await;
-					}
-				}
-			});
+			s.subscribe(self.close_short_signals.0.clone());
+			let r = &self.close_short_signals.1;
+			futures.push(s.emit());
+			futures.push(Box::pin(StrategyManager::recv_commands(r, command_subscribers.first().unwrap().clone(), ExecutionCommand::CloseShortPosition)));
+			
 		}
-		futures::future::join_all(signal_workers).await;
+		while let done = futures.next() {
+		}
 	}
 }
 
-impl <S: Strategy> StrategyManager<S> {
+impl StrategyManager {
 	pub fn new(global_config: GlobalConfig) -> Self {
 		Self {
 			global_config,
@@ -93,42 +80,48 @@ impl <S: Strategy> StrategyManager<S> {
 		}
 	}
 	
-	pub fn with_long_entry_strategy<S: Strategy>(mut self, strategy: S) -> Self {
-		self.open_long_strategies.push(strategy);
+	async fn recv_commands(r: &AsyncReceiver<StrategyEdge>, s: AsyncSender<ExecutionCommand>, command_type: ExecutionCommand) {
+		while let Ok(_) = r.recv().await {
+				s.send(command_type.clone()).await;
+		}
+	}
+	
+	pub fn with_long_entry_strategy<S: EventEmitter<StrategyEdge> + Clone + Send>(mut self, strategy: S) -> Self {
+		self.open_long_strategies.push(Box::new(strategy));
 		self
 	}
 	
-	pub fn with_short_entry_strategy<S: Strategy>(mut self, strategy: S) -> Self {
-		self.open_short_strategies.push(strategy);
+	pub fn with_short_entry_strategy<S: EventEmitter<StrategyEdge> + Clone + Send> (mut self, strategy: S) -> Self {
+		self.open_short_strategies.push(Box::new(strategy));
 		self
 	}
 	
-	pub fn with_long_exit_strategy<S: Strategy>(mut self, strategy: S) -> Self {
-		self.close_long_strategies.push(strategy);
+	pub fn with_long_exit_strategy<S: EventEmitter<StrategyEdge> + Clone + Send> (mut self, strategy: S) -> Self {
+		self.close_long_strategies.push(Box::new(strategy));
 		self
 	}
 	
-	pub fn with_short_exit_strategy<S: Strategy>(mut self, strategy: S) -> Self {
-		self.close_short_strategies.push(strategy);
+	pub fn with_short_exit_strategy<S: EventEmitter<StrategyEdge> + Clone + Send> (mut self, strategy: S) -> Self {
+		self.close_short_strategies.push(Box::new(strategy));
 		self
 	}
 	
-	pub fn with_entry_strategy<S: Strategy>(mut self, strategy: S) -> Self {
-		self.open_long_strategies.push(strategy.clone());
-		self.open_short_strategies.push(strategy);
+	pub fn with_entry_strategy<S: EventEmitter<StrategyEdge> + Clone + Send> (mut self, strategy: S) -> Self {
+		self.open_long_strategies.push(Box::new(strategy.clone()));
+		self.open_short_strategies.push(Box::new(strategy));
 		self
 	}
 	
-	pub fn with_exit_strategy<S: Strategy>(mut self, strategy: S) -> Self {
-		self.close_long_strategies.push(strategy.clone());
-		self.close_short_strategies.push(strategy);
+	pub fn with_exit_strategy<S: EventEmitter<StrategyEdge> + Clone > (mut self, strategy: S) -> Self {
+		self.close_long_strategies.push(Box::new(strategy.clone()));
+		self.close_short_strategies.push(Box::new(strategy));
 		self
 	}
-	pub fn with_strategy<S: Strategy>(mut self, strategy: S) -> Self {
-		self.open_long_strategies.push(strategy.clone());
-		self.open_short_strategies.push(strategy.clone());
-		self.close_long_strategies.push(strategy.clone());
-		self.close_short_strategies.push(strategy);
+	pub fn with_strategy<S: EventEmitter<StrategyEdge> + Clone + Send> (mut self, strategy: S) -> Self {
+		self.open_long_strategies.push(Box::new(strategy.clone()));
+		self.open_short_strategies.push(Box::new(strategy.clone()));
+		self.close_long_strategies.push(Box::new(strategy.clone()));
+		self.close_short_strategies.push(Box::new(strategy));
 		self
 	}
 }

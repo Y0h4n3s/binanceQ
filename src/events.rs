@@ -12,7 +12,7 @@ use crate::types::{TfTrade, TfTrades};
 
 #[async_trait]
 pub trait EventSink<EventType: Send> {
-	fn get_receiver(&self) -> AsyncReceiver<EventType>;
+	fn get_receiver(&self) -> &AsyncReceiver<EventType>;
 	async fn handle_event(&self, event_msg: EventType);
 	async fn listen(&self) {
 		let receiver = self.get_receiver();
