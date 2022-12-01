@@ -1,81 +1,97 @@
+use std::future::Future;
+use std::time::Duration;
 use kanal::{AsyncReceiver, AsyncSender};
 use crate::mongodb::models::TradeEntry;
 use async_trait::async_trait;
 use futures::TryStreamExt;
 use mongodb::bson::doc;
 use mongodb::Cursor;
+use tokio::task::JoinHandle;
+use async_std::sync::Arc;
 use crate::helpers::to_tf_chunks;
 use crate::mongodb::client::MongoClient;
 use crate::types::{TfTrade, TfTrades};
 
-
+use tokio::sync::{Barrier, RwLock};
 
 #[async_trait]
-pub trait EventSink<EventType: Send> {
-	fn get_receiver(&self) -> &AsyncReceiver<EventType>;
-	async fn handle_event(&self, event_msg: EventType);
-	async fn listen(&self) {
+pub trait EventSink<EventType: Send + 'static> {
+	fn get_receiver(&self) -> Arc<AsyncReceiver<EventType>>;
+	async fn handle_event(&self, event_msg: EventType) -> JoinHandle<()>;
+	async fn listen(&self) -> JoinHandle<()> {
 		let receiver = self.get_receiver();
 		while let Ok(event) = receiver.recv().await {
 			self.handle_event(event).await;
 		}
+		tokio::spawn(async move {
+			tokio::time::sleep(Duration::from_secs(1)).await;
+		})
+		
 	}
 }
 
 #[async_trait]
-pub trait EventEmitter<EventType> {
-	fn subscribe(&mut self, sender: AsyncSender<EventType>);
-	async fn emit(&self);
+pub trait EventEmitter<'a, EventType: Send + Sync + 'static> {
+	fn get_subscribers(&self) -> Arc<RwLock<Vec<AsyncSender<EventType>>>>;
+	async fn subscribe(&mut self, sender: AsyncSender<EventType>) {
+		let subs = self.get_subscribers();
+		subs.write().await.push(sender);
+	}
+	async fn emit(&self) -> JoinHandle<()>;
 }
 pub struct TfTradeEmitter {
-	subscribers: Vec<AsyncSender<TfTrades>>,
+	subscribers: Arc<RwLock<Vec<AsyncSender<TfTrades>>>>,
 	pub tf: u64,
 }
 
 impl TfTradeEmitter {
 	pub fn new(tf: u64) -> Self {
 		Self {
-			subscribers: Vec::new(),
+			subscribers: Arc::new(RwLock::new(Vec::new())),
 			tf,
 		}
 	}
 }
 #[async_trait]
-impl EventEmitter<TfTrades> for TfTradeEmitter {
-
-	fn subscribe(&mut self, sender: AsyncSender<TfTrades>) {
-		self.subscribers.push(sender);
+impl EventEmitter<'_, TfTrades> for TfTradeEmitter {
+	fn get_subscribers(&self) -> Arc<RwLock<Vec<AsyncSender<TfTrades>>>> {
+		self.subscribers.clone()
 	}
 	
-	async fn emit(&self) {
+	async fn emit(&self) -> JoinHandle<()>{
 		let mongo_client = MongoClient::new().await;
 		let mut last_timestamp = 0_u64;
 		let mut last_id = 1_u64;
-		loop {
-			if let Ok(t) = mongo_client.trades.find(doc! {
+		let tf = self.tf;
+		let subscribers = self.subscribers.clone();
+		tokio::spawn(async move {
+			loop {
+				if let Ok(t) = mongo_client.trades.find(doc! {
 				"timestamp": {
 					"$gt": mongodb::bson::to_bson(&last_timestamp).unwrap()
 				}
 			}, None).await {
-				let trades = t.try_collect().await.unwrap_or_else(|_| vec![]);
-				let tf_trades = to_tf_chunks(self.tf, trades).iter().map(|t| {
-					let mut trades = t.clone();
-					let trade = TfTrade {
-						id: last_id,
-						tf: self.tf,
-						trades,
-					};
-					last_id += 1;
-					trade
-				}).collect::<Vec<_>>();
-				if tf_trades.len() > 0 {
-					last_timestamp = tf_trades.last().unwrap().trades.last().unwrap().timestamp;
-					futures::future::join_all(self.subscribers.iter().map(|s| s.send(tf_trades.clone())).collect::<Vec<_>>());
+					let trades = t.try_collect().await.unwrap_or_else(|_| vec![]);
+					let tf_trades = to_tf_chunks(tf, trades).iter().map(|t| {
+						let mut trades = t.clone();
+						let trade = TfTrade {
+							id: last_id,
+							tf: tf,
+							trades,
+						};
+						last_id += 1;
+						trade
+					}).collect::<Vec<_>>();
+					if tf_trades.len() > 0 {
+						last_timestamp = tf_trades.last().unwrap().trades.last().unwrap().timestamp;
+						futures::future::join_all(subscribers.read().await.iter().map(|s| s.send(tf_trades.clone())).collect::<Vec<_>>());
+					}
 				}
+				tokio::time::sleep(std::time::Duration::from_secs(tf)).await;
+				
 			}
-			tokio::time::sleep(std::time::Duration::from_secs(self.tf)).await;
-			
-		}
+		})
+		
 	}
 }
 

@@ -14,13 +14,13 @@ use crate::mongodb::client::MongoClient;
 use crate::mongodb::models::{ChoppinessIndexEntry};
 use crate::studies::{RANGE, Sentiment, Study};
 use crate::types::TfTrades;
-
+use async_std::sync::Arc;
 #[derive(Clone)]
 pub struct ChoppinessStudy {
 	market: FuturesMarket,
 	global_config: GlobalConfig,
 	config: StudyConfig,
-	tf_trades: AsyncReceiver<TfTrades>,
+	tf_trades: Arc<AsyncReceiver<TfTrades>>,
 	
 }
 
@@ -30,7 +30,7 @@ impl ChoppinessStudy {
 			market: FuturesMarket::new(Some(global_config.key.api_key.clone()), Some(global_config.key.secret_key.clone())),
 			global_config,
 			config: StudyConfig::from(config),
-			tf_trades
+			tf_trades: Arc::new(tf_trades)
 		}
 		
 	}
@@ -144,11 +144,11 @@ impl Study for ChoppinessStudy {
 
 #[async_trait]
 impl EventSink<TfTrades> for ChoppinessStudy {
-	fn get_receiver(&self) -> &AsyncReceiver<TfTrades> {
-		&self.tf_trades
+	fn get_receiver(&self) -> Arc<AsyncReceiver<TfTrades>> {
+		self.tf_trades.clone()
 	}
 	
-	async fn handle_event(&self, event_msg: TfTrades) {
+	async fn handle_event(&self, event_msg: TfTrades) -> JoinHandle<()> {
 		todo!()
 	}
 }

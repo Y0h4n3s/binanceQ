@@ -1,5 +1,4 @@
 #![feature(iterator_try_collect)]
-
 use std::{env};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -80,12 +79,11 @@ async fn async_main() {
         leverage: 0,
         initial_quote_balance: 0.0
     }, trades_channel.1.clone());
-    EventSink::<TfTrades>::listen(&risk_manager).await;
-    let mut futures = FuturesUnordered::new();
+    let mut tf_trades = vec![];
     for tf in vec![global_config.tf1, global_config.tf2, global_config.tf3] {
-        let mut tf_trades = TfTradeEmitter::new(tf);
-        tf_trades.subscribe(trades_channel.0.clone());
-        futures.push(tf_trades.emit())
+        let mut tf_trade = TfTradeEmitter::new(tf);
+        tf_trade.subscribe(trades_channel.0.clone());
+        tf_trades.push(tf_trade);
     }
     
     
@@ -99,11 +97,11 @@ async fn async_main() {
     };
     let atr_study = ATRStudy::new(global_config.clone(), &config, trades_channel.1.clone());
     let choppiness_study = ChoppinessStudy::new(global_config.clone(), &config, trades_channel.1.clone());
-    let chop_strategy = ChopDirectionalStrategy::new(global_config.clone(), Box::new(atr_study), Box::new(choppiness_study));
+    let chop_strategy = ChopDirectionalStrategy::new(global_config.clone(), Box::new(atr_study.clone()), Box::new(choppiness_study));
     let rand_strategy = RandomStrategy::new(global_config.clone());
     let mut strategy_manager = StrategyManager::new(global_config.clone())
-          .with_strategy(chop_strategy)
-          .with_exit_strategy(rand_strategy);
+          .with_strategy(chop_strategy).await
+          .with_exit_strategy(rand_strategy).await;
     
 
     strategy_manager.subscribe(execution_commands_channel.0.clone());
@@ -113,12 +111,11 @@ async fn async_main() {
 
     
     threads.push(loader::start_loader(KEY.clone(), "DOGEUSDT".to_string(), 1).await);
-    futures.push( atr_study.listen());
-    futures.push( choppiness_study.listen());
+    threads.push(atr_study.listen().await);
+    // futures.push( &choppiness_study.listen());
     
-    let d = listen_futures.next();
+    
     futures::future::join_all(threads).await;
-    
 
     
 }

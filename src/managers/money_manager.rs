@@ -1,4 +1,5 @@
 use std::cmp::{ Ordering};
+use async_std::sync::Arc;
 
 use async_trait::async_trait;
 use binance::account::Account;
@@ -11,6 +12,7 @@ use binance::futures::userstream::FuturesUserStream;
 use binance::savings::Savings;
 use binance::userstream::UserStream;
 use kanal::{AsyncReceiver, AsyncSender};
+use tokio::task::JoinHandle;
 use crate::events::{EventEmitter, EventSink};
 use crate::AccessKey;
 use crate::events::TfTradeEmitter;
@@ -63,7 +65,7 @@ impl ReturnHistory {
 }
 
 pub struct MoneyManager {
-	pub global_config: GlobalConfig,
+	pub global_config: Arc<GlobalConfig>,
 	pub config: MoneyManagerConfig,
 	pub futures_account: FuturesAccount,
 	pub account: Account,
@@ -73,29 +75,33 @@ pub struct MoneyManager {
 	pub futures_user_stream: FuturesUserStream,
 	pub symbols: Vec<Symbol>,
 	pub savings: Savings,
-	tf_trades: AsyncReceiver<TfTrades>,
+	tf_trades: Arc<AsyncReceiver<TfTrades>>,
 }
 #[async_trait]
 impl EventSink<TfTrades> for MoneyManager {
-	fn get_receiver(&self) -> &AsyncReceiver<TfTrades> {
-		&self.tf_trades
+	fn get_receiver(&self) -> Arc<AsyncReceiver<TfTrades>> {
+		self.tf_trades.clone()
 	}
 	
-	async fn handle_event(&self, event: TfTrades) {
-		for trade in event {
-			match trade.tf {
-				x if x == self.global_config.tf1 => {
-				
+	async fn handle_event(&self, event: TfTrades) -> JoinHandle<()> {
+		let global_config = self.global_config.clone();
+		tokio::spawn(async move {
+			for trade in event {
+				match trade.tf {
+					x if x == global_config.tf1 => {
+					
+					}
+					x if x == global_config.tf2 => {
+					
+					}
+					x if x == global_config.tf3 => {
+					
+					}
+					_ => {}
 				}
-				x if x == self.global_config.tf2 => {
-				
-				}
-				x if x == self.global_config.tf3 => {
-				
-				}
-				_ => {}
 			}
-		}
+		})
+		
 	}
 	
 }
@@ -121,7 +127,7 @@ impl MoneyManager {
 			  };
 		
 		MoneyManager {
-			global_config,
+			global_config: Arc::new(global_config),
 			config,
 			futures_account,
 			binance,
@@ -131,7 +137,7 @@ impl MoneyManager {
 			futures_user_stream,
 			symbols,
 			savings,
-			tf_trades
+			tf_trades: Arc::new(tf_trades),
 		}
 	}
 	pub async fn passes_position_size(&self) -> bool {

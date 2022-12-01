@@ -1,3 +1,4 @@
+use async_std::sync::Arc;
 use std::time::Duration;
 use kanal::AsyncSender;
 use crate::{ATRStudy, ChoppinessStudy, EventEmitter, GlobalConfig, Study};
@@ -7,7 +8,7 @@ use rand::Rng;
 
 #[derive(Clone)]
 pub struct RandomStrategy {
-	subscribers: Vec<AsyncSender<StrategyEdge>>,
+	subscribers: Arc<Vec<AsyncSender<StrategyEdge>>>,
 	global_config: GlobalConfig,
 	signal_interval: u64,
 	
@@ -16,25 +17,10 @@ pub struct RandomStrategy {
 impl RandomStrategy {
 	pub fn new(global_config: GlobalConfig) -> Self {
 		Self {
-			subscribers: vec![],
+			subscribers: Arc::new(vec![]),
 			global_config,
 			signal_interval: 2
 		}
-	}
-}
-
-#[async_trait]
-impl EventEmitter<StrategyEdge> for RandomStrategy {
-	fn subscribe(&mut self, sender: AsyncSender<StrategyEdge>) {
-		self.subscribers.push(sender)
-	}
-	
-	async fn emit(&self) {
-		let signal = self.get_signal().await;
-		for subscriber in self.subscribers {
-			subscriber.send(signal).await;
-		}
-		tokio::time::sleep(Duration::from_secs(self.signal_interval)).await;
 	}
 }
 #[async_trait]

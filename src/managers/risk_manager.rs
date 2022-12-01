@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::Arc;
+use async_std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -14,6 +14,7 @@ use binance::savings::Savings;
 use binance::userstream::UserStream;
 use kanal::{AsyncReceiver, AsyncSender};
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 
 use crate::{AccessKey, GlobalConfig};
 use crate::events::{EventEmitter, EventSink};
@@ -34,7 +35,7 @@ pub enum ExecutionCommand {
     CloseShortPosition,
 }
 pub struct RiskManager {
-    pub global_config: GlobalConfig,
+    pub global_config: Arc<GlobalConfig>,
     pub config: RiskManagerConfig,
     pub futures_account: FuturesAccount,
     pub account: Account,
@@ -44,45 +45,61 @@ pub struct RiskManager {
     pub futures_user_stream: FuturesUserStream,
     pub symbols: Vec<Symbol>,
     pub savings: Savings,
-    tf_trades: AsyncReceiver<TfTrades>,
-    execution_commands: AsyncReceiver<ExecutionCommand>,
+    tf_trades: Arc<AsyncReceiver<TfTrades>>,
+    execution_commands: Arc<AsyncReceiver<ExecutionCommand>>,
 }
 #[async_trait]
 impl EventSink<ExecutionCommand> for RiskManager {
-    fn get_receiver(&self) -> &AsyncReceiver<ExecutionCommand> {
-        &self.execution_commands
+    fn get_receiver(&self) -> Arc<AsyncReceiver<ExecutionCommand>> {
+        self.execution_commands.clone()
     }
     
-    async fn handle_event(&self, event_msg: ExecutionCommand) {
-        match event_msg {
-            ExecutionCommand::OpenLongPosition => {
+    async fn handle_event(&self, event_msg: ExecutionCommand) -> JoinHandle<()>{
+        tokio::spawn(async move {
+            match event_msg {
+                ExecutionCommand::OpenLongPosition => {
+                    println!("OpenLongPosition");
+                }
+                ExecutionCommand::OpenShortPosition => {
+                    println!("OpenShortPosition");
+                }
+                ExecutionCommand::CloseLongPosition => {
+                    println!("CloseLongPosition");
+                }
+                ExecutionCommand::CloseShortPosition => {
+                    println!("CloseShortPosition");
+                }
             }
-            _ => {}
-        }
+        })
+
     }
 }
 
 #[async_trait]
-impl EventSink<TfTrades> for RiskManager {
-    fn get_receiver(&self) -> &AsyncReceiver<TfTrades> {
-        &self.tf_trades
+impl EventSink< TfTrades> for RiskManager {
+    fn get_receiver(&self) -> Arc<AsyncReceiver<TfTrades>> {
+        self.tf_trades.clone()
     }
     // Act on trade events for risk manager
-    async fn handle_event(&self, event: TfTrades) {
-        for trade in event {
-            match trade.tf {
-                x if x == self.global_config.tf1 => {
+    async fn handle_event(&self, event: TfTrades) -> JoinHandle<()>{
+        let global_config = self.global_config.clone();
+        tokio::spawn(async move {
+            for trade in event {
+                match trade.tf {
+                    x if x == global_config.tf1 => {
                 
+                    }
+                    x if x == global_config.tf2 => {
+                
+                    }
+                    x if x == global_config.tf3 => {
+                
+                    }
+                    _ => {}
                 }
-                x if x == self.global_config.tf2 => {
-        
-                }
-                x if x == self.global_config.tf3 => {
-        
-                }
-                _ => {}
             }
-        }
+        })
+        
     }
     
 }
@@ -108,7 +125,7 @@ impl RiskManager {
             };
 
         RiskManager {
-            global_config,
+            global_config: Arc::new(global_config),
             config,
             futures_account,
             binance,
@@ -118,8 +135,8 @@ impl RiskManager {
             futures_user_stream,
             symbols,
             savings,
-            tf_trades,
-            execution_commands,
+            tf_trades: Arc::new(tf_trades),
+            execution_commands: Arc::new(execution_commands),
         }
     }
     pub async fn passes_max_daily_loss(&self, start_time: u128) -> bool {
