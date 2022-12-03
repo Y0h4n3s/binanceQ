@@ -50,7 +50,7 @@ pub async fn load_history(key: AccessKey, symbol: String, fetch_history_span: u6
             break;
         }
         let trades_result =
-            market.get_agg_trades(symbol.clone(), None, Some(start_time), None, Some(1000));
+            market.get_agg_trades(symbol.clone(), None, Some(start_time), None, Some(1000)).await;
         if let Ok(t) = trades_result {
             match t {
                 AllAggTrades(trades) => {
@@ -82,7 +82,7 @@ pub async fn start_loader(key: AccessKey, symbol: String, tf1: u64) -> JoinHandl
         );
         loop {
             let trades_result =
-                market.get_agg_trades(&symbol, last_id, start_time, None, Some(1000));
+                market.get_agg_trades(&symbol, last_id, start_time, None, Some(1000)).await;
             if let Ok(t) = trades_result {
                 match t {
                     AllAggTrades(trades) => {

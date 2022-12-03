@@ -1,4 +1,5 @@
 #![feature(iterator_try_collect)]
+#![feature(async_closure)]
 use std::{env};
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
@@ -8,7 +9,6 @@ use crate::events::{EventEmitter, EventSink, TfTradeEmitter};
 use crate::managers::money_manager::{MoneyManager, MoneyManagerConfig, PositionSizeF};
 use crate::managers::risk_manager::{RiskManager, RiskManagerConfig};
 use crate::managers::strategy_manager::StrategyManager;
-use crate::market_classifier::{MarketClassifer, MarketClassiferConfig};
 use crate::strategies::chop_directional::ChopDirectionalStrategy;
 use crate::strategies::random_strategy::RandomStrategy;
 use crate::studies::{atr_study::ATRStudy, Study, StudyConfig};
@@ -50,6 +50,7 @@ static KEY: Lazy<AccessKey> = Lazy::new(|| {
 
 fn main() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
+    tracing_subscriber::fmt::try_init().unwrap();
     runtime.block_on(async_main());
 }
 async fn async_main() {
@@ -57,6 +58,7 @@ async fn async_main() {
 
     let mongo_client = mongodb::client::MongoClient::new().await;
     mongo_client.reset_db().await;
+    
     let global_config = GlobalConfig {
         tf1: 1,
         tf2: 50,

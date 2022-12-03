@@ -106,12 +106,15 @@ impl EventSink< TfTrades> for RiskManager {
 
 //TODO: create a binance account struct that holds all the binance account info
 impl RiskManager {
-    pub fn new(global_config: GlobalConfig, config: RiskManagerConfig, tf_trades: AsyncReceiver<TfTrades>, execution_commands: AsyncReceiver<ExecutionCommand>) -> Self {
+    pub async fn new(global_config: GlobalConfig, config: RiskManagerConfig, tf_trades: AsyncReceiver<TfTrades>, execution_commands: AsyncReceiver<ExecutionCommand>) -> Self {
         let key = &global_config.key;
+    
         let futures_account =
             FuturesAccount::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
+    
         let binance = FuturesGeneral::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
         let account = Account::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
+    
         let user_stream = UserStream::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
         let futures_user_stream =
             FuturesUserStream::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
@@ -119,7 +122,7 @@ impl RiskManager {
             FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
         let savings = Savings::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
         let symbols =
-            match request_with_retries::<ExchangeInformation>(5, || binance.exchange_info()) {
+            match binance.exchange_info().await {
                 Ok(e) => e.symbols,
                 Err(e) => panic!("Error getting symbols: {}", e),
             };
@@ -138,33 +141,6 @@ impl RiskManager {
             tf_trades: Arc::new(tf_trades),
             execution_commands: Arc::new(execution_commands),
         }
-    }
-    pub async fn passes_max_daily_loss(&self, start_time: u128) -> bool {
-        let tasks = self
-            .execute_over_futures_symbols(move |symbol, futures_market, futures_account| loop {
-                let t_trades_result =
-                    futures_account.get_user_trades(symbol.symbol.clone(), None, None, None, None);
-                if let Ok(trades) = t_trades_result {
-                    let todays_trades = trades
-                        .iter()
-                        .filter(|t| {
-                            t.time as u128 > start_time
-                        })
-                        .collect::<Vec<_>>();
-                    return todays_trades
-                        .into_iter()
-                        .filter(|t| t.realized_pnl < 0.0)
-                        .count();
-                } else {
-                }
-            })
-            .await;
-        let results = futures::future::join_all(tasks)
-            .await
-            .into_iter()
-            .reduce(|a, b| a + b)
-            .unwrap();
-        return results < self.config.max_daily_losses;
     }
 
 
@@ -198,16 +174,7 @@ impl Manager for RiskManager {
               .as_millis();
       
         loop {
-            if !self.passes_max_daily_loss(start_time).await {
-                println!("Does not pass max daily loss");
-                self.close_all_positions().await;
-                self.end_day().await;
-                std::thread::sleep(std::time::Duration::from_secs(10000));
-    
-            } else {
-                println!("Be patient, what is the probability price goes to x before y?");
-            }
-        
+           
         
             std::thread::sleep(std::time::Duration::from_secs(45));
         }

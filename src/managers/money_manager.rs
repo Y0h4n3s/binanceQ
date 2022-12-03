@@ -1,4 +1,5 @@
 use std::cmp::{ Ordering};
+use std::future::Future;
 use async_std::sync::Arc;
 
 use async_trait::async_trait;
@@ -108,7 +109,7 @@ impl EventSink<TfTrades> for MoneyManager {
 // TODO: add fees to calculations, 2 functions, with_taker_fees and with_maker_fees
 // TODO: implement position sizer for all strategies
 impl MoneyManager {
-	pub fn new(global_config: GlobalConfig, config: MoneyManagerConfig, tf_trades: AsyncReceiver<TfTrades>) -> Self {
+	pub async fn new(global_config: GlobalConfig, config: MoneyManagerConfig, tf_trades: AsyncReceiver<TfTrades>) -> Self {
 		let key = global_config.key.clone();
 		let futures_account =
 			  FuturesAccount::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
@@ -121,7 +122,7 @@ impl MoneyManager {
 			  FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
 		let savings = Savings::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
 		let symbols =
-			  match request_with_retries::<ExchangeInformation>(5, || binance.exchange_info()) {
+			  match binance.exchange_info().await {
 				  Ok(e) => e.symbols,
 				  Err(e) => panic!("Error getting symbols: {}", e),
 			  };
@@ -140,20 +141,7 @@ impl MoneyManager {
 			tf_trades: Arc::new(tf_trades),
 		}
 	}
-	pub async fn passes_position_size(&self) -> bool {
-		let tasks = self
-			  .execute_over_futures_symbols(|symbol, futures_market, futures_account| loop {
-				  return 1
-			  })
-			  .await;
-		let results = futures::future::join_all(tasks)
-			  .await
-			  .into_iter()
-			  .reduce(|a, b| a + b)
-			  .unwrap();
-		return results < 1;
-	}
-	
+
 	pub fn returns_for_constant(&self, history: &mut Vec<(TradeHistory, Symbol)>) -> ReturnHistory {
 		let mut returns = ReturnHistory {
 			f: PositionSizeF::Constant,
@@ -304,38 +292,21 @@ impl MoneyManager {
 	}
 	
 	pub async fn get_trade_history_with_symbol(&self) -> Vec<(TradeHistory, Symbol)> {
-		let tasks = self
-			  .execute_over_futures_symbols::<Vec<(TradeHistory, Symbol)>>(|symbol, futures_market, futures_account| loop {
-				  if symbol.quote_asset.ne("USDT") && symbol.quote_asset.ne("BUSD") {
-					  return vec![]
-				  }
-				  if let Ok(past_trades_for_symbol) = futures_account.get_user_trades(symbol.symbol.clone(), None, None, None, None) {
-					  return past_trades_for_symbol.into_iter().map(|t| (t, symbol.clone())).collect()
-				  }
-			  })
-			  .await;
-		let mut results = futures::future::join_all(tasks)
-			  .await
-			  .into_iter()
-			  .flatten()
-			  
-			  .collect::<Vec<(TradeHistory, Symbol)>>();
-		results.sort_by(|a, b| a.0.time.cmp(&b.0.time));
-		results
+		vec![]
 		
 	}
 	
 	pub async fn print_next_size(&self) {
 		let history = self.get_trade_history_with_symbol().await;
-		println!("Next size Constant: {}", self.get_next_size_for_f(PositionSizeF::Constant, &history));
-		println!("Next size Max Levered: {}", self.get_next_size_for_f(PositionSizeF::MaxLevered, &history));
-		println!("Next size Larry: {}", self.get_next_size_for_f(PositionSizeF::Larry, &history));
+		println!("Next size Constant: {}", self.get_next_size_for_f(PositionSizeF::Constant, &history).await);
+		println!("Next size Max Levered: {}", self.get_next_size_for_f(PositionSizeF::MaxLevered, &history).await);
+		println!("Next size Larry: {}", self.get_next_size_for_f(PositionSizeF::Larry, &history).await);
 	}
-	pub fn get_next_size_for_f(&self, f: PositionSizeF, history: &Vec<(TradeHistory, Symbol)>) -> f64 {
+	pub async fn get_next_size_for_f(&self, f: PositionSizeF, history: &Vec<(TradeHistory, Symbol)>) -> f64 {
 		if history.len() <= 0 {
 			return 0.0
 		}
-		if let Ok(balance) = self.futures_account.account_balance() {
+		if let Ok(balance) = self.futures_account.account_balance().await {
 			let usdt_balance = balance.iter().find(|b| b.asset.eq("USDT")).unwrap();
 			match f {
 				PositionSizeF::Constant => {
@@ -390,12 +361,6 @@ impl Manager for MoneyManager {
 	async fn manage(&self) {
 		self.print_next_size().await;
 		loop {
-			if !self.passes_position_size().await {
-				println!("Does not pass max daily loss");
-				self.close_all_positions().await;
-				self.end_day().await
-			}
-			
 			
 			std::thread::sleep(std::time::Duration::from_secs(15));
 		}
