@@ -2,11 +2,7 @@ use tokio::task::JoinHandle;
 
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
-use crate::AccessKey;
 
-pub mod oi_study;
-pub mod ob_study;
-pub mod vol_study;
 pub mod atr_study;
 pub mod choppiness_study;
 
@@ -24,18 +20,13 @@ pub enum Side {
 	Ask,
 }
 pub enum StudyTypes {
-	OiStudy,
-	ObStudy,
-	VolStudy,
 	ATRStudy,
 	ChoppinessStudy,
-}
-pub enum IndicatorTypes {
-	ATR,
 }
 #[derive(Clone)]
 pub struct StudyConfig {
 	pub symbol: String,
+	pub range: u16,
 	pub tf1: u64,
 	pub tf2: u64,
 	pub tf3: u64,
@@ -45,6 +36,7 @@ impl From<&StudyConfig> for StudyConfig {
 	fn from(config: &StudyConfig) -> Self {
 		StudyConfig {
 			symbol: config.symbol.clone(),
+			range: config.range,
 			tf1: config.tf1,
 			tf2: config.tf2,
 			tf3: config.tf3,
@@ -68,10 +60,3 @@ pub trait Study {
 	
 }
 
-
-
-pub trait Indicator {
-	const ID: IndicatorTypes;
-	type ValueType;
-	fn get_value(&self) -> Self::ValueType;
-}

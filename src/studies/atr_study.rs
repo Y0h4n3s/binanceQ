@@ -1,15 +1,14 @@
 use tokio::task::JoinHandle;
-use std::time::{Duration, UNIX_EPOCH};
+use anyhow::anyhow;
 use async_std::sync::Arc;
-use binance::api::Binance;
-use binance::futures::market::FuturesMarket;
-use futures::{StreamExt, TryFutureExt, TryStreamExt};
-use mongodb::bson;
-use mongodb::bson::doc;
+use futures::{StreamExt, TryStreamExt};
 use mongodb::options::{FindOptions};
 use async_trait::async_trait;
 use kanal::AsyncReceiver;
-use crate::{AccessKey, EventSink, GlobalConfig, StudyConfig};
+use mongodb::bson;
+use mongodb::bson::doc;
+use crate::{EventSink, StudyConfig};
+use crate::events::EventResult;
 use crate::helpers::to_tf_chunks;
 use crate::mongodb::client::MongoClient;
 use crate::mongodb::models::ATREntry;
@@ -17,8 +16,6 @@ use crate::studies::{RANGE, Sentiment, Study};
 use crate::types::TfTrades;
 #[derive(Clone)]
 pub struct ATRStudy {
-	market: FuturesMarket,
-	global_config: GlobalConfig,
 	config: Arc<StudyConfig>,
 	tf_trades: Arc<AsyncReceiver<TfTrades>>,
 	
@@ -26,10 +23,8 @@ pub struct ATRStudy {
 
 
 impl ATRStudy {
-	pub fn new(global_config: GlobalConfig, config: &StudyConfig, tf_trades: AsyncReceiver<TfTrades>) -> Self {
+	pub fn new(config: &StudyConfig, tf_trades: AsyncReceiver<TfTrades>) -> Self {
 		Self {
-			market: FuturesMarket::new(Some(global_config.key.api_key.clone()), Some(global_config.key.secret_key.clone())),
-			global_config,
 			config: Arc::new(StudyConfig::from(config)),
 			tf_trades: Arc::new(tf_trades),
 		}
@@ -49,8 +44,8 @@ impl Study for ATRStudy {
 		let symbol = self.config.symbol.clone();
 		tokio::spawn( async move  {
 			let mongo_client = MongoClient::new().await;
-			if let Ok(mut past_trades) = mongo_client.trades.find(None, None).await {
-				let mut trades = past_trades.try_collect().await.unwrap_or_else(|_| vec![]);
+			if let Ok(past_trades) = mongo_client.trades.find(None, None).await {
+				let trades = past_trades.try_collect().await.unwrap_or_else(|_| vec![]);
 				
 				for tf in timeframes {
 					let mut atr_values = vec![];
@@ -95,31 +90,30 @@ impl Study for ATRStudy {
 						})
 					}
 					
-					mongo_client.atr.insert_many(atr_entries, None).await;
+					mongo_client.atr.insert_many(atr_entries, None).await.unwrap();
 				}
 				
 			}
 		})
 	}
 	
-	fn get_entry_for_tf(&self, tf: u64) -> Self::Entry {
+	fn get_entry_for_tf(&self, _tf: u64) -> Self::Entry {
 		todo!()
 	}
 	
-	fn get_n_entries_for_tf(&self, n: u64, tf: u64) -> Vec<Self::Entry> {
+	fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Vec<Self::Entry> {
 		todo!()
 	}
 	
 	fn sentiment(&self) -> Sentiment {
 		Sentiment::Neutral
 	}
-	fn sentiment_with_one<T>(&self, other: T) -> Sentiment where T: Study {
-		
-		todo!()
+	fn sentiment_with_one<T>(&self, _other: T) -> Sentiment where T: Study {
+		Sentiment::Bullish
 	}
 	
-	fn sentiment_with_two<T, U>(&self, other1: T, other2: U) -> Sentiment where T: Study, U: Study {
-		todo!()
+	fn sentiment_with_two<T, U>(&self, _other1: T, _other2: U) -> Sentiment where T: Study, U: Study {
+		Sentiment::VeryBearish
 	}
 }
 
@@ -129,17 +123,17 @@ impl EventSink<TfTrades> for ATRStudy {
 		self.tf_trades.clone()
 	}
 	
-	async fn handle_event(&self, event_msg: TfTrades) -> JoinHandle<()> {
+	async fn handle_event(&self, event_msg: TfTrades) -> EventResult {
 		let symbol = self.config.clone().symbol.clone();
-		tokio::spawn(async move {
+		Ok(tokio::spawn(async move {
 			let mongo_client = MongoClient::new().await;
-			for mut trades in event_msg {
-				let mut last_atrr = mongo_client.atr.find(doc! {"symbol": symbol.clone(), "tf": bson::to_bson(&trades.tf).unwrap()}, Some(FindOptions::builder().sort(doc! {
+			for trades in event_msg {
+				let last_atrr = mongo_client.atr.find(doc! {"symbol": symbol.clone(), "tf": bson::to_bson(&trades.tf).unwrap()}, Some(FindOptions::builder().sort(doc! {
 			"step_id": -1
 		}).limit(1).build())).await.unwrap().next().await;
 				
 				if last_atrr.is_none() || last_atrr.clone().unwrap().is_err() {
-					return;
+					return Err(anyhow!("No last atrr found"));
 				}
 				let last_atr = last_atrr.unwrap().unwrap();
 				let mut atr_values = vec![];
@@ -186,9 +180,10 @@ impl EventSink<TfTrades> for ATRStudy {
 						close_time: last_atr.close_time + trades.tf * 1000,
 					});
 				}
-				mongo_client.atr.insert_many(atr_entries, None).await;
+				mongo_client.atr.insert_many(atr_entries, None).await?;
 			}
-		})
+			Ok(())
+		}))
 		
 	}
 }

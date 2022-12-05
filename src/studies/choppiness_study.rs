@@ -1,34 +1,28 @@
 use tokio::task::JoinHandle;
-use std::time::{Duration, UNIX_EPOCH};
 
-use binance::api::Binance;
-use binance::futures::market::FuturesMarket;
-use futures::{TryFutureExt, TryStreamExt};
-use mongodb::bson;
-use mongodb::bson::doc;
+use futures::{ TryStreamExt};
 use async_trait::async_trait;
 use kanal::AsyncReceiver;
-use crate::{AccessKey, EventSink, GlobalConfig, StudyConfig};
+use crate::{EventSink, StudyConfig};
 use crate::helpers::to_tf_chunks;
 use crate::mongodb::client::MongoClient;
 use crate::mongodb::models::{ChoppinessIndexEntry};
 use crate::studies::{RANGE, Sentiment, Study};
 use crate::types::TfTrades;
 use async_std::sync::Arc;
+use crate::events::EventResult;
+use crate::studies::Sentiment::Bearish;
+
 #[derive(Clone)]
 pub struct ChoppinessStudy {
-	market: FuturesMarket,
-	global_config: GlobalConfig,
 	config: StudyConfig,
 	tf_trades: Arc<AsyncReceiver<TfTrades>>,
 	
 }
 
 impl ChoppinessStudy {
-	pub fn new(global_config: GlobalConfig, config: &StudyConfig, tf_trades: AsyncReceiver<TfTrades>) -> Self {
+	pub fn new(config: &StudyConfig, tf_trades: AsyncReceiver<TfTrades>) -> Self {
 		Self {
-			market: FuturesMarket::new(Some(global_config.key.api_key.clone()), Some(global_config.key.secret_key.clone())),
-			global_config,
 			config: StudyConfig::from(config),
 			tf_trades: Arc::new(tf_trades)
 		}
@@ -47,8 +41,8 @@ impl Study for ChoppinessStudy {
 		let symbol = self.config.symbol.clone();
 		tokio::spawn(async move {
 			let mongo_client = MongoClient::new().await;
-			if let Ok(mut past_trades) = mongo_client.trades.find(None, None).await {
-				let mut trades = past_trades.try_collect().await.unwrap_or_else(|_| vec![]);
+			if let Ok(past_trades) = mongo_client.trades.find(None, None).await {
+				let trades = past_trades.try_collect().await.unwrap_or_else(|_| vec![]);
 				for tf in timeframes {
 					let mut choppiness_entries: Vec<ChoppinessIndexEntry> = vec![];
 					let tf_trades =  to_tf_chunks(tf, trades.clone());
@@ -113,7 +107,7 @@ impl Study for ChoppinessStudy {
 						continue
 					}
 					
-					mongo_client.choppiness.insert_many(choppiness_entries, None).await;
+					mongo_client.choppiness.insert_many(choppiness_entries, None).await.unwrap();
 				}
 				
 			}
@@ -124,20 +118,20 @@ impl Study for ChoppinessStudy {
 	fn sentiment(&self) -> Sentiment {
 		Sentiment::Neutral
 	}
-	fn sentiment_with_one<T>(&self, other: T) -> Sentiment where T: Study {
+	fn sentiment_with_one<T>(&self, _other: T) -> Sentiment where T: Study {
 		
+		Bearish
+	}
+	
+	fn sentiment_with_two<T, U>(&self, _other1: T, _other2: U) -> Sentiment where T: Study, U: Study {
+		Sentiment::VeryBullish
+	}
+	
+	fn get_entry_for_tf(&self, _tf: u64) -> Self::Entry {
 		todo!()
 	}
 	
-	fn sentiment_with_two<T, U>(&self, other1: T, other2: U) -> Sentiment where T: Study, U: Study {
-		todo!()
-	}
-	
-	fn get_entry_for_tf(&self, tf: u64) -> Self::Entry {
-		todo!()
-	}
-	
-	fn get_n_entries_for_tf(&self, n: u64, tf: u64) -> Vec<Self::Entry> {
+	fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Vec<Self::Entry> {
 		todo!()
 	}
 }
@@ -148,7 +142,7 @@ impl EventSink<TfTrades> for ChoppinessStudy {
 		self.tf_trades.clone()
 	}
 	
-	async fn handle_event(&self, event_msg: TfTrades) -> JoinHandle<()> {
+	async fn handle_event(&self, _event_msg: TfTrades) -> EventResult {
 		todo!()
 	}
 }

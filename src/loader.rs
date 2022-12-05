@@ -4,7 +4,6 @@ use binance::api::Binance;
 use binance::futures::market::FuturesMarket;
 use binance::futures::model::{AggTrade};
 use binance::futures::model::AggTrades::AllAggTrades;
-use binance::futures::websockets::FuturesWebSockets;
 use mongodb::results::InsertManyResult;
 
 use crate::AccessKey;
@@ -64,7 +63,7 @@ pub async fn load_history(key: AccessKey, symbol: String, fetch_history_span: u6
             }
         }
 
-        tokio::time::sleep(Duration::from_millis(50));
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -99,7 +98,7 @@ pub async fn start_loader(key: AccessKey, symbol: String, tf1: u64) -> JoinHandl
             if start_time.is_some() {
                 start_time = None;
             }
-            tokio::time::sleep(Duration::from_secs(tf1));
+            tokio::time::sleep(Duration::from_secs(tf1)).await;
         }
     })
 }

@@ -14,11 +14,10 @@ use binance::savings::Savings;
 use binance::userstream::UserStream;
 use kanal::{AsyncReceiver, AsyncSender};
 use tokio::task::JoinHandle;
-use crate::events::{EventEmitter, EventSink};
+use crate::events::{EventEmitter, EventResult, EventSink};
 use crate::AccessKey;
 use crate::events::TfTradeEmitter;
 use crate::helpers::*;
-use crate::helpers::request_with_retries;
 use crate::managers::Manager;
 use crate::types::{GlobalConfig, TfTrades};
 
@@ -84,9 +83,9 @@ impl EventSink<TfTrades> for MoneyManager {
 		self.tf_trades.clone()
 	}
 	
-	async fn handle_event(&self, event: TfTrades) -> JoinHandle<()> {
+	async fn handle_event(&self, event: TfTrades) -> EventResult {
 		let global_config = self.global_config.clone();
-		tokio::spawn(async move {
+		Ok(tokio::spawn(async move {
 			for trade in event {
 				match trade.tf {
 					x if x == global_config.tf1 => {
@@ -101,7 +100,8 @@ impl EventSink<TfTrades> for MoneyManager {
 					_ => {}
 				}
 			}
-		})
+			Ok(())
+		}))
 		
 	}
 	

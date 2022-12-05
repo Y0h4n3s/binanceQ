@@ -17,8 +17,7 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
 use crate::{AccessKey, GlobalConfig};
-use crate::events::{EventEmitter, EventSink};
-use crate::helpers::request_with_retries;
+use crate::events::{EventEmitter, EventResult, EventSink};
 use crate::managers::Manager;
 use crate::types::TfTrades;
 
@@ -54,8 +53,8 @@ impl EventSink<ExecutionCommand> for RiskManager {
         self.execution_commands.clone()
     }
     
-    async fn handle_event(&self, event_msg: ExecutionCommand) -> JoinHandle<()>{
-        tokio::spawn(async move {
+    async fn handle_event(&self, event_msg: ExecutionCommand) -> EventResult {
+        Ok(tokio::spawn(async move {
             match event_msg {
                 ExecutionCommand::OpenLongPosition => {
                     println!("OpenLongPosition");
@@ -70,7 +69,8 @@ impl EventSink<ExecutionCommand> for RiskManager {
                     println!("CloseShortPosition");
                 }
             }
-        })
+            Ok(())
+        }))
 
     }
 }
@@ -81,9 +81,9 @@ impl EventSink< TfTrades> for RiskManager {
         self.tf_trades.clone()
     }
     // Act on trade events for risk manager
-    async fn handle_event(&self, event: TfTrades) -> JoinHandle<()>{
+    async fn handle_event(&self, event: TfTrades) -> EventResult {
         let global_config = self.global_config.clone();
-        tokio::spawn(async move {
+        Ok(tokio::spawn(async move {
             for trade in event {
                 match trade.tf {
                     x if x == global_config.tf1 => {
@@ -98,7 +98,8 @@ impl EventSink< TfTrades> for RiskManager {
                     _ => {}
                 }
             }
-        })
+            Ok(())
+        }))
         
     }
     

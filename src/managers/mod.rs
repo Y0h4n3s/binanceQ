@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use std::future::Future;
 use async_std::task::JoinHandle;
 use async_trait::async_trait;

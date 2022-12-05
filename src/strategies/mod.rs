@@ -1,6 +1,3 @@
-use kanal::{AsyncReceiver, AsyncSender};
-use crate::events::{EventEmitter, EventSink};
-use crate::types::TfTrades;
 use async_trait::async_trait;
 pub mod chop_directional;
 pub mod random_strategy;

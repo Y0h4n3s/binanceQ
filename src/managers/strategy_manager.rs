@@ -33,7 +33,7 @@ impl EventEmitter<'_, ExecutionCommand> for StrategyManager {
 		self.command_subscribers.clone()
 	}
 	
-	async fn emit(&self) -> JoinHandle<()>{
+	async fn emit(&self) -> anyhow::Result<JoinHandle<()>>{
 		let mut futures:Vec<BoxFuture<'_, ()>> = vec![];
 		let oss = self.open_short_strategies.read().await.iter().map(|s| dyn_clone::clone_box(&**s)).collect::<Vec<_>>();
 		let ols = self.open_long_strategies.read().await.iter().map(|s| dyn_clone::clone_box(&**s)).collect::<Vec<_>>();
@@ -44,9 +44,9 @@ impl EventEmitter<'_, ExecutionCommand> for StrategyManager {
 		futures.push(Box::pin(StrategyManager::emit_open_long_signals(ols, subscriber.clone())));
 		futures.push(Box::pin(StrategyManager::emit_close_long_signals(cls, subscriber.clone())));
 		futures.push(Box::pin(StrategyManager::emit_close_short_signals(css, subscriber.clone())));
-		tokio::spawn(async move {
+		Ok(tokio::spawn(async move {
 			futures::future::join_all(futures).await;
-		})
+		}))
 	}
 }
 
