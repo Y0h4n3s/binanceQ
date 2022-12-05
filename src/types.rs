@@ -1,4 +1,4 @@
-use crate::mongodb::models::TradeEntry;
+use crate::mongodb::models::{TfTrade};
 
 pub type TfTrades = Vec<TfTrade>;
 
@@ -10,8 +10,8 @@ pub struct Candle {
 	pub close: f64,
 	pub volume: f64,
 }
-impl From<TfTrade> for Candle {
-	fn from(tf_trade: TfTrade) -> Self {
+impl From<&TfTrade> for Candle {
+	fn from(tf_trade: &TfTrade) -> Self {
 		if tf_trade.trades.len() == 0 {
 			return Candle::default()
 		}
@@ -25,12 +25,7 @@ impl From<TfTrade> for Candle {
 	}
 }
 
-#[derive(Debug, Clone)]
-pub struct TfTrade {
-	pub tf: u64,
-	pub id: u64,
-	pub trades: Vec<TradeEntry>,
-}
+
 #[derive(Debug, Clone)]
 pub struct AccessKey {
 	pub(crate) api_key: String,

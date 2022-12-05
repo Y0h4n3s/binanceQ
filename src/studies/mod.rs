@@ -1,7 +1,6 @@
 use tokio::task::JoinHandle;
 
 use serde::{Deserialize, Serialize};
-use async_trait::async_trait;
 
 pub mod atr_study;
 pub mod choppiness_study;
@@ -44,11 +43,10 @@ impl From<&StudyConfig> for StudyConfig {
 	}
 }
 
-#[async_trait]
 pub trait Study {
 	const ID: StudyTypes;
 	type Entry;
-	async fn log_history(&self) -> JoinHandle<()>;
+	fn log_history(&self) -> JoinHandle<()>;
 	fn get_entry_for_tf(&self, tf: u64) -> Self::Entry;
 	fn get_n_entries_for_tf(&self, n: u64, tf: u64) -> Vec<Self::Entry>;
 	fn sentiment(&self) -> Sentiment;

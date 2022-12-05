@@ -41,6 +41,13 @@ pub struct TradeEntry {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TfTrade {
+    pub tf: u64,
+    pub id: u64,
+    pub trades: Vec<TradeEntry>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct OpenInterestEntry {
     pub timestamp: u64,
     pub value: f64,

@@ -13,7 +13,7 @@ use crate::helpers::to_tf_chunks;
 use crate::mongodb::client::MongoClient;
 use crate::mongodb::models::ATREntry;
 use crate::studies::{RANGE, Sentiment, Study};
-use crate::types::TfTrades;
+use crate::types::{Candle, TfTrades};
 #[derive(Clone)]
 pub struct ATRStudy {
 	config: Arc<StudyConfig>,
@@ -32,16 +32,16 @@ impl ATRStudy {
 	}
 }
 
-#[async_trait]
 impl Study for ATRStudy {
 	const ID: crate::studies::StudyTypes = crate::studies::StudyTypes::ATRStudy;
 	type Entry = ATREntry;
 	
 	
 	
-	async fn log_history(&self) -> JoinHandle<()> {
+	fn log_history(&self) -> JoinHandle<()> {
 		let timeframes = vec![self.config.tf1, self.config.tf2, self.config.tf3];
 		let symbol = self.config.symbol.clone();
+		
 		tokio::spawn( async move  {
 			let mongo_client = MongoClient::new().await;
 			if let Ok(past_trades) = mongo_client.trades.find(None, None).await {
@@ -130,57 +130,33 @@ impl EventSink<TfTrades> for ATRStudy {
 			for trades in event_msg {
 				let last_atrr = mongo_client.atr.find(doc! {"symbol": symbol.clone(), "tf": bson::to_bson(&trades.tf).unwrap()}, Some(FindOptions::builder().sort(doc! {
 			"step_id": -1
-		}).limit(1).build())).await.unwrap().next().await;
+		}).limit(1).build())).await?.next().await;
 				
 				if last_atrr.is_none() || last_atrr.clone().unwrap().is_err() {
 					return Err(anyhow!("No last atrr found"));
 				}
-				let last_atr = last_atrr.unwrap().unwrap();
-				let mut atr_values = vec![];
+				let last_atr = last_atrr.unwrap()?;
 				let k = 2.0 / (RANGE as f64 + 1.0);
-				// TODO: use the candle struct here
-				for span in to_tf_chunks(trades.tf, trades.trades.clone()) {
-					let mut high: f64 = 0.0;
-					let mut low: f64 = f64::MAX;
-					for trade in span.iter() {
-						high = high.max(trade.price);
-						low = low.min(trade.price);
-					}
-					let tr = high - low;
-					let close_time = span.iter().map(|t| t.timestamp).max().unwrap();
-					if high == low {
-						atr_values.push((last_atr.value, close_time));
-					} else {
-						atr_values.push((k * tr + (1.0 - k) * last_atr.value, close_time));
-					}
-				}
-				let mut atr_entries = vec![];
+				let candle = Candle::from(&trades);
+				let tr = candle.high - candle.low;
+				let atr_value = if tr != 0.0 {
+					k  * tr + (1.0 - k) * last_atr.value
+				} else {
+					last_atr.value
+				};
+				let delta = ((atr_value - last_atr.value) * 100.0) / last_atr.value;
+				let close_time = trades.trades.iter().map(|t| t.timestamp).max().unwrap();
 				
-				for (i, (v, close_time)) in atr_values.iter().enumerate() {
-					if i == 0 {
-						continue;
-					}
-					let delta = ((atr_values[i].0 - atr_values[i - 1].0) * 100.0) / atr_values[i - 1].0;
-					atr_entries.push(ATREntry {
-						tf: trades.tf,
-						value: *v,
-						delta,
-						symbol: symbol.clone(),
-						step_id: trades.id,
-						close_time: *close_time,
-					});
-				}
-				if atr_entries.len() == 0 {
-					atr_entries.push(ATREntry {
-						tf: trades.tf,
-						value: last_atr.value,
-						delta: last_atr.delta,
-						symbol: symbol.clone(),
-						step_id: trades.id,
-						close_time: last_atr.close_time + trades.tf * 1000,
-					});
-				}
-				mongo_client.atr.insert_many(atr_entries, None).await?;
+				let atr_entry = ATREntry {
+					tf: trades.tf,
+					value: atr_value,
+					delta,
+					symbol: symbol.clone(),
+					step_id: trades.id,
+					close_time: close_time,
+				};
+				
+				mongo_client.atr.insert_one(atr_entry, None).await?;
 			}
 			Ok(())
 		}))

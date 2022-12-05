@@ -1,15 +1,19 @@
+use anyhow::anyhow;
 use tokio::task::JoinHandle;
 
-use futures::{ TryStreamExt};
+use futures::{StreamExt, TryStreamExt};
 use async_trait::async_trait;
+use mongodb::bson;
 use kanal::AsyncReceiver;
-use crate::{EventSink, StudyConfig};
+use crate::{EventSink, StudyConfig, TfTradeEmitter};
 use crate::helpers::to_tf_chunks;
 use crate::mongodb::client::MongoClient;
 use crate::mongodb::models::{ChoppinessIndexEntry};
 use crate::studies::{RANGE, Sentiment, Study};
-use crate::types::TfTrades;
+use crate::types::{Candle, TfTrades};
 use async_std::sync::Arc;
+use mongodb::bson::doc;
+use mongodb::options::FindOptions;
 use crate::events::EventResult;
 use crate::studies::Sentiment::Bearish;
 
@@ -30,13 +34,12 @@ impl ChoppinessStudy {
 	}
 }
 
-#[async_trait]
 impl Study for ChoppinessStudy {
 	const ID: crate::studies::StudyTypes = crate::studies::StudyTypes::ChoppinessStudy;
 	type Entry = ChoppinessIndexEntry;
 	
 
-	async fn log_history(&self) -> JoinHandle<()> {
+	fn log_history(&self) -> JoinHandle<()> {
 		let timeframes = vec![self.config.tf1, self.config.tf2, self.config.tf3];
 		let symbol = self.config.symbol.clone();
 		tokio::spawn(async move {
@@ -142,8 +145,56 @@ impl EventSink<TfTrades> for ChoppinessStudy {
 		self.tf_trades.clone()
 	}
 	
-	async fn handle_event(&self, _event_msg: TfTrades) -> EventResult {
-		todo!()
+	async fn handle_event(&self, event_msg: TfTrades) -> EventResult {
+		let symbol = self.config.clone().symbol.clone();
+		let config = self.config.clone();
+		Ok(tokio::spawn(async move {
+			let mongo_client = MongoClient::new().await;
+			for trades in event_msg {
+				let trades_client = TfTradeEmitter::new(trades.tf);
+				let until = if trades.id <= config.range as u64 {
+					1_u64
+				} else {
+					trades.id - config.range as u64 + 1
+				
+				};
+				let mut past_trades = trades_client.get_tf_trades_until(until).await?;
+				past_trades.push(trades.clone());
+				let last_chopp = mongo_client.choppiness.find(doc! {"symbol": symbol.clone(), "tf": bson::to_bson(&trades.tf)?}, Some(FindOptions::builder().sort(doc! {
+			"step_id": -1
+		}).limit(1).build())).await?.next().await;
+				
+				if last_chopp.is_none() || last_chopp.clone().unwrap().is_err() {
+					return Err(anyhow!("No last choppiness index found"));
+				}
+				let last_chop = last_chopp.unwrap()?;
+				
+				let true_ranges = past_trades.iter().map(|chunk| {
+					let candle = Candle::from(chunk);
+					let tr = candle.high - candle.low;
+					(tr, candle.high, candle.low)
+				}).collect::<Vec<(f64, f64, f64)>>();
+				let tr_sum = true_ranges.iter().map(|tr| tr.0).sum::<f64>();
+				let highest_diff = true_ranges.iter().map(|tr| tr.1 - tr.2).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
+				let choppiness_index = if highest_diff > 0.0 {
+					100.0 * (tr_sum / highest_diff).log10() / (config.range as f64).log10()
+				} else {
+					last_chop.value
+				};
+				let choppiness_entry = ChoppinessIndexEntry {
+					symbol: config.symbol.clone(),
+					step_id: trades.id,
+					tf: trades.tf,
+					value: choppiness_index,
+					delta: ((choppiness_index - last_chop.value) * 100.0) / last_chop.value,
+					close_time: trades.trades.iter().map(|t| t.timestamp).max().unwrap_or(last_chop.close_time + trades.tf * 1000),
+				};
+			
+				mongo_client.choppiness.insert_one(choppiness_entry, None).await?;
+			}
+			Ok(())
+		}))
+		
 	}
 }
 
