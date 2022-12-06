@@ -1,5 +1,7 @@
+mod simulated;
+
 use async_trait::async_trait;
-use crate::{EventSink, ExecutionCommand};
+use crate::{EventEmitter, EventSink, ExecutionCommand};
 
 pub enum ExchangeId {
 	Simulated
@@ -14,19 +16,25 @@ pub enum OrderType {
 	TakeProfitLimit,
 	StopLossTrailing,
 }
+
+pub enum OrderStatus {
+	Pending,
+	Filled,
+	Canceled,
+}
 pub struct Order {
 	pub id: String,
 	pub symbol: String,
 	pub side: String,
 	pub price: f64,
 	pub quantity: f64,
-	pub status: String,
+	pub status: OrderStatus,
 	pub time: u64,
 	pub order_type: OrderType,
 }
 
 #[async_trait]
-pub trait TradeExecutor: EventSink<ExecutionCommand> {
+pub trait TradeExecutor: EventSink<ExecutionCommand> + EventEmitter<OrderStatus> {
 	const ID: ExchangeId;
 	fn get_id(&self) -> ExchangeId {
 		Self::ID
