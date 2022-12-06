@@ -19,6 +19,7 @@ use crate::AccessKey;
 use crate::events::TfTradeEmitter;
 use crate::helpers::*;
 use crate::managers::Manager;
+use crate::mongodb::models::TfTrade;
 use crate::types::{GlobalConfig, TfTrades};
 
 #[derive(Debug)]
@@ -339,6 +340,7 @@ impl MoneyManager {
 	}
 	
 }
+
 #[async_trait]
 impl Manager for MoneyManager {
 	

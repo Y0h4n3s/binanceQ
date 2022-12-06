@@ -34,7 +34,7 @@ pub struct Order {
 }
 
 #[async_trait]
-pub trait TradeExecutor: EventSink<ExecutionCommand> + EventEmitter<OrderStatus> {
+pub trait TradeExecutor: EventSink<ExecutionCommand> + for <'a> EventEmitter<'a,OrderStatus> {
 	const ID: ExchangeId;
 	fn get_id(&self) -> ExchangeId {
 		Self::ID
