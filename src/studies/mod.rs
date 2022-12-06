@@ -1,9 +1,11 @@
 use tokio::task::JoinHandle;
 
 use serde::{Deserialize, Serialize};
+use crate::{EventSink, TfTrades};
 
 pub mod atr_study;
 pub mod choppiness_study;
+pub mod directional_index_study;
 
 pub enum Sentiment {
 	VeryBullish,
@@ -21,6 +23,7 @@ pub enum Side {
 pub enum StudyTypes {
 	ATRStudy,
 	ChoppinessStudy,
+	DirectionalIndexStudy,
 }
 #[derive(Clone)]
 pub struct StudyConfig {
@@ -43,7 +46,7 @@ impl From<&StudyConfig> for StudyConfig {
 	}
 }
 
-pub trait Study {
+pub trait Study: EventSink<TfTrades> {
 	const ID: StudyTypes;
 	type Entry;
 	fn log_history(&self) -> JoinHandle<()>;

@@ -1,6 +1,6 @@
 use mongodb::Client;
 
-use crate::mongodb::models::{ATREntry, BookSideEntry, ChoppinessIndexEntry, OpenInterestEntry, TfTrade, TradeEntry};
+use crate::mongodb::models::{ATREntry, AverageDirectionalIndexEntry, BookSideEntry, ChoppinessIndexEntry, OpenInterestEntry, TfTrade, TradeEntry};
 
 pub struct MongoClient {
     pub database: mongodb::Database,
@@ -9,6 +9,7 @@ pub struct MongoClient {
     pub trades: mongodb::Collection<TradeEntry>,
     pub tf_trades: mongodb::Collection<TfTrade>,
     pub atr: mongodb::Collection<ATREntry>,
+    pub adi: mongodb::Collection<AverageDirectionalIndexEntry>,
     pub choppiness: mongodb::Collection<ChoppinessIndexEntry>,
 }
 
@@ -27,6 +28,7 @@ impl MongoClient {
         let trades = database.collection::<TradeEntry>("trade");
         let tf_trades = database.collection::<TfTrade>("tf_trade");
         let atr = database.collection::<ATREntry>("atr");
+        let adi = database.collection::<AverageDirectionalIndexEntry>("adi");
         let choppiness = database.collection::<ChoppinessIndexEntry>("choppiness");
         MongoClient {
             database,
@@ -35,6 +37,7 @@ impl MongoClient {
             trades,
             tf_trades,
             atr,
+            adi,
             choppiness
         }
     }

@@ -12,6 +12,19 @@ pub struct ChoppinessIndexEntry {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AverageDirectionalIndexEntry {
+    pub tf: u64,
+    pub value: f64,
+    pub positive: f64,
+    pub negative: f64,
+    pub delta: f64,
+    pub positive_delta: f64,
+    pub negative_delta: f64,
+    pub symbol: String,
+    pub step_id: u64,
+    pub close_time: u64
+}
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ATREntry {
     pub tf: u64,
     pub value: f64,

@@ -1,4 +1,5 @@
-use crate::mongodb::models::{TfTrade};
+use yata::core::{OHLCV, ValueType};
+use crate::mongodb::models::{TfTrade, TradeEntry};
 
 pub type TfTrades = Vec<TfTrade>;
 
@@ -10,6 +11,40 @@ pub struct Candle {
 	pub close: f64,
 	pub volume: f64,
 }
+
+impl OHLCV for Candle {
+	fn open(&self) -> ValueType {
+		self.open
+	}
+	
+	fn high(&self) -> ValueType {
+		self.high
+	}
+	
+	fn low(&self) -> ValueType {
+		self.low
+	}
+	
+	fn close(&self) -> ValueType {
+		self.close
+	}
+	
+	fn volume(&self) -> ValueType {
+		self.volume
+	}
+}
+
+impl From<Vec<TradeEntry>> for Candle {
+	fn from(trades: Vec<TradeEntry>) -> Self{
+		let tf_trade_entry = TfTrade {
+			tf: 1,
+			id: 1,
+			trades
+		};
+		Self::from(&tf_trade_entry)
+	}
+}
+
 impl From<&TfTrade> for Candle {
 	fn from(tf_trade: &TfTrade) -> Self {
 		if tf_trade.trades.len() == 0 {
