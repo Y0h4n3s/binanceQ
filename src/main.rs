@@ -25,6 +25,7 @@ mod mongodb;
 mod strategies;
 mod studies;
 mod types;
+mod executors;
 
 static KEY: Lazy<AccessKey> = Lazy::new(|| {
     let api_key = env::var("API_KEY")
