@@ -7,7 +7,6 @@ use kanal::AsyncReceiver;
 use mongodb::bson;
 use futures::{TryStreamExt, StreamExt};
 use mongodb::bson::doc;
-use tokio::sync::RwLock;
 use yata::core::{IndicatorConfig, PeriodType, IndicatorInstance, IndicatorInstanceDyn};
 use yata::indicators::AverageDirectionalIndex;
 use yata::prelude::*;
@@ -22,20 +21,15 @@ use crate::types::{Candle, TfTrades};
 pub struct DirectionalIndexStudy {
 	config: Arc<StudyConfig>,
 	tf_trades: Arc<AsyncReceiver<TfTrades>>,
-	adi_instance: Arc<RwLock<Box<dyn IndicatorInstanceDyn<AverageDirectionalIndex>>>>,
+	
 }
 
 
 impl DirectionalIndexStudy {
 	pub fn new(config: &StudyConfig, tf_trades: AsyncReceiver<TfTrades>) -> Self {
-		let mut adi = yata::indicators::AverageDirectionalIndex::default();
-		adi.method1 = ("ema-".to_string() + config.range.to_string().as_str()).parse().unwrap();
-		adi.method2 = ("ema-".to_string() + config.range.to_string().as_str()).parse().unwrap();
-		adi.period1 = config.range as u8;
 		Self {
 			config: Arc::new(StudyConfig::from(config)),
 			tf_trades: Arc::new(tf_trades),
-			adi_instance: Arc::new(RwLock::new(Box::new(adi.init(&Candle::default()))))
 		}
 		
 	}
@@ -50,14 +44,17 @@ impl Study for DirectionalIndexStudy {
 	fn log_history(&self) -> JoinHandle<()> {
 		let timeframes = vec![self.config.tf1, self.config.tf2, self.config.tf3];
 		let config = self.config.clone();
-		let adi_instance = self.adi_instance.clone();
+		
 		tokio::spawn( async move  {
 			let mongo_client = MongoClient::new().await;
 			if let Ok(past_trades) = mongo_client.tf_trades.find(None, None).await {
 				let trades = past_trades.try_collect().await.unwrap_or_else(|_| vec![]);
 				for tf in timeframes {
-					let mut adi_instance = adi_instance.write().await;
-					
+					let mut adi = yata::indicators::AverageDirectionalIndex::default();
+					let mut adi_instance = None;
+					adi.method1 = ("ema-".to_string() + config.range.to_string().as_str()).parse().unwrap();
+					adi.method2 = ("ema-".to_string() + config.range.to_string().as_str()).parse().unwrap();
+					adi.period1 = config.range as u8;
 					let mut prev_value = None;
 					let mut adi_entries: Vec<AverageDirectionalIndexEntry> = vec![];
 					for (i, span) in trades.iter().enumerate() {
@@ -65,7 +62,10 @@ impl Study for DirectionalIndexStudy {
 							continue
 						}
 						let candle = Candle::from(span);
-						
+						if i == 0 {
+							adi_instance = Some(adi.init(&candle).unwrap());
+							continue
+						}
 						let value = IndicatorInstance::next(adi_instance.as_mut().unwrap(), &candle);
 						prev_value = Some(value);
 						let delta = if prev_value.is_some() {
