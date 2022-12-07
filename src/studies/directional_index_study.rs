@@ -58,6 +58,9 @@ impl Study for DirectionalIndexStudy {
 					let mut prev_value = None;
 					let mut adi_entries: Vec<AverageDirectionalIndexEntry> = vec![];
 					for (i, span) in trades.iter().enumerate() {
+						if span.tf != tf {
+							continue
+						}
 						let candle = Candle::from(span);
 						if i == 0 {
 							adi_instance = Some(adi.init(&candle).unwrap());

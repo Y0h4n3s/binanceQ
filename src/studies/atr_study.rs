@@ -9,7 +9,7 @@ use mongodb::bson;
 use mongodb::bson::doc;
 use crate::{EventSink, StudyConfig};
 use crate::events::EventResult;
-use crate::helpers::to_tf_chunks;
+use crate::helpers::{change_percent, to_tf_chunks};
 use crate::mongodb::client::MongoClient;
 use crate::mongodb::models::ATREntry;
 use crate::studies::{RANGE, Sentiment, Study};
@@ -40,55 +40,46 @@ impl Study for ATRStudy {
 	
 	fn log_history(&self) -> JoinHandle<()> {
 		let timeframes = vec![self.config.tf1, self.config.tf2, self.config.tf3];
-		let symbol = self.config.symbol.clone();
+		let config = self.config.clone();
 		
 		tokio::spawn( async move  {
 			let mongo_client = MongoClient::new().await;
-			if let Ok(past_trades) = mongo_client.trades.find(None, None).await {
+			if let Ok(past_trades) = mongo_client.tf_trades.find(None, None).await {
 				let trades = past_trades.try_collect().await.unwrap_or_else(|_| vec![]);
 				
 				for tf in timeframes {
-					let mut atr_values = vec![];
-					let k = 2.0 / (RANGE as f64 + 1.0);
-					for span in to_tf_chunks(tf,  trades.clone()) {
-						if span.len() <= 0 {
-							continue;
+					let mut atr_entries: Vec<ATREntry> = vec![];
+					
+					let k = 2.0 / (config.range as f64 + 1.0);
+					for span in trades.iter() {
+						let id = span.id;
+						if span.tf != tf {
+							continue
 						}
-						let mut high: f64 = 0.0;
-						let mut low: f64 = f64::MAX;
-						for trade in span.iter() {
-							high = high.max(trade.price);
-							low = low.min( trade.price);
-						}
-						let tr = high - low;
-						let close_time =  span.iter().map(|t| t.timestamp).max().unwrap();
-						if atr_values.is_empty() {
-							atr_values.push((tr, close_time));
-						} else if high == low {
-							atr_values.push((atr_values.last().unwrap().clone().0, close_time));
+						let candle = Candle::from(span);
+						let tr = candle.high - candle.low;
+						let close_time =  span.trades.iter().map(|t| t.timestamp).max().unwrap();
+						let v = if atr_entries.is_empty() {
+							tr
+						} else if candle.high == candle.low {
+							atr_entries.last().unwrap().value
 						} else {
-							atr_values.push((k * tr + (1.0 - k) * atr_values.last().unwrap().0, close_time));
-						}
-
-					}
-					if atr_values.len() == 0 {
-						continue
-					}
-					let mut atr_entries = vec![];
-					for (i, (v, close_time)) in atr_values.iter().enumerate() {
-						if i == 0 {
-							continue;
-						}
-						let delta = ((atr_values[i].0 - atr_values[i-1].0) * 100.0) / atr_values[i-1].0;
+							k * tr + (1.0 - k) * atr_entries.last().unwrap().value
+						};
+						let delta = change_percent(atr_entries.iter().map(|e| e.value).last().unwrap_or(tr), v);
+						
 						atr_entries.push(ATREntry {
 							tf,
-							value: *v,
+							value: v,
 							delta,
-							symbol: symbol.clone(),
-							step_id: i as u64,
-							close_time: *close_time,
-						})
+							symbol: config.symbol.clone(),
+							step_id: id,
+							close_time,
+						});
+						
+
 					}
+					
 					
 					mongo_client.atr.insert_many(atr_entries, None).await.unwrap();
 				}
@@ -124,11 +115,11 @@ impl EventSink<TfTrades> for ATRStudy {
 	}
 	
 	async fn handle_event(&self, event_msg: TfTrades) -> EventResult {
-		let symbol = self.config.clone().symbol.clone();
+		let config = self.config.clone();
 		Ok(tokio::spawn(async move {
 			let mongo_client = MongoClient::new().await;
 			for trades in event_msg {
-				let last_atrr = mongo_client.atr.find(doc! {"symbol": symbol.clone(), "tf": bson::to_bson(&trades.tf).unwrap()}, Some(FindOptions::builder().sort(doc! {
+				let last_atrr = mongo_client.atr.find(doc! {"symbol": config.symbol.clone(), "tf": bson::to_bson(&trades.tf).unwrap()}, Some(FindOptions::builder().sort(doc! {
 			"step_id": -1
 		}).limit(1).build())).await?.next().await;
 				
@@ -136,7 +127,7 @@ impl EventSink<TfTrades> for ATRStudy {
 					return Err(anyhow!("No last atrr found"));
 				}
 				let last_atr = last_atrr.unwrap()?;
-				let k = 2.0 / (RANGE as f64 + 1.0);
+				let k = 2.0 / (config.range as f64 + 1.0);
 				let candle = Candle::from(&trades);
 				let tr = candle.high - candle.low;
 				let atr_value = if tr != 0.0 {
@@ -151,7 +142,7 @@ impl EventSink<TfTrades> for ATRStudy {
 					tf: trades.tf,
 					value: atr_value,
 					delta,
-					symbol: symbol.clone(),
+					symbol: config.symbol.clone(),
 					step_id: trades.id,
 					close_time: close_time,
 				};
