@@ -44,11 +44,10 @@ impl Study for ChoppinessStudy {
 		let config = self.config.clone();
 		tokio::spawn(async move {
 			let mongo_client = MongoClient::new().await;
-			if let Ok(past_trades) = mongo_client.tf_trade.find(None, None).await {
+			if let Ok(past_trades) = mongo_client.tf_trades.find(None, None).await {
 				let trades = past_trades.try_collect().await.unwrap_or_else(|_| vec![]);
 				for tf in timeframes {
 					let mut choppiness_entries: Vec<ChoppinessIndexEntry> = vec![];
-					let tf_trades =  to_tf_chunks(tf, trades.clone());
 					let true_ranges = trades.iter().map(|chunk| {
 						let candle = Candle::from(chunk);
 						let tr = candle.high - candle.low;
@@ -95,7 +94,7 @@ impl Study for ChoppinessStudy {
 							tf,
 							value: choppiness_index,
 							delta: ((choppiness_index - prev_delta) * 100.0) / prev_delta,
-							close_time: tf_trades[i - 1].trades.iter().map(|t| t.timestamp).max().unwrap(),
+							close_time: trades[i - 1].trades.iter().map(|t| t.timestamp).max().unwrap(),
 						};
 						prev_delta = choppiness_index;
 						choppiness_entries.push(choppiness_entry);
