@@ -41,40 +41,35 @@ impl Study for ChoppinessStudy {
 
 	fn log_history(&self) -> JoinHandle<()> {
 		let timeframes = vec![self.config.tf1, self.config.tf2, self.config.tf3];
-		let symbol = self.config.symbol.clone();
+		let config = self.config.clone();
 		tokio::spawn(async move {
 			let mongo_client = MongoClient::new().await;
-			if let Ok(past_trades) = mongo_client.trades.find(None, None).await {
+			if let Ok(past_trades) = mongo_client.tf_trade.find(None, None).await {
 				let trades = past_trades.try_collect().await.unwrap_or_else(|_| vec![]);
 				for tf in timeframes {
 					let mut choppiness_entries: Vec<ChoppinessIndexEntry> = vec![];
 					let tf_trades =  to_tf_chunks(tf, trades.clone());
-					let true_ranges = to_tf_chunks(tf, trades.clone()).iter().map(|chunk| {
-						let mut high: f64 = 0.0;
-						let mut low: f64 = f64::MAX;
-						for trade in chunk.iter() {
-							high = high.max(trade.price);
-							low = low.min( trade.price);
-						}
-						let tr = high - low;
-						(tr, chunk.iter().max_by(|a, b| a.price.partial_cmp(&b.price).unwrap()).unwrap().price, chunk.iter().min_by(|a, b| a.price.partial_cmp(&b.price).unwrap()).unwrap().price)
+					let true_ranges = trades.iter().map(|chunk| {
+						let candle = Candle::from(chunk);
+						let tr = candle.high - candle.low;
+						(tr, candle.high, candle.low)
 					}).collect::<Vec<(f64, f64, f64)>>();
 					let mut i = 0;
 					let mut prev_delta = 0.0;
 					while i < true_ranges.len() {
-						if i < RANGE as usize {
+						if i < config.range as usize {
 							i += 1;
 							continue
 						}
 						let mut tr_sum = 0.0;
 						let mut j = i;
-						while j > i - RANGE as usize {
+						while j > i - config.range as usize {
 							tr_sum += true_ranges[j].0;
 							j -= 1;
 						}
 						let mut high_sum = 0.0;
 						let mut j = i;
-						while j > i - RANGE as usize {
+						while j > i - config.range as usize {
 							if high_sum < true_ranges[j].1 {
 								high_sum = true_ranges[j].1;
 							}
@@ -82,7 +77,7 @@ impl Study for ChoppinessStudy {
 						}
 						let mut low_sum = f64::MAX;
 						let mut j = i;
-						while j > i - RANGE as usize {
+						while j > i - config.range as usize {
 							if low_sum > true_ranges[j].2 {
 								low_sum = true_ranges[j].2;
 							}
@@ -92,15 +87,15 @@ impl Study for ChoppinessStudy {
 						if highest_diff == 0.0 {
 							highest_diff = 1.0;
 						}
-						let choppiness_index = 100.0 * (tr_sum / highest_diff).log10() / (RANGE as f64).log10();
+						let choppiness_index = 100.0 * (tr_sum / highest_diff).log10() / (config.range as f64).log10();
 						i += 1;
 						let choppiness_entry = ChoppinessIndexEntry {
-							symbol: symbol.clone(),
+							symbol: config.symbol.clone(),
 							step_id: i as u64,
 							tf,
 							value: choppiness_index,
 							delta: ((choppiness_index - prev_delta) * 100.0) / prev_delta,
-							close_time: tf_trades[i - 1].iter().map(|t| t.timestamp).max().unwrap(),
+							close_time: tf_trades[i - 1].trades.iter().map(|t| t.timestamp).max().unwrap(),
 						};
 						prev_delta = choppiness_index;
 						choppiness_entries.push(choppiness_entry);
