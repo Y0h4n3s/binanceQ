@@ -50,6 +50,8 @@ impl TfTradeEmitter {
             tf,
         }
     }
+    
+    
 
     pub async fn get_tf_trades_until(&self, until: u64) -> anyhow::Result<Vec<TfTrade>> {
         let mongo_client = MongoClient::new().await;

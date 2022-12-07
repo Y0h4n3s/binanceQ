@@ -10,7 +10,7 @@ use mongodb::bson::doc;
 use yata::core::{IndicatorConfig, PeriodType, IndicatorInstance, IndicatorInstanceDyn};
 use yata::indicators::AverageDirectionalIndex;
 use yata::prelude::*;
-use crate::{EventSink, StudyConfig};
+use crate::{EventSink, StudyConfig, TfTradeEmitter};
 use crate::events::EventResult;
 use crate::helpers::{change_percent, to_tf_chunks};
 use crate::mongodb::client::MongoClient;
@@ -47,7 +47,7 @@ impl Study for DirectionalIndexStudy {
 		
 		tokio::spawn( async move  {
 			let mongo_client = MongoClient::new().await;
-			if let Ok(past_trades) = mongo_client.trades.find(None, None).await {
+			if let Ok(past_trades) = mongo_client.tf_trades.find(None, None).await {
 				let trades = past_trades.try_collect().await.unwrap_or_else(|_| vec![]);
 				for tf in timeframes {
 					let mut adi = yata::indicators::AverageDirectionalIndex::default();
@@ -57,8 +57,8 @@ impl Study for DirectionalIndexStudy {
 					adi.period1 = config.range as u8;
 					let mut prev_value = None;
 					let mut adi_entries: Vec<AverageDirectionalIndexEntry> = vec![];
-					for (i, span) in to_tf_chunks(tf,  trades.clone()).iter().enumerate() {
-						let candle = Candle::from(span.clone());
+					for (i, span) in trades.iter().enumerate() {
+						let candle = Candle::from(span);
 						if i == 0 {
 							adi_instance = Some(adi.init(&candle).unwrap());
 							continue
@@ -89,8 +89,8 @@ impl Study for DirectionalIndexStudy {
 							positive_delta,
 							negative_delta,
 							symbol: config.symbol.clone(),
-							step_id: (i + 1) as u64,
-							close_time: span.iter().max_by(|a, b| a.timestamp.cmp(&b.timestamp)).unwrap().timestamp,
+							step_id: span.id,
+							close_time: span.trades.iter().max_by(|a, b| a.timestamp.cmp(&b.timestamp)).unwrap().timestamp,
 						});
 					}
 					
@@ -128,39 +128,61 @@ impl EventSink<TfTrades> for DirectionalIndexStudy {
 	}
 	
 	async fn handle_event(&self, event_msg: TfTrades) -> EventResult {
-		let symbol = self.config.clone().symbol.clone();
+		let config = self.config.clone();
 		Ok(tokio::spawn(async move {
 			let mongo_client = MongoClient::new().await;
+			
+			let mut adi = yata::indicators::AverageDirectionalIndex::default();
+			adi.method1 = ("ema-".to_string() + config.range.to_string().as_str()).parse().unwrap();
+			adi.method2 = ("ema-".to_string() + config.range.to_string().as_str()).parse().unwrap();
+			adi.period1 = config.range as u8;
+			let mut adi_instance = adi.init(&Candle::default())?;
 			for trades in event_msg {
-				let last_atrr = mongo_client.atr.find(doc! {"symbol": symbol.clone(), "tf": bson::to_bson(&trades.tf).unwrap()}, Some(FindOptions::builder().sort(doc! {
+				let trades_client = TfTradeEmitter::new(trades.tf);
+				let until = if trades.id <= config.range as u64 {
+					1_u64
+				} else {
+					trades.id - config.range as u64 + 1
+					
+				};
+				let past_trades = trades_client.get_tf_trades_until(until).await?;
+				for trade in past_trades {
+					let candle = Candle::from(&trade);
+					IndicatorInstance::next(&mut adi_instance, &candle);
+				}
+				let last_adii = mongo_client.adi.find(doc! {"symbol": config.symbol.clone(), "tf": bson::to_bson(&trades.tf).unwrap()}, Some(FindOptions::builder().sort(doc! {
 			"step_id": -1
 		}).limit(1).build())).await?.next().await;
 				
-				if last_atrr.is_none() || last_atrr.clone().unwrap().is_err() {
-					return Err(anyhow!("No last atrr found"));
+				if last_adii.is_none() || last_adii.clone().unwrap().is_err() {
+					return Err(anyhow!("No last adi found"));
 				}
-				let last_atr = last_atrr.unwrap()?;
-				let k = 2.0 / (RANGE as f64 + 1.0);
+				let prev_value = last_adii.unwrap().unwrap();
+				
 				let candle = Candle::from(&trades);
-				let tr = candle.high - candle.low;
-				let atr_value = if tr != 0.0 {
-					k  * tr + (1.0 - k) * last_atr.value
-				} else {
-					last_atr.value
-				};
-				let delta = ((atr_value - last_atr.value) * 100.0) / last_atr.value;
-				let close_time = trades.trades.iter().map(|t| t.timestamp).max().unwrap();
+				let value = IndicatorInstance::next(&mut adi_instance, &candle);
+				let delta = change_percent(prev_value.value, value.value(0));
 				
-				let atr_entry = ATREntry {
+				let positive_delta =
+					change_percent(prev_value.positive, value.value(1));
+				
+				let negative_delta =
+					change_percent(prev_value.negative, value.value(2));
+				
+				let adi_entry = AverageDirectionalIndexEntry {
 					tf: trades.tf,
-					value: atr_value,
+					value: value.value(0),
+					positive: value.value(1),
+					negative: value.value(2),
 					delta,
-					symbol: symbol.clone(),
+					positive_delta,
+					negative_delta,
+					symbol: config.symbol.clone(),
 					step_id: trades.id,
-					close_time: close_time,
+					close_time: trades.trades.iter().max_by(|a, b| a.timestamp.cmp(&b.timestamp)).unwrap().timestamp,
 				};
 				
-				mongo_client.atr.insert_one(atr_entry, None).await?;
+				mongo_client.adi.insert_one(adi_entry, None).await?;
 			}
 			Ok(())
 		}))

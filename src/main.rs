@@ -11,6 +11,7 @@ use crate::strategies::chop_directional::ChopDirectionalStrategy;
 use crate::strategies::random_strategy::RandomStrategy;
 use crate::studies::choppiness_study::ChoppinessStudy;
 use crate::studies::{atr_study::ATRStudy, Study, StudyConfig};
+use crate::studies::directional_index_study::DirectionalIndexStudy;
 use crate::types::{AccessKey, GlobalConfig, TfTrades};
 
 mod bracket_order;
@@ -88,12 +89,27 @@ async fn async_main() -> anyhow::Result<()> {
         tf2: 60,
         tf3: 300,
     };
+    
+    let mut threads = vec![];
+    
+    
     loader::load_history(KEY.clone(), "DOGEUSDT".to_string(), 1 * 30 * 60 * 1000).await;
     println!("Historical data loaded");
-
+    threads.push(loader::start_loader(KEY.clone(), "DOGEUSDT".to_string(), 1).await);
+    
+    
+    // start tf trade emitters, they should be started before any study is initialized because studies depend on them
+    for tf in vec![global_config.tf1, global_config.tf2, global_config.tf3] {
+        let mut tf_trade = TfTradeEmitter::new(tf);
+        tf_trade.subscribe(trades_channel.0.clone()).await;
+        threads.push(tf_trade.emit().await?);
+    }
+    println!("Tf trade emitters started");
+    
     // initialize studies
     let atr_study = ATRStudy::new(&config, trades_channel.1.clone());
     let choppiness_study = ChoppinessStudy::new(&config, trades_channel.1.clone());
+    let adi_study = DirectionalIndexStudy::new(&config, trades_channel.1.clone());
     atr_study.log_history().await?;
     choppiness_study.log_history().await?;
     println!("Studies initialized");
@@ -115,17 +131,9 @@ async fn async_main() -> anyhow::Result<()> {
     strategy_manager
         .subscribe(execution_commands_channel.0.clone())
         .await;
-    let mut threads = vec![];
 
-    // start tf trade emitters
-    for tf in vec![global_config.tf1, global_config.tf2, global_config.tf3] {
-        let mut tf_trade = TfTradeEmitter::new(tf);
-        tf_trade.subscribe(trades_channel.0.clone()).await;
-        threads.push(tf_trade.emit().await?);
-    }
-    println!("Tf trade emitters started");
+    
 
-    threads.push(loader::start_loader(KEY.clone(), "DOGEUSDT".to_string(), 1).await);
     threads.push(atr_study.listen().await?);
     threads.push(choppiness_study.listen().await?);
     threads.push(strategy_manager.emit().await?);
