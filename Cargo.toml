@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 console = "0.15.0"
 binance = { path = "../opensource/binance-rs" }
+clap = {version = "4.0.29", features = ["cargo"]}
 serde = "1.0.141"
 anyhow = "1.0.66"
 serde_with = "2.0.1"
@@ -20,7 +21,7 @@ once_cell = "1.16.0"
 async-trait = "0.1.58"
 error-chain = "0.12.4"
 ndarray = "0.15.6"
-yata = "0.6"
+yata = {version = "0.6.1", features = ["serde"] }
 dyn-clone = "1.0.9"
 image = "0.24.5"
 kanal = "0.1.0-pre7"
