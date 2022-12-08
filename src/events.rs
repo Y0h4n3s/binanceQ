@@ -12,6 +12,8 @@ use tokio::task::JoinHandle;
 
 use crate::mongodb::models::TfTrade;
 use tokio::sync::RwLock;
+use crate::executors::OrderStatus;
+use crate::GlobalConfig;
 
 pub type EventResult = anyhow::Result<JoinHandle<std::result::Result<(), anyhow::Error>>>;
 #[async_trait]
@@ -41,13 +43,15 @@ pub trait EventEmitter<'a, EventType: Send + Sync + 'static> {
 pub struct TfTradeEmitter {
     subscribers: Arc<RwLock<Vec<AsyncSender<TfTrades>>>>,
     pub tf: u64,
+    global_config: GlobalConfig,
 }
 
 impl TfTradeEmitter {
-    pub fn new(tf: u64) -> Self {
+    pub fn new(tf: u64, global_config: GlobalConfig) -> Self {
         Self {
             subscribers: Arc::new(RwLock::new(Vec::new())),
             tf,
+            global_config,
         }
     }
     
@@ -78,6 +82,7 @@ impl EventEmitter<'_, TfTrades> for TfTradeEmitter {
         let mut last_id = 1_u64;
         let tf = self.tf;
         let subscribers = self.subscribers.clone();
+        let config = self.global_config.clone();
         Ok(tokio::spawn(async move {
             loop {
                 if let Ok(t) = mongo_client
@@ -100,6 +105,7 @@ impl EventEmitter<'_, TfTrades> for TfTradeEmitter {
                             let trade = TfTrade {
                                 id: last_id,
                                 tf: tf,
+                                symbol: config.symbol.clone(),
                                 timestamp: std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap()

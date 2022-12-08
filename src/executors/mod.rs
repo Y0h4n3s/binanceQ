@@ -1,12 +1,22 @@
 pub mod simulated;
 
+use async_std::sync::Arc;
 use async_trait::async_trait;
+use flurry::HashSet;
 use rust_decimal::Decimal;
 use crate::{EventEmitter, EventSink, ExecutionCommand};
-use crate::executors::simulated::SymbolAccount;
+use crate::executors::simulated::{SymbolAccount};
+use crate::types::Symbol;
 
 pub enum ExchangeId {
 	Simulated
+}
+#[derive(Hash, Eq,Ord, PartialOrd, PartialEq, Clone)]
+pub struct Position {
+	pub side: Side,
+	pub symbol: Symbol,
+	pub qty: Decimal,
+	pub quote_qty: Decimal
 }
 #[derive(Hash, Eq,Ord, PartialOrd, PartialEq, Clone)]
 pub enum OrderType {
@@ -29,11 +39,26 @@ pub enum OrderStatus {
 	Filled(Order),
 	Canceled(Order, String),
 }
+#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq)]
+pub struct Trade {
+	pub id: u64,
+	pub order_id: u64,
+	pub symbol: Symbol,
+	pub maker: bool,
+	pub price: Decimal,
+	pub commission: Decimal,
+	pub position_side: Side,
+	pub side: Side,
+	pub realized_pnl: Decimal,
+	pub qty: Decimal,
+	pub quote_qty: Decimal,
+	pub time: u64,
+}
 
 #[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq)]
 pub struct Order {
-	pub id: String,
-	pub symbol: String,
+	pub id: u64,
+	pub symbol: Symbol,
 	pub side: Side,
 	pub price: Decimal,
 	pub quantity: Decimal,
@@ -44,8 +69,10 @@ pub struct Order {
 #[async_trait]
 pub trait ExchangeAccountInfo: Send + Sync {
 	fn get_exchange_id(&self) -> ExchangeId;
-	async fn get_open_orders(&self, symbol: String) -> Vec<OrderStatus>;
-	async fn get_symbol_account(&self, symbol: String) -> SymbolAccount;
+	async fn get_open_orders(&self, symbol: &Symbol) -> Arc<HashSet<OrderStatus>>;
+	async fn get_symbol_account(&self, symbol: &Symbol) -> SymbolAccount;
+	async fn get_past_trades(&self, symbol: &Symbol, length: Option<usize>) -> Arc<HashSet<Trade>>;
+	async fn get_position(&self, symbol: &Symbol) -> Arc<Position>;
 }
 
 #[async_trait]

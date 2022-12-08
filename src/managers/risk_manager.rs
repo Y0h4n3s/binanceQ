@@ -8,7 +8,7 @@ use binance::api::Binance;
 use binance::futures::account::FuturesAccount;
 use binance::futures::general::FuturesGeneral;
 use binance::futures::market::FuturesMarket;
-use binance::futures::model::{ExchangeInformation, Symbol};
+use binance::futures::model::{ExchangeInformation};
 use binance::futures::userstream::FuturesUserStream;
 use binance::savings::Savings;
 use binance::userstream::UserStream;
@@ -18,9 +18,9 @@ use tokio::task::JoinHandle;
 
 use crate::{AccessKey, GlobalConfig};
 use crate::events::{EventEmitter, EventResult, EventSink};
-use crate::executors::{ExchangeAccount, ExchangeAccountInfo, Order};
+use crate::executors::{ExchangeAccount, ExchangeAccountInfo, Order, OrderType, Side};
 use crate::managers::Manager;
-use crate::types::TfTrades;
+use crate::types::{Symbol, TfTrades};
 
 pub struct RiskManagerConfig {
     pub max_daily_losses: usize,
@@ -29,10 +29,10 @@ pub struct RiskManagerConfig {
 
 #[derive(Clone)]
 pub enum ExecutionCommand {
-    OpenLongPosition,
-    OpenShortPosition,
-    CloseLongPosition,
-    CloseShortPosition,
+    OpenLongPosition(Symbol, f64),
+    OpenShortPosition(Symbol, f64),
+    CloseLongPosition(Symbol, f64),
+    CloseShortPosition(Symbol, f64),
 }
 pub struct RiskManager {
     pub global_config: Arc<GlobalConfig>,
@@ -78,19 +78,38 @@ impl EventSink<ExecutionCommand> for RiskManager {
     }
     
     async fn handle_event(&self, event_msg: ExecutionCommand) -> EventResult {
+        let account = self.account.clone();
+        let global_config = self.global_config.clone();
         /// decide on size and price and order_type and send to order_q
         Ok(tokio::spawn(async move {
             match event_msg {
-                ExecutionCommand::OpenLongPosition => {
+                // try different configs here
+                ExecutionCommand::OpenLongPosition(symbol, confidence) => {
+                    let symbol_balance = account.get_symbol_account(&symbol).await;
+                    let trade_history = account.get_past_trades(&symbol, None).await;
+                    let position = account.get_position(&symbol).await;
+                    // calculate size here
+                    let size = symbol_balance.quote_asset_free;
+                    // get the price based on confidence level
+                    let price = 0.0;
+                    let order = Order {
+                        id: 0,
+                        symbol,
+                        side: Side::Buy,
+                        price: Default::default(),
+                        quantity: Default::default(),
+                        time: 0,
+                        order_type: OrderType::Limit
+                    };
                     println!("OpenLongPosition");
                 }
-                ExecutionCommand::OpenShortPosition => {
+                ExecutionCommand::OpenShortPosition(symbol, confidence) => {
                     println!("OpenShortPosition");
                 }
-                ExecutionCommand::CloseLongPosition => {
+                ExecutionCommand::CloseLongPosition(symbol, confidence) => {
                     println!("CloseLongPosition");
                 }
-                ExecutionCommand::CloseShortPosition => {
+                ExecutionCommand::CloseShortPosition(symbol, confidence) => {
                     println!("CloseShortPosition");
                 }
             }

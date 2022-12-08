@@ -1,4 +1,5 @@
 use yata::core::{OHLCV, ValueType};
+use crate::executors::ExchangeId;
 use crate::mongodb::models::{TfTrade, TradeEntry};
 
 pub type TfTrades = Vec<TfTrade>;
@@ -73,4 +74,12 @@ pub struct GlobalConfig {
 	pub tf2: u64,
 	pub tf3: u64,
 	pub key: AccessKey,
+}
+
+#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Serialize, Deserialize)]
+pub struct Symbol {
+	pub symbol: String,
+	pub exchange: ExchangeId,
+	pub base_asset_precision: u32,
+	pub quote_asset_precision: u32,
 }

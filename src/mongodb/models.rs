@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_with::*;
+use crate::types::Symbol;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct ChoppinessIndexEntry {
@@ -55,6 +56,7 @@ pub struct TradeEntry {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TfTrade {
+    pub symbol: Symbol,
     pub tf: u64,
     pub id: u64,
     pub timestamp: u64,
