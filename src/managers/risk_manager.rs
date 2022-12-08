@@ -18,6 +18,7 @@ use tokio::task::JoinHandle;
 
 use crate::{AccessKey, GlobalConfig};
 use crate::events::{EventEmitter, EventResult, EventSink};
+use crate::executors::{ExchangeAccount, ExchangeAccountInfo, Order};
 use crate::managers::Manager;
 use crate::types::TfTrades;
 
@@ -36,16 +37,39 @@ pub enum ExecutionCommand {
 pub struct RiskManager {
     pub global_config: Arc<GlobalConfig>,
     pub config: RiskManagerConfig,
-    pub futures_account: FuturesAccount,
-    pub account: Account,
-    pub futures_market: FuturesMarket,
-    pub binance: FuturesGeneral,
-    pub user_stream: UserStream,
-    pub futures_user_stream: FuturesUserStream,
-    pub symbols: Vec<Symbol>,
-    pub savings: Savings,
+    pub account: Box<Arc<dyn ExchangeAccountInfo>>,
     tf_trades: Arc<AsyncReceiver<TfTrades>>,
     execution_commands: Arc<AsyncReceiver<ExecutionCommand>>,
+    subscribers: Arc<RwLock<Vec<AsyncSender<Order>>>>,
+    order_q: Arc<RwLock<VecDeque<Order>>>,
+}
+
+#[async_trait]
+impl EventEmitter<'_,Order> for RiskManager {
+    fn get_subscribers(&self) -> Arc<RwLock<Vec<AsyncSender<Order>>>> {
+        self.subscribers.clone()
+    }
+    
+    async fn emit(&self) -> anyhow::Result<JoinHandle<()>> {
+        let order_q = self.order_q.clone();
+        let subscribers = self.subscribers.clone();
+        Ok(tokio::spawn(async move {
+            //send waiting orders to the executor
+            loop {
+                let mut oq = order_q.write().await;
+                let order = oq.pop_front();
+                std::mem::drop(oq);
+                if let Some(order) = order {
+                   // there is only one subscriber
+                    let subs = subscribers.read().await;
+                    let sender = subs.get(0).unwrap();
+                    sender.send(order).await;
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+        }))
+    }
 }
 #[async_trait]
 impl EventSink<ExecutionCommand> for RiskManager {
@@ -54,6 +78,7 @@ impl EventSink<ExecutionCommand> for RiskManager {
     }
     
     async fn handle_event(&self, event_msg: ExecutionCommand) -> EventResult {
+        /// decide on size and price and order_type and send to order_q
         Ok(tokio::spawn(async move {
             match event_msg {
                 ExecutionCommand::OpenLongPosition => {
@@ -105,42 +130,19 @@ impl EventSink< TfTrades> for RiskManager {
     
 }
 
-//TODO: create a binance account struct that holds all the binance account info
 impl RiskManager {
-    pub async fn new(global_config: GlobalConfig, config: RiskManagerConfig, tf_trades: AsyncReceiver<TfTrades>, execution_commands: AsyncReceiver<ExecutionCommand>) -> Self {
+    pub fn new(global_config: GlobalConfig, config: RiskManagerConfig, tf_trades: AsyncReceiver<TfTrades>, execution_commands: AsyncReceiver<ExecutionCommand>, account: Box<Arc<dyn ExchangeAccountInfo>>) -> Self {
         let key = &global_config.key;
     
-        let futures_account =
-            FuturesAccount::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
-    
-        let binance = FuturesGeneral::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
-        let account = Account::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
-    
-        let user_stream = UserStream::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
-        let futures_user_stream =
-            FuturesUserStream::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
-        let futures_market =
-            FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
-        let savings = Savings::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
-        let symbols =
-            match binance.exchange_info().await {
-                Ok(e) => e.symbols,
-                Err(e) => panic!("Error getting symbols: {}", e),
-            };
 
         RiskManager {
             global_config: Arc::new(global_config),
             config,
-            futures_account,
-            binance,
             account,
-            futures_market,
-            user_stream,
-            futures_user_stream,
-            symbols,
-            savings,
             tf_trades: Arc::new(tf_trades),
             execution_commands: Arc::new(execution_commands),
+            subscribers: Arc::new(RwLock::new(Vec::new())),
+            order_q: Arc::new(RwLock::new(VecDeque::new())),
         }
     }
 
@@ -151,23 +153,7 @@ impl RiskManager {
 }
 #[async_trait]
 impl Manager for RiskManager {
-    fn get_symbols(&self) -> Vec<Symbol> {
-        self.symbols.clone()
-    }
-    
-    fn get_futures_account(&self) -> FuturesAccount {
-        self.futures_account.clone()
-    }
-    
-    fn get_futures_market(&self) -> FuturesMarket {
-        self.futures_market.clone()
-    }
-    
-    fn get_savings(&self) -> Savings {
-        self.savings.clone()
-    }
-    
-    
+
     async fn manage(&self) {
         let start_time = SystemTime::now()
               .duration_since(UNIX_EPOCH)

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_with::*;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct ChoppinessIndexEntry {
     pub tf: u64,
     pub value: f64,
@@ -11,7 +11,7 @@ pub struct ChoppinessIndexEntry {
     pub close_time: u64
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct AverageDirectionalIndexEntry {
     pub tf: u64,
     pub value: f64,
@@ -57,6 +57,7 @@ pub struct TradeEntry {
 pub struct TfTrade {
     pub tf: u64,
     pub id: u64,
+    pub timestamp: u64,
     pub trades: Vec<TradeEntry>,
 }
 

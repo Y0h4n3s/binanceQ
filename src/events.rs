@@ -100,6 +100,10 @@ impl EventEmitter<'_, TfTrades> for TfTradeEmitter {
                             let trade = TfTrade {
                                 id: last_id,
                                 tf: tf,
+                                timestamp: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs(),
                                 trades,
                             };
                             last_id += 1;

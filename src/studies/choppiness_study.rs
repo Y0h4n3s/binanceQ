@@ -158,10 +158,11 @@ impl EventSink<TfTrades> for ChoppinessStudy {
 			"step_id": -1
 		}).limit(1).build())).await?.next().await;
 				
-				if last_chopp.is_none() || last_chopp.clone().unwrap().is_err() {
-					return Err(anyhow!("No last choppiness index found"));
-				}
-				let last_chop = last_chopp.unwrap()?;
+				let last_chop = if last_chopp.is_none() || last_chopp.clone().unwrap().is_err() {
+					ChoppinessIndexEntry::default()
+				} else {
+					last_chopp.unwrap()?
+				};
 				
 				let true_ranges = past_trades.iter().map(|chunk| {
 					let candle = Candle::from(chunk);

@@ -11,17 +11,9 @@ use binance::savings::Savings;
 use futures::future::BoxFuture;
 
 pub mod risk_manager;
-pub mod money_manager;
 pub mod strategy_manager;
 
 #[async_trait]
 pub trait Manager {
-	
-	fn get_symbols(&self) -> Vec<Symbol>;
-	fn get_futures_account(&self) -> FuturesAccount;
-	fn get_futures_market(&self) -> FuturesMarket;
-	fn get_savings(&self) -> Savings;
-
-
 	async fn manage(&self);
 }

@@ -157,10 +157,11 @@ impl EventSink<TfTrades> for DirectionalIndexStudy {
 			"step_id": -1
 		}).limit(1).build())).await?.next().await;
 				
-				if last_adii.is_none() || last_adii.clone().unwrap().is_err() {
-					return Err(anyhow!("No last adi found"));
-				}
-				let prev_value = last_adii.unwrap().unwrap();
+				let prev_value = if last_adii.is_none() || last_adii.clone().unwrap().is_err() {
+					AverageDirectionalIndexEntry::default()
+				} else {
+					last_adii.unwrap().unwrap()
+				};
 				
 				let candle = Candle::from(&trades);
 				let value = IndicatorInstance::next(&mut adi_instance, &candle);

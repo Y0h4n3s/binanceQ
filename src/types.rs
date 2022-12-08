@@ -39,6 +39,7 @@ impl From<Vec<TradeEntry>> for Candle {
 		let tf_trade_entry = TfTrade {
 			tf: 1,
 			id: 1,
+			timestamp: trades.iter().map(|trade| trade.timestamp).min().unwrap_or(0),
 			trades
 		};
 		Self::from(&tf_trade_entry)
