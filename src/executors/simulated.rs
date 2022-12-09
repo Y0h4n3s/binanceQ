@@ -1,10 +1,12 @@
 use std::collections::VecDeque;
 use flurry::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 use kanal::{AsyncReceiver, AsyncSender};
 use rust_decimal::Decimal;
 use tokio::sync::RwLock;
 use async_trait::async_trait;
+use rust_decimal::prelude::ToPrimitive;
 use tokio::task::JoinHandle;
 use crate::{EventEmitter, EventSink, ExecutionCommand, TfTrades};
 use crate::events::EventResult;
@@ -26,30 +28,34 @@ pub type ArcSet<T> = Arc<HashSet<T>>;
 pub struct SimulatedAccount {
 	pub symbol_accounts: ArcMap<Symbol, SymbolAccount>,
 	pub open_orders: ArcMap<Symbol, ArcSet<OrderStatus>>,
-	pub filled_orders: ArcMap<Symbol, ArcSet<OrderStatus>>,
+	pub order_history: ArcMap<Symbol, ArcSet<OrderStatus>>,
 	pub trade_history: ArcMap<Symbol, ArcSet<Trade>>,
 	trade_q: Arc<RwLock<VecDeque<Trade>>>,
 	pub trade_subscribers: Arc<RwLock<Vec<AsyncSender<Trade>>>>,
 	pub positions: ArcMap<Symbol, Arc<RwLock<Position>>>,
 	tf_trades: Arc<AsyncReceiver<TfTrades>>,
+	order_statuses: Arc<AsyncReceiver<OrderStatus>>,
 	
 }
 
 pub struct SimulatedExecutor {
 	pub account: Arc<SimulatedAccount>,
 	pub orders: Arc<AsyncReceiver<Order>>,
+	order_status_q: Arc<RwLock<VecDeque<OrderStatus>>>,
+pub order_status_subscribers: Arc<RwLock<Vec<AsyncSender<OrderStatus>>>>,
 }
 impl SimulatedAccount {
-	pub fn new(tf_trades: AsyncReceiver<TfTrades>) -> Self {
+	pub fn new(tf_trades: AsyncReceiver<TfTrades>, order_statuses: AsyncReceiver<OrderStatus>) -> Self {
 		Self {
 			symbol_accounts: Arc::new(HashMap::new()),
 			open_orders: Arc::new(HashMap::new()),
-			filled_orders: Arc::new(HashMap::new()),
+			order_history: Arc::new(HashMap::new()),
 			trade_history:  Arc::new(HashMap::new()),
 			positions:  Arc::new(HashMap::new()),
 			tf_trades: Arc::new(tf_trades),
 			trade_q: Arc::new(RwLock::new(VecDeque::new())),
-			trade_subscribers: Arc::new(Vec::new()),
+			trade_subscribers: Arc::new(RwLock::new(Vec::new())),
+			order_statuses: Arc::new(order_statuses),
 		}
 	}
 	
@@ -60,6 +66,8 @@ impl SimulatedExecutor{
 		Self {
 			account: Arc::new(SimulatedAccount::new(trades_rx)),
 			orders: Arc::new(orders_rx),
+			order_status_q: Arc::new(RwLock::new(VecDeque::new())),
+			order_status_subscribers: Arc::new(RwLock::new(Vec::new())),
 		}
 	}
 	
@@ -74,12 +82,15 @@ impl EventEmitter<'_, Trade> for SimulatedAccount {
 	
 	async fn emit(&self) -> anyhow::Result<JoinHandle<()>> {
 		let trade_q = self.trade_q.clone();
+		let subscribers = self.trade_subscribers.clone();
+		let trade_history = self.trade_history.clone();
 		Ok(tokio::spawn(async move {
 			loop {
 				let trade = trade_q.write().await.pop_front();
 				if let Some(trade) = trade {
-					let subscribers = self.trade_subscribers.read().await;
-					for subscriber in subscribers {
+					trade_history.pin().get(&trade.symbol).pin().insert(trade.clone());
+					let subs = subscribers.read().await;
+					for subscriber in subs {
 						let _ = subscriber.send(trade.clone()).await;
 					}
 				}
@@ -97,10 +108,86 @@ impl EventSink<TfTrades> for SimulatedAccount {
 	
 	async fn handle_event(&self, event_msg: TfTrades) -> EventResult {
 		let open_orders = self.open_orders.clone();
+		let trade_q = self.trade_q.clone();
+		let filled_orders = self.order_history.clone();
+		let positions = self.positions.clone();
 		Ok(tokio::spawn(async move {
 			// if any open orders are fillable move them to filled orders and update position and push a trade event to trade queue if it is a order opposite to position
-			for trade in event_msg {
-			
+			for tf_trade in event_msg {
+				let symbol = tf_trade.symbol.clone();
+				let open_orders = open_orders.pin().get(&symbol).unwrap().clone();
+				let mut filled_orders = filled_orders.pin().get(&symbol).pin();
+				for trade in tf_trade.trades {
+					let guard = open_orders.guard();
+					for order in open_orders.iter(&guard) {
+						match order {
+							// could potentially match on qty here and update order status to partially filled
+							OrderStatus::Pending(order) => {
+								if order.side == Side::Buy &&  order.price.gt(trade.price.into()) {
+									let mut position = positions.pin().get(&symbol).pin();
+									let mut w = position.write().await;
+									if let Some(trade) = w.apply_order(order) {
+										trades.push(trade.clone());
+										let mut trade_q = trade_q.write().await;
+										trade_q.push_back(trade);
+										
+									}
+									filled_orders.insert(OrderStatus::Filled(order.clone()));
+								} else if order.side == Side::Sell && order.price.lt(trade.price.into()) {
+									let mut position = positions.pin().get(&symbol).pin();
+									let mut w = position.write().await;
+									if let Some(trade) = w.apply_order(order) {
+										trades.push(trade.clone());
+										let mut trade_q = trade_q.write().await;
+										trade_q.push_back(trade);
+										
+									}
+									filled_orders.insert(OrderStatus::Filled(order.clone()));
+								}
+							}
+							_ => {}
+						}
+					}
+				}
+				
+			}
+		}))
+	}
+}
+
+#[async_trait]
+impl EventSink<OrderStatus> for SimulatedAccount {
+	fn get_receiver(&self) -> Arc<AsyncReceiver<OrderStatus>> {
+		self.order_statuses.clone()
+	}
+	
+	async fn handle_event(&self, event_msg: OrderStatus) -> EventResult {
+		let open_orders = self.open_orders.clone();
+		let order_history = self.order_history.clone();
+		let trade_q = self.trade_q.clone();
+		let positions = self.positions.clone();
+		
+		Ok(tokio::spawn(async move {
+			match event_msg {
+				OrderStatus::Pending(order) => {
+					open_orders.pin().get(&order.symbol).pin().insert(order.clone());
+				
+				}
+				// if the order was a market order it is immediately filled so  move it to order history and adjust position
+				OrderStatus::Filled(order) => {
+					order_history.pin().get(&order.symbol).pin().insert(order.clone());
+					// adjust position
+					let position = positions.pin().get(&order.symbol).pin();
+					let mut position = position.write().await;
+					if let Some(trade) = position.apply_order(order) {
+							trade_q.write().await.push_back(trade);
+					}
+					
+				}
+				OrderStatus::Canceled(order, reason) => {
+					eprintln!("order canceled reason: {:?}", reason);
+					order_history.pin().get(&order.symbol).pin().insert(order);
+				}
 			}
 		}))
 	}
@@ -114,8 +201,11 @@ impl EventSink<Order> for SimulatedExecutor {
 	
 	async fn handle_event(&self, event_msg: Order) -> EventResult {
 		let res = self.execute_order(event_msg).await;
+		let order_status_q = self.order_status_q.clone();
 		Ok(tokio::spawn(async move {
-			res
+			if let Ok(res) = res {
+				order_status_q.write().await.push_back(res);
+			}
 		}))
 	}
 }
@@ -123,11 +213,25 @@ impl EventSink<Order> for SimulatedExecutor {
 #[async_trait]
 impl EventEmitter<'_, OrderStatus> for SimulatedExecutor {
 	fn get_subscribers(&self) -> Arc<RwLock<Vec<AsyncSender<OrderStatus>>>> {
-		todo!()
+		self.order_status_subscribers.clone()
 	}
 	
 	async fn emit(&self) -> anyhow::Result<JoinHandle<()>> {
-		todo!()
+		let q = self.order_status_q.clone();
+		Ok(tokio::spawn(async move {
+			loop {
+				let mut w = q.write().await;
+				let order_status = w.pop_front();
+				std::mem::drop(w);
+				if let Some(order_status) = order_status {
+					let subs = self.order_status_subscribers.read().await;
+					for subscriber in subs {
+						let _ = subscriber.send(order_status.clone()).await;
+					}
+				}
+				tokio::time::sleep(Duration::from_millis(100)).await;
+			}
+		}))
 	}
 }
 
@@ -176,7 +280,7 @@ impl ExchangeAccount for SimulatedAccount {
 		if symbol_account.base_asset_free < order.quantity {
 			return Ok(OrderStatus::Canceled(order, "Insufficient balance".to_string()));
 		}
-		self.open_orders.get(&order.symbol, &guard).unwrap().pin().insert(OrderStatus::Pending(order.clone()));
+		
 		Ok(OrderStatus::Pending(order))
 	}
 	

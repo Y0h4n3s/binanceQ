@@ -18,6 +18,21 @@ pub struct Position {
 	pub qty: Decimal,
 	pub quote_qty: Decimal
 }
+
+impl Position {
+	pub fn new(side: Side, symbol: Symbol, qty: Decimal, quote_qty: Decimal) -> Self {
+		Self {
+			side,
+			symbol,
+			qty,
+			quote_qty
+		}
+	}
+	pub fn apply_order(&mut self, order: &Order) -> Option<Trade> {
+		// TODO
+		None
+	}
+}
 #[derive(Hash, Eq,Ord, PartialOrd, PartialEq, Clone)]
 pub enum OrderType {
 	Limit,
@@ -93,25 +108,25 @@ pub trait TradeExecutor: EventSink<Order> + for <'a> EventEmitter<'a,OrderStatus
 	}
 	fn get_account(&self) -> &Self::Account;
 	
-	async fn execute_order(&self, order: Order) -> anyhow::Result<()> {
+	async fn execute_order(&self, order: Order) -> anyhow::Result<OrderStatus> {
 		match order.order_type {
 			OrderType::Limit => {
 				match order.side {
 					Side::Buy => {
-						self.get_account().limit_long(order).await;
+						self.get_account().limit_long(order).await
 					},
 					Side::Sell => {
-						self.get_account().limit_short(order).await;
+						self.get_account().limit_short(order).await
 					}
 				}
 			},
 			OrderType::Market => {
 				match order.side {
 					Side::Buy => {
-						self.get_account().market_long(order).await;
+						self.get_account().market_long(order).await
 					},
 					Side::Sell => {
-						self.get_account().market_short(order).await;
+						self.get_account().market_short(order).await
 					}
 				}
 			},
@@ -119,6 +134,5 @@ pub trait TradeExecutor: EventSink<Order> + for <'a> EventEmitter<'a,OrderStatus
 				todo!()
 			}
 		}
-		Ok(())
 	}
 }
