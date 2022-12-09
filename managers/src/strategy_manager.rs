@@ -3,15 +3,13 @@ use std::time::Duration;
 use async_std::sync::Arc;
 use futures::stream::FuturesUnordered;
 use kanal::{AsyncReceiver, AsyncSender};
-use crate::events::EventEmitter;
-use crate::GlobalConfig;
-use crate::managers::risk_manager::ExecutionCommand;
-use crate::strategies::{SignalGenerator, StrategyEdge};
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use futures::StreamExt;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
+use binance_q_strategies::{SignalGenerator, StrategyEdge};
+use binance_q_types::{ExecutionCommand, GlobalConfig};
 
 
 pub struct StrategyManager {

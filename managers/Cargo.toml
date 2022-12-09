@@ -1,0 +1,15 @@
+[package]
+name = "binance_q_managers"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+async-std = "1.12.0"
+tokio = "1.23.0"
+async-trait = "0.1.59"
+kanal = "0.1.0-pre7"
+futures = "0.3.18"
+binance_q_types = { path = "../types" }
+binance_q_strategies = { path = "../strategies" }

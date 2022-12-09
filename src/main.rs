@@ -6,31 +6,8 @@ use std::env;
 use ::mongodb::bson::doc;
 use ::mongodb::options::FindOptions;
 
-use crate::managers::risk_manager::{ExecutionCommand, RiskManager, RiskManagerConfig};
-use crate::managers::strategy_manager::StrategyManager;
-use crate::strategies::chop_directional::ChopDirectionalStrategy;
-use crate::strategies::random_strategy::RandomStrategy;
-use crate::studies::choppiness_study::ChoppinessStudy;
-use crate::studies::{atr_study::ATRStudy, Study, StudyConfig};
-use crate::studies::directional_index_study::DirectionalIndexStudy;
-use crate::types::{AccessKey, GlobalConfig, TfTrades};
 use clap::{arg, command, value_parser, ArgAction, Command};
-use crate::backtester::{BackTester, BackTesterConfig};
 
-mod bracket_order;
-mod cmds;
-mod errors;
-mod events;
-mod helpers;
-mod loader;
-mod managers;
-mod market_classifier;
-mod mongodb;
-mod strategies;
-mod studies;
-mod types;
-mod executors;
-mod backtester;
 
 static KEY: Lazy<AccessKey> = Lazy::new(|| {
     let api_key = env::var("API_KEY")
@@ -45,7 +22,6 @@ static KEY: Lazy<AccessKey> = Lazy::new(|| {
 
 fn main() -> Result<(), anyhow::Error> {
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    tracing_subscriber::fmt::try_init().unwrap();
     runtime.block_on(async_main())
 }
 async fn async_main() -> anyhow::Result<()> {

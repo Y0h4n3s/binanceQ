@@ -1,16 +1,13 @@
-pub mod simulated;
+pub mod back_tester;
+mod simulated;
+
 
 use async_std::sync::Arc;
 use async_trait::async_trait;
 use flurry::HashSet;
 use rust_decimal::Decimal;
-use crate::{EventEmitter, EventSink, ExecutionCommand};
-use crate::executors::simulated::{SymbolAccount};
-use crate::types::Symbol;
+use binance_q_types::{ExchangeId, Order, OrderStatus, OrderType, Side, Symbol, SymbolAccount, Trade};
 
-pub enum ExchangeId {
-	Simulated
-}
 #[derive(Hash, Eq,Ord, PartialOrd, PartialEq, Clone)]
 pub struct Position {
 	pub side: Side,
@@ -18,7 +15,6 @@ pub struct Position {
 	pub qty: Decimal,
 	pub quote_qty: Decimal
 }
-
 impl Position {
 	pub fn new(side: Side, symbol: Symbol, qty: Decimal, quote_qty: Decimal) -> Self {
 		Self {
@@ -32,53 +28,6 @@ impl Position {
 		// TODO
 		None
 	}
-}
-#[derive(Hash, Eq,Ord, PartialOrd, PartialEq, Clone)]
-pub enum OrderType {
-	Limit,
-	Market,
-	StopLoss,
-	StopLossLimit,
-	TakeProfit,
-	TakeProfitLimit,
-	StopLossTrailing,
-}
-#[derive(Hash, Eq,Ord, PartialOrd, PartialEq, Clone)]
-pub enum Side {
-	Buy,
-	Sell,
-}
-#[derive(Hash, Eq, Ord, PartialOrd, PartialEq, Clone)]
-pub enum OrderStatus {
-	Pending(Order),
-	Filled(Order),
-	Canceled(Order, String),
-}
-#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq)]
-pub struct Trade {
-	pub id: u64,
-	pub order_id: u64,
-	pub symbol: Symbol,
-	pub maker: bool,
-	pub price: Decimal,
-	pub commission: Decimal,
-	pub position_side: Side,
-	pub side: Side,
-	pub realized_pnl: Decimal,
-	pub qty: Decimal,
-	pub quote_qty: Decimal,
-	pub time: u64,
-}
-
-#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq)]
-pub struct Order {
-	pub id: u64,
-	pub symbol: Symbol,
-	pub side: Side,
-	pub price: Decimal,
-	pub quantity: Decimal,
-	pub time: u64,
-	pub order_type: OrderType,
 }
 
 #[async_trait]
@@ -112,20 +61,20 @@ pub trait TradeExecutor: EventSink<Order> + for <'a> EventEmitter<'a,OrderStatus
 		match order.order_type {
 			OrderType::Limit => {
 				match order.side {
-					Side::Buy => {
+					Side::Bid => {
 						self.get_account().limit_long(order).await
 					},
-					Side::Sell => {
+					Side::Ask => {
 						self.get_account().limit_short(order).await
 					}
 				}
 			},
 			OrderType::Market => {
 				match order.side {
-					Side::Buy => {
+					Side::Bid => {
 						self.get_account().market_long(order).await
 					},
-					Side::Sell => {
+					Side::Ask => {
 						self.get_account().market_short(order).await
 					}
 				}

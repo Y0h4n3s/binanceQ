@@ -2,13 +2,12 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use async_std::sync::Arc;
 use tokio::sync::{ RwLock};
+use binance_q_types::{GlobalConfig, Order, OrderStatus, StudyConfig, TfTrade, TfTrades};
 use futures::TryStreamExt;
 use mongodb::bson::doc;
-use crate::mongodb::client::MongoClient;
-use crate::{executors, loader, ChoppinessStudy, DirectionalIndexStudy, EventEmitter, GlobalConfig, RiskManager, RiskManagerConfig, StrategyManager, TfTradeEmitter, ExecutionCommand, ChopDirectionalStrategy, StudyConfig, EventSink, TfTrades};
+
 use mongodb::options::FindOptions;
-use crate::executors::{ExchangeAccountInfo, Order, OrderStatus};
-use crate::mongodb::models::TfTrade;
+use crate::ExchangeAccountInfo;
 
 #[derive(Debug, Clone)]
 pub struct BackTesterConfig {
@@ -125,6 +124,7 @@ impl BackTester {
 	    // let mut event_registers = vec![];
 	    
 	    // step over each tf_trade
+	    // make use of tokio's barrier
 	    'step: loop {
 		    if let Some(trade) = tf_trade_steps.pop() {
 			    trades_channel.0.send(vec![trade]).await;

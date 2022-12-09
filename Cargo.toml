@@ -27,6 +27,5 @@ dyn-clone = "1.0.9"
 image = "0.24.5"
 kanal = "0.1.0-pre7"
 rand = "0.8.5"
-tracing = "0.1.37"
-tracing-subscriber = "0.3.16"
 mongodb = {version = "2.1.0", default-features = false, features = ["tokio-runtime"]}
+binance_q_types = { path = "./types"}

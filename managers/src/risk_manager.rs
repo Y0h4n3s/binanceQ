@@ -3,20 +3,12 @@ use async_std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use binance::account::Account;
-use binance::api::Binance;
-use binance::futures::account::FuturesAccount;
-use binance::futures::general::FuturesGeneral;
-use binance::futures::market::FuturesMarket;
-use binance::futures::model::{ExchangeInformation};
-use binance::futures::userstream::FuturesUserStream;
-use binance::savings::Savings;
-use binance::userstream::UserStream;
 use kanal::{AsyncReceiver, AsyncSender};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
+use binance_q_types::{ExecutionCommand, GlobalConfig, Order, TfTrades};
 
-use crate::{AccessKey, GlobalConfig};
+use crate::{AccessKey, GlobalConfig, Manager};
 use crate::events::{EventEmitter, EventResult, EventSink};
 use crate::executors::{ExchangeAccount, ExchangeAccountInfo, Order, OrderType, Side};
 use crate::managers::Manager;
@@ -27,13 +19,6 @@ pub struct RiskManagerConfig {
     pub max_risk_per_trade: f64,
 }
 
-#[derive(Clone)]
-pub enum ExecutionCommand {
-    OpenLongPosition(Symbol, f64),
-    OpenShortPosition(Symbol, f64),
-    CloseLongPosition(Symbol, f64),
-    CloseShortPosition(Symbol, f64),
-}
 pub struct RiskManager {
     pub global_config: Arc<GlobalConfig>,
     pub config: RiskManagerConfig,

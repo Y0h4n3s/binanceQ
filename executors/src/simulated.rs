@@ -8,20 +8,9 @@ use tokio::sync::RwLock;
 use async_trait::async_trait;
 use rust_decimal::prelude::ToPrimitive;
 use tokio::task::JoinHandle;
-use crate::{EventEmitter, EventSink, ExecutionCommand, TfTrades};
-use crate::events::EventResult;
-use crate::executors::{ExchangeAccount, ExchangeAccountInfo, ExchangeId, Order, OrderStatus, OrderType, Position, Side, Trade, TradeExecutor};
-use crate::mongodb::models::TfTrade;
-use crate::types::Symbol;
+use binance_q_types::{Order, Symbol, OrderStatus, SymbolAccount, TfTrades, Trade, ExchangeId, Side};
+use crate::{ExchangeAccount, ExchangeAccountInfo, Position, TradeExecutor};
 
-#[derive(Hash, Eq, PartialEq, Clone)]
-pub struct SymbolAccount {
-	pub symbol: Symbol,
-	pub base_asset_free: Decimal,
-	pub base_asset_locked: Decimal,
-	pub quote_asset_free: Decimal,
-	pub quote_asset_locked: Decimal,
-}
 
 pub type ArcMap<K, V> = Arc<HashMap<K, V>>;
 pub type ArcSet<T> = Arc<HashSet<T>>;
@@ -63,11 +52,13 @@ impl SimulatedAccount {
 
 impl SimulatedExecutor{
 	pub fn new(orders_rx: AsyncReceiver<Order>, trades_rx: AsyncReceiver<TfTrades>) -> Self {
+		let order_statuses_channel = kanal::bounded_async(100);
+		
 		Self {
-			account: Arc::new(SimulatedAccount::new(trades_rx)),
+			account: Arc::new(SimulatedAccount::new(trades_rx, order_statuses_channel.1)),
 			orders: Arc::new(orders_rx),
 			order_status_q: Arc::new(RwLock::new(VecDeque::new())),
-			order_status_subscribers: Arc::new(RwLock::new(Vec::new())),
+			order_status_subscribers: Arc::new(RwLock::new(vec![order_statuses_channel.0])),
 		}
 	}
 	
@@ -86,7 +77,9 @@ impl EventEmitter<'_, Trade> for SimulatedAccount {
 		let trade_history = self.trade_history.clone();
 		Ok(tokio::spawn(async move {
 			loop {
-				let trade = trade_q.write().await.pop_front();
+				let mut w = trade_q.write().await;
+				let trade = w.pop_front();
+				std::mem::drop(w);
 				if let Some(trade) = trade {
 					trade_history.pin().get(&trade.symbol).pin().insert(trade.clone());
 					let subs = subscribers.read().await;
