@@ -1,8 +1,10 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 use async_std::sync::Arc;
+use binance_q_mongodb::client::MongoClient;
+use binance_q_mongodb::loader::TfTradeEmitter;
 use tokio::sync::{ RwLock};
-use binance_q_types::{GlobalConfig, Order, OrderStatus, StudyConfig, TfTrade, TfTrades};
+use binance_q_types::{ExecutionCommand, GlobalConfig, Order, OrderStatus, StudyConfig, TfTrade, TfTrades};
 use futures::TryStreamExt;
 use mongodb::bson::doc;
 
@@ -38,7 +40,7 @@ impl BackTester {
         let mongo_client = MongoClient::new().await;
         mongo_client.reset_db().await;
 
-        loader::load_history(
+        binance_q_mongodb::loader::load_history(
             self.global_config.key.clone(),
             self.config.symbol.clone(),
             self.config.length * 1000,

@@ -1,12 +1,12 @@
-pub mod back_tester;
-mod simulated;
+pub mod simulated;
 
 
+use std::collections::HashSet;
 use async_std::sync::Arc;
 use async_trait::async_trait;
-use flurry::HashSet;
 use rust_decimal::Decimal;
 use binance_q_types::{ExchangeId, Order, OrderStatus, OrderType, Side, Symbol, SymbolAccount, Trade};
+use binance_q_events::{EventEmitter, EventSink};
 
 #[derive(Hash, Eq,Ord, PartialOrd, PartialEq, Clone)]
 pub struct Position {
@@ -48,7 +48,6 @@ pub trait ExchangeAccount: ExchangeAccountInfo {
 }
 
 
-#[async_trait]
 pub trait TradeExecutor: EventSink<Order> + for <'a> EventEmitter<'a,OrderStatus> {
 	const ID: ExchangeId;
 	type Account: ExchangeAccount;
@@ -57,25 +56,26 @@ pub trait TradeExecutor: EventSink<Order> + for <'a> EventEmitter<'a,OrderStatus
 	}
 	fn get_account(&self) -> &Self::Account;
 	
-	async fn execute_order(&self, order: Order) -> anyhow::Result<OrderStatus> {
+	fn execute_order(&self, order: Order) -> anyhow::Result<OrderStatus> {
+		let handle = tokio::runtime::Handle::try_current()?;
 		match order.order_type {
 			OrderType::Limit => {
 				match order.side {
 					Side::Bid => {
-						self.get_account().limit_long(order).await
+						handle.block_on(self.get_account().limit_long(order))
 					},
 					Side::Ask => {
-						self.get_account().limit_short(order).await
+						handle.block_on(self.get_account().limit_short(order))
 					}
 				}
 			},
 			OrderType::Market => {
 				match order.side {
 					Side::Bid => {
-						self.get_account().market_long(order).await
+						handle.block_on(self.get_account().market_long(order))
 					},
 					Side::Ask => {
-						self.get_account().market_short(order).await
+						handle.block_on(self.get_account().market_short(order))
 					}
 				}
 			},

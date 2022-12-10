@@ -1,11 +1,21 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::task::JoinHandle;
+use async_broadcast::{Sender};
+use async_trait::async_trait;
+use mongodb::bson::doc;
+use mongodb::bson;
+use async_std::sync::Arc;
+use futures::TryStreamExt;
+use tokio::sync::{RwLock};
 use binance::api::Binance;
 use binance::futures::market::FuturesMarket;
 use binance::futures::model::{AggTrade};
 use binance::futures::model::AggTrades::AllAggTrades;
 use mongodb::results::InsertManyResult;
-use binance_q_types::TradeEntry;
+use binance_q_types::{Symbol, TradeEntry};
+use crate::client::MongoClient;
+use binance_q_types::{TfTrades, TfTrade, GlobalConfig, AccessKey, };
+use binance_q_events::{EventEmitter};
 
 
 pub fn to_tf_chunks(tf: u64, mut data: Vec<TradeEntry>) -> Vec<Vec<TradeEntry>> {
@@ -34,7 +44,7 @@ pub fn to_tf_chunks(tf: u64, mut data: Vec<TradeEntry>) -> Vec<Vec<TradeEntry>> 
 
 pub async fn insert_trade_entries(
     trades: &Vec<AggTrade>,
-    symbol: String,
+    symbol: Symbol,
 ) -> mongodb::error::Result<InsertManyResult> {
     let client = MongoClient::new().await;
     let mut entries = vec![];
@@ -57,7 +67,7 @@ pub async fn insert_trade_entries(
     client.trades.insert_many(entries, None).await
 }
 
-pub async fn load_history(key: AccessKey, symbol: String, fetch_history_span: u64) {
+pub async fn load_history(key: AccessKey, symbol: Symbol, fetch_history_span: u64) {
     let market = FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
 
     let starting_time = SystemTime::now()
@@ -71,7 +81,7 @@ pub async fn load_history(key: AccessKey, symbol: String, fetch_history_span: u6
             break;
         }
         let trades_result =
-            market.get_agg_trades(symbol.clone(), None, Some(start_time), None, Some(1000)).await;
+            market.get_agg_trades(symbol.symbol.clone(), None, Some(start_time), None, Some(1000)).await;
         if let Ok(t) = trades_result {
             match t {
                 AllAggTrades(trades) => {
@@ -90,7 +100,7 @@ pub async fn load_history(key: AccessKey, symbol: String, fetch_history_span: u6
 }
 
 // TODO: use websockets for this
-pub async fn start_loader(key: AccessKey, symbol: String, tf1: u64) -> JoinHandle<()> {
+pub async fn start_loader(key: AccessKey, symbol: Symbol, tf1: u64) -> JoinHandle<()> {
     let market = FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
 	tokio::spawn(async move {
         let mut last_id = None;
@@ -103,7 +113,7 @@ pub async fn start_loader(key: AccessKey, symbol: String, tf1: u64) -> JoinHandl
         );
         loop {
             let trades_result =
-                market.get_agg_trades(&symbol, last_id, start_time, None, Some(1000)).await;
+                market.get_agg_trades(&symbol.symbol, last_id, start_time, None, Some(1000)).await;
             if let Ok(t) = trades_result {
                 match t {
                     AllAggTrades(trades) => {
@@ -127,7 +137,7 @@ pub async fn start_loader(key: AccessKey, symbol: String, tf1: u64) -> JoinHandl
 
 
 pub struct TfTradeEmitter {
-    subscribers: Arc<RwLock<Vec<AsyncSender<TfTrades>>>>,
+    subscribers: Arc<RwLock<Sender<TfTrades>>>,
     pub tf: u64,
     global_config: GlobalConfig,
 }
@@ -135,7 +145,7 @@ pub struct TfTradeEmitter {
 impl TfTradeEmitter {
     pub fn new(tf: u64, global_config: GlobalConfig) -> Self {
         Self {
-            subscribers: Arc::new(RwLock::new(Vec::new())),
+            subscribers: Arc::new(RwLock::new(async_broadcast::broadcast(1).0)),
             tf,
             global_config,
         }
@@ -158,7 +168,7 @@ impl TfTradeEmitter {
 }
 #[async_trait]
 impl EventEmitter<'_, TfTrades> for TfTradeEmitter {
-    fn get_subscribers(&self) -> Arc<RwLock<Vec<AsyncSender<TfTrades>>>> {
+    fn get_subscribers(&self) -> Arc<RwLock<Sender<TfTrades>>> {
         self.subscribers.clone()
     }
     
@@ -210,15 +220,11 @@ impl EventEmitter<'_, TfTrades> for TfTradeEmitter {
                     }
                     if tf_trades.len() > 0 {
                         last_timestamp = tf_trades.last().unwrap().trades.last().unwrap().timestamp;
-                        futures::future::join_all(
                             subscribers
                                   .read()
                                   .await
-                                  .iter()
-                                  .map(|s| s.send(tf_trades.clone()))
-                                  .collect::<Vec<_>>(),
-                        )
-                              .await;
+                                  .broadcast(tf_trades.clone())
+                                  .await.unwrap();
                     }
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(tf)).await;

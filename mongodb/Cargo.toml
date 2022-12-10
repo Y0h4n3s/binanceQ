@@ -8,6 +8,12 @@ edition = "2021"
 [dependencies]
 tokio = "1.23.0"
 mongodb = {version = "2.1.0", default-features = false, features = ["tokio-runtime"]}
+async-broadcast = "0.4.1"
 kanal = "0.1.0-pre7"
 binance = { git = "https://github.com/Y0h4n3s/binance-async-rs" }
 binance_q_types = { path = "../types" }
+binance_q_events = { path = "../events" }
+anyhow = "1.0.66"
+async-trait = "0.1.59"
+futures = "0.3.25"
+async-std = "1.12.0"

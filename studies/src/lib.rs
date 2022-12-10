@@ -2,10 +2,8 @@ use tokio::task::JoinHandle;
 pub mod atr_study;
 pub mod choppiness_study;
 pub mod directional_index_study;
-
-
-
-
+use binance_q_types::{StudyTypes, Sentiment, TfTrades};
+use binance_q_events::EventSink;
 
 
 pub trait Study: EventSink<TfTrades> {

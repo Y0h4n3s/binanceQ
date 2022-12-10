@@ -1,37 +1,40 @@
-use std::time::Duration;
 use async_std::sync::Arc;
-use tokio::sync::broadcast::{Sender, Receiver};
-use tokio::sync::{Notify, RwLock, SemaphorePermit};
+use async_broadcast::{Sender, Receiver};
+use tokio::sync::{RwLock};
 use tokio::task::JoinHandle;
 use binance_q_events::{EventSink, EventEmitter};
 use async_trait::async_trait;
 
 #[derive(Clone, Debug)]
 struct DummyEvent {
-	pub dummy_count: u8,
+	pub dummy_count: u16,
 }
 
+type ArcLock<T> = Arc<RwLock<T>>;
 struct DummyEmitter {
-	pub dummy_event_type: Arc<RwLock<DummyEvent>>,
-	subscribers: Arc<RwLock<Sender<DummyEvent>>>,
+	pub dummy_event_type: ArcLock<DummyEvent>,
+	subscribers: ArcLock<Sender<DummyEvent>>,
 }
 
 #[derive(Clone)]
 struct DummySink {
-	final_event: Arc<RwLock<DummyEvent>>,
-	receiver: Arc<RwLock<Receiver<DummyEvent>>>,
+	final_event: ArcLock<DummyEvent>,
+	receiver: ArcLock<Receiver<DummyEvent>>,
+	working: Arc<std::sync::RwLock<bool>>,
 }
 #[derive(Clone)]
 struct DummySinkTwo {
-	final_event: Arc<RwLock<DummyEvent>>,
-	receiver: Arc<RwLock<Receiver<DummyEvent>>>,
+	final_event: ArcLock<DummyEvent>,
+	receiver: ArcLock<Receiver<DummyEvent>>,
+	working: Arc<std::sync::RwLock<bool>>,
+	
 }
 
 impl DummyEmitter {
 	pub fn new() -> Self {
 		Self {
 			dummy_event_type: Arc::new(RwLock::new(DummyEvent { dummy_count: 0 })),
-			subscribers: Arc::new(RwLock::new(tokio::sync::broadcast::channel(1).0)),
+			subscribers: Arc::new(RwLock::new(async_broadcast::broadcast(1).0)),
 		}
 	}
 }
@@ -41,6 +44,7 @@ impl DummySink {
 		Self {
 			final_event: Arc::new(RwLock::new(DummyEvent { dummy_count: 1 })),
 			receiver: Arc::new(RwLock::new(events)),
+			working: Arc::new(std::sync::RwLock::new(false)),
 		}
 	}
 }
@@ -50,6 +54,7 @@ impl DummySinkTwo {
 		Self {
 			final_event: Arc::new(RwLock::new(DummyEvent { dummy_count: 1 })),
 			receiver: Arc::new(RwLock::new(events)),
+			working: Arc::new(std::sync::RwLock::new(false)),
 		}
 	}
 }
@@ -66,12 +71,12 @@ impl EventEmitter<'_, DummyEvent> for DummyEmitter {
 		Ok(tokio::spawn(async move {
 			loop {
 				let mut event = event_type.write().await;
-				if event.dummy_count > u8::MAX - 3 {
+				if event.dummy_count > u16::MAX - 3 {
 					break;
 				}
 				event.dummy_count += 1;
-				let mut subs = subs.write().await;
-				subs.send(event.clone()).unwrap();
+				let subs = subs.write().await;
+				subs.broadcast(event.clone()).await.unwrap();
 			}
 		}))
 	}
@@ -81,14 +86,22 @@ impl EventSink<DummyEvent> for DummySink {
 	fn get_receiver(&self) -> Arc<RwLock<Receiver<DummyEvent>>> {
 		self.receiver.clone()
 	}
-	
-	fn handle_event(&self, event_msg: DummyEvent) -> anyhow::Result<JoinHandle<()>> {
+	fn working(&self) -> bool {
+		self.working.read().unwrap().clone()
+	}
+	fn set_working(&self, working: bool) -> anyhow::Result<()> {
+		*self.working.write().unwrap() = working;
+		Ok(())
+	}
+	fn handle_event(&self, event_msg: DummyEvent) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+		
 		let final_event = self.final_event.clone();
 		
 		Ok(tokio::spawn(async move {
 			let mut f = final_event.write().await;
 			
 			f.dummy_count = event_msg.dummy_count;
+			Ok(())
 			// println!("Fina?l event: {:?}", f.dummy_count);
 		}))
 	}
@@ -98,15 +111,20 @@ impl EventSink<DummyEvent> for DummySinkTwo {
 	fn get_receiver(&self) -> Arc<RwLock<Receiver<DummyEvent>>> {
 		self.receiver.clone()
 	}
-	
-	fn handle_event(&self, event_msg: DummyEvent) -> anyhow::Result<JoinHandle<()>> {
+	fn working(&self) -> bool {
+		self.working.read().unwrap().clone()
+	}
+	fn set_working(&self, working: bool) -> anyhow::Result<()> {
+		*self.working.write().unwrap() = working;
+		Ok(())
+	}
+	fn handle_event(&self, event_msg: DummyEvent) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
 		let final_event = self.final_event.clone();
 		Ok(tokio::spawn(async move {
 			let mut f = final_event.write().await;
 			
 			f.dummy_count = event_msg.dummy_count + 1;
-			
-			
+			Ok(())
 		}))
 	}
 }
@@ -118,35 +136,35 @@ mod tests {
 	
 	#[tokio::test]
 	async fn test_events_throughput() -> anyhow::Result<()> {
-		let (sender, receiver) = tokio::sync::broadcast::channel::<DummyEvent>(100000);
+		let (sender, receiver) = async_broadcast::broadcast::<DummyEvent>(100);
 		
-		let dummy_sink = DummySink::new(sender.subscribe());
+		let dummy_sink = DummySink::new(sender.new_receiver());
 		let dummy_sink_two = DummySinkTwo::new(receiver);
 		let d_final = dummy_sink.final_event.clone();
 		let d_final_two = dummy_sink_two.final_event.clone();
 		let mut emitter = DummyEmitter::new();
 		emitter.subscribe(sender.clone()).await;
 		
-		let mut threads = vec![std::thread::spawn(move || {
-			let res = dummy_sink.listen();
-		}), std::thread::spawn(move || {
-			dummy_sink_two.listen();
-		})];
-		emitter.emit().await?.await;
+		std::thread::spawn(move || {
+			dummy_sink.listen().unwrap();
+			println!("Sink 1 done");
+		});
+		std::thread::spawn(move || {
+			dummy_sink_two.listen().unwrap();
+		});
+		emitter.emit().await?.await.unwrap();
 		emitter.shutdown().await;
-		std::mem::drop(sender);
-		tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-		// tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-		for thread in threads {
-			println!("Joining thread {}", thread.is_finished());
-			// thread.join().unwrap();
+		while sender.len() > 0 {
+			tokio::time::sleep(std::time::Duration::from_micros(100)).await;
 		}
+		std::mem::drop(sender);
 		
-		assert!(emitter.dummy_event_type.read().await.dummy_count > u8::MAX - 20);
-		assert!(d_final.read().await.dummy_count > u8::MAX - 20);
-		assert!(d_final_two.read().await.dummy_count > u8::MAX - 10);
+		assert_eq!(emitter.dummy_event_type.read().await.dummy_count, u16::MAX - 2);
+		assert_eq!(d_final.read().await.dummy_count, u16::MAX - 2);
+		assert_eq!(d_final_two.read().await.dummy_count, u16::MAX - 1);
 		Ok(())
 	}
+
 }
 
 

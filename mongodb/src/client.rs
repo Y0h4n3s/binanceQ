@@ -1,6 +1,6 @@
 use mongodb::Client;
 
-use crate::mongodb::models::{ATREntry, AverageDirectionalIndexEntry, BookSideEntry, ChoppinessIndexEntry, OpenInterestEntry, TfTrade, TradeEntry};
+use binance_q_types::{ATREntry, AverageDirectionalIndexEntry, BookSideEntry, ChoppinessIndexEntry, OpenInterestEntry, TfTrade, TradeEntry};
 
 pub struct MongoClient {
     pub database: mongodb::Database,

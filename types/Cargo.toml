@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 yata = "0.6.1"
 rust_decimal = "1.27.0"
+serde = "1.0.149"

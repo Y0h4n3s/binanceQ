@@ -1,41 +1,44 @@
-use anyhow::anyhow;
+use anyhow::{anyhow, Error};
 use tokio::task::JoinHandle;
-
+use async_broadcast::{Receiver, Sender};
 use futures::{StreamExt, TryStreamExt};
 use async_trait::async_trait;
 use mongodb::bson;
 use kanal::AsyncReceiver;
-use crate::{EventSink, StudyConfig, TfTradeEmitter};
-use crate::helpers::to_tf_chunks;
-use crate::mongodb::client::MongoClient;
-use crate::mongodb::models::{ChoppinessIndexEntry};
-use crate::studies::{RANGE, Sentiment, Study};
-use crate::types::{Candle, TfTrades};
 use async_std::sync::Arc;
+use binance_q_types::{ChoppinessIndexEntry, Sentiment, StudyConfig, TfTrades, StudyTypes, Candle, GlobalConfig};
+use binance_q_utils::helpers::change_percent;
+use binance_q_mongodb::client::MongoClient;
+use binance_q_mongodb::loader::TfTradeEmitter;
+
+use binance_q_types::Sentiment::Bearish;
 use mongodb::bson::doc;
+use tokio::sync::RwLock;
+
 use mongodb::options::FindOptions;
-use crate::events::EventResult;
-use crate::studies::Sentiment::Bearish;
+use binance_q_events::EventSink;
+use crate::Study;
 
 #[derive(Clone)]
 pub struct ChoppinessStudy {
 	config: StudyConfig,
-	tf_trades: Arc<AsyncReceiver<TfTrades>>,
-	
+	tf_trades: Arc<RwLock<Receiver<TfTrades>>>,
+	working: Arc<std::sync::RwLock<bool>>
 }
 
 impl ChoppinessStudy {
-	pub fn new(config: &StudyConfig, tf_trades: AsyncReceiver<TfTrades>) -> Self {
+	pub fn new(config: &StudyConfig, tf_trades: Receiver<TfTrades>) -> Self {
 		Self {
 			config: StudyConfig::from(config),
-			tf_trades: Arc::new(tf_trades)
+			tf_trades: Arc::new(RwLock::new(tf_trades)),
+			working: Arc::new(std::sync::RwLock::new(false)),
 		}
 		
 	}
 }
 
 impl Study for ChoppinessStudy {
-	const ID: crate::studies::StudyTypes = crate::studies::StudyTypes::ChoppinessStudy;
+	const ID: StudyTypes = StudyTypes::ChoppinessStudy;
 	type Entry = ChoppinessIndexEntry;
 	
 
@@ -133,19 +136,30 @@ impl Study for ChoppinessStudy {
 	}
 }
 
-#[async_trait]
 impl EventSink<TfTrades> for ChoppinessStudy {
-	fn get_receiver(&self) -> Arc<AsyncReceiver<TfTrades>> {
+	fn get_receiver(&self) -> Arc<RwLock<Receiver<TfTrades>>> {
 		self.tf_trades.clone()
 	}
-	
-	async fn handle_event(&self, event_msg: TfTrades) -> EventResult {
+	fn set_working(&self, working: bool) -> anyhow::Result<()> {
+		*self.working.write().unwrap() = working;
+		Ok(())
+		
+	}
+	fn working(&self) -> bool {
+		self.working.read().unwrap().clone()
+	}
+	fn handle_event(&self, event_msg: TfTrades) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
 		let symbol = self.config.clone().symbol.clone();
 		let config = self.config.clone();
 		Ok(tokio::spawn(async move {
 			let mongo_client = MongoClient::new().await;
+			let gc = GlobalConfig {
+				symbol: symbol.clone(),
+				tf1: config.tf1,
+				..Default::default()
+			};
 			for trades in event_msg {
-				let trades_client = TfTradeEmitter::new(trades.tf);
+				let trades_client = TfTradeEmitter::new(trades.tf, gc.clone());
 				let until = if trades.id <= config.range as u64 {
 					1_u64
 				} else {
@@ -154,7 +168,7 @@ impl EventSink<TfTrades> for ChoppinessStudy {
 				};
 				let mut past_trades = trades_client.get_tf_trades_until(until).await?;
 				past_trades.push(trades.clone());
-				let last_chopp = mongo_client.choppiness.find(doc! {"symbol": symbol.clone(), "tf": bson::to_bson(&trades.tf)?}, Some(FindOptions::builder().sort(doc! {
+				let last_chopp = mongo_client.choppiness.find(doc! {"symbol": symbol.symbol.clone(), "tf": bson::to_bson(&trades.tf)?}, Some(FindOptions::builder().sort(doc! {
 			"step_id": -1
 		}).limit(1).build())).await?.next().await;
 				

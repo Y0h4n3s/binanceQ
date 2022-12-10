@@ -3,16 +3,18 @@ name = "binance_q_executors"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-flurry = "0.4.0"
 tokio = "1.23.0"
 kanal = "0.1.0-pre7"
+anyhow = "1.0.66"
 async-std = "1.12.0"
 async-trait = "0.1.59"
 rust_decimal = "1.27.0"
 binance_q_types = { path = "../types" }
+async-broadcast = "0.4.1"
 futures = "0.3.25"
 binance_q_events = { path = "../events" }
 binance_q_mongodb = { path = "../mongodb" }
+binance_q_studies = { path = "../studies" }
+mongodb = {version = "2.1.0", default-features = false, features = ["tokio-runtime"]}

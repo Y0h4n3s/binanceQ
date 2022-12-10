@@ -1,39 +1,42 @@
 use tokio::task::JoinHandle;
-use anyhow::anyhow;
+use anyhow::{anyhow, Error};
 use async_std::sync::Arc;
+use tokio::sync::RwLock;
 use futures::{StreamExt, TryStreamExt};
 use mongodb::options::{FindOptions};
 use async_trait::async_trait;
+use binance_q_mongodb::client::MongoClient;
+use binance_q_types::{ATREntry, Sentiment, StudyConfig, StudyTypes, TfTrades, Candle};
+use binance_q_utils::helpers::change_percent;
+
 use kanal::AsyncReceiver;
 use mongodb::bson;
 use mongodb::bson::doc;
-use crate::{EventSink, StudyConfig};
-use crate::events::EventResult;
-use crate::helpers::{change_percent, to_tf_chunks};
-use crate::mongodb::client::MongoClient;
-use crate::mongodb::models::ATREntry;
-use crate::studies::{RANGE, Sentiment, Study};
-use crate::types::{Candle, TfTrades};
+use async_broadcast::Receiver;
+use binance_q_events::EventSink;
+use crate::Study;
+
 #[derive(Clone)]
 pub struct ATRStudy {
 	config: Arc<StudyConfig>,
-	tf_trades: Arc<AsyncReceiver<TfTrades>>,
-	
+	tf_trades: Arc<RwLock<Receiver<TfTrades>>>,
+	working: Arc<std::sync::RwLock<bool>>
 }
 
 
 impl ATRStudy {
-	pub fn new(config: &StudyConfig, tf_trades: AsyncReceiver<TfTrades>) -> Self {
+	pub fn new(config: &StudyConfig, tf_trades: Receiver<TfTrades>) -> Self {
 		Self {
 			config: Arc::new(StudyConfig::from(config)),
-			tf_trades: Arc::new(tf_trades),
+			tf_trades: Arc::new(RwLock::new(tf_trades)),
+			working: Arc::new(std::sync::RwLock::new(false)),
 		}
 		
 	}
 }
 
 impl Study for ATRStudy {
-	const ID: crate::studies::StudyTypes = crate::studies::StudyTypes::ATRStudy;
+	const ID: StudyTypes = StudyTypes::ATRStudy;
 	type Entry = ATREntry;
 	
 	
@@ -110,16 +113,22 @@ impl Study for ATRStudy {
 
 #[async_trait]
 impl EventSink<TfTrades> for ATRStudy {
-	fn get_receiver(&self) -> Arc<AsyncReceiver<TfTrades>> {
+	fn get_receiver(&self) -> Arc<RwLock<Receiver<TfTrades>>> {
 		self.tf_trades.clone()
 	}
-	
-	async fn handle_event(&self, event_msg: TfTrades) -> EventResult {
+	fn set_working(&self, working: bool) -> anyhow::Result<()> {
+		*self.working.write().unwrap() = working;
+		Ok(())
+	}
+	fn working(&self) -> bool {
+		self.working.read().unwrap().clone()
+	}
+	fn handle_event(&self, event_msg: TfTrades) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
 		let config = self.config.clone();
 		Ok(tokio::spawn(async move {
 			let mongo_client = MongoClient::new().await;
 			for trades in event_msg {
-				let last_atrr = mongo_client.atr.find(doc! {"symbol": config.symbol.clone(), "tf": bson::to_bson(&trades.tf).unwrap()}, Some(FindOptions::builder().sort(doc! {
+				let last_atrr = mongo_client.atr.find(doc! {"symbol": config.symbol.symbol.clone(), "tf": bson::to_bson(&trades.tf).unwrap()}, Some(FindOptions::builder().sort(doc! {
 			"step_id": -1
 		}).limit(1).build())).await?.next().await;
 				
@@ -150,6 +159,7 @@ impl EventSink<TfTrades> for ATRStudy {
 				mongo_client.atr.insert_one(atr_entry, None).await?;
 			}
 			Ok(())
+			
 		}))
 		
 	}

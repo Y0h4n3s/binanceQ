@@ -3,41 +3,45 @@ use anyhow::anyhow;
 use async_std::sync::Arc;
 use mongodb::options::{FindOptions};
 use async_trait::async_trait;
+use binance_q_types::{ATREntry, StudyTypes, AverageDirectionalIndexEntry, StudyConfig, TfTrades, Sentiment, Candle, GlobalConfig};
+use binance_q_utils::helpers::change_percent;
+use async_broadcast::{Receiver, Sender};
+use binance_q_mongodb::loader::TfTradeEmitter;
+use binance_q_mongodb::client::MongoClient;
 use kanal::AsyncReceiver;
 use mongodb::bson;
 use futures::{TryStreamExt, StreamExt};
 use mongodb::bson::doc;
+use binance_q_events::EventSink;
 use yata::core::{IndicatorConfig, PeriodType, IndicatorInstance, IndicatorInstanceDyn};
 use yata::indicators::AverageDirectionalIndex;
 use yata::prelude::*;
-use crate::{EventSink, StudyConfig, TfTradeEmitter};
-use crate::events::EventResult;
-use crate::helpers::{change_percent, to_tf_chunks};
-use crate::mongodb::client::MongoClient;
-use crate::mongodb::models::{ATREntry, AverageDirectionalIndexEntry};
-use crate::studies::{RANGE, Sentiment, Study};
-use crate::types::{Candle, TfTrades};
+use tokio::sync::RwLock;
+
+use crate::Study;
+
 #[derive(Clone)]
 pub struct DirectionalIndexStudy {
 	config: Arc<StudyConfig>,
-	tf_trades: Arc<AsyncReceiver<TfTrades>>,
-	
+	tf_trades: Arc<RwLock<Receiver<TfTrades>>>,
+	working: Arc<std::sync::RwLock<bool>>
 }
 
 
 impl DirectionalIndexStudy {
-	pub fn new(config: &StudyConfig, tf_trades: AsyncReceiver<TfTrades>) -> Self {
+	pub fn new(config: &StudyConfig, tf_trades: Receiver<TfTrades>) -> Self {
 		Self {
 			config: Arc::new(StudyConfig::from(config)),
-			tf_trades: Arc::new(tf_trades),
+			tf_trades: Arc::new(RwLock::new(tf_trades)),
+			working: Arc::new(std::sync::RwLock::new(false)),
 		}
 		
 	}
 }
 
 impl Study for DirectionalIndexStudy {
-	const ID: crate::studies::StudyTypes = crate::studies::StudyTypes::DirectionalIndexStudy;
-	type Entry = ATREntry;
+	const ID: StudyTypes = StudyTypes::DirectionalIndexStudy;
+	type Entry = AverageDirectionalIndexEntry;
 	
 	
 	
@@ -124,13 +128,20 @@ impl Study for DirectionalIndexStudy {
 	}
 }
 
-#[async_trait]
+
 impl EventSink<TfTrades> for DirectionalIndexStudy {
-	fn get_receiver(&self) -> Arc<AsyncReceiver<TfTrades>> {
+	fn get_receiver(&self) -> Arc<RwLock<Receiver<TfTrades>>> {
 		self.tf_trades.clone()
 	}
-	
-	async fn handle_event(&self, event_msg: TfTrades) -> EventResult {
+	fn set_working(&self, working: bool) -> anyhow::Result<()> {
+		*self.working.write().unwrap() = working;
+		Ok(())
+		
+	}
+	fn working(&self) -> bool {
+		self.working.read().unwrap().clone()
+	}
+	fn handle_event(&self, event_msg: TfTrades) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
 		let config = self.config.clone();
 		Ok(tokio::spawn(async move {
 			let mongo_client = MongoClient::new().await;
@@ -140,8 +151,13 @@ impl EventSink<TfTrades> for DirectionalIndexStudy {
 			adi.method2 = ("ema-".to_string() + config.range.to_string().as_str()).parse().unwrap();
 			adi.period1 = config.range as u8;
 			let mut adi_instance = adi.init(&Candle::default())?;
+			let gc = GlobalConfig {
+				symbol: config.symbol.clone(),
+				tf1: config.tf1,
+				..Default::default()
+			};
 			for trades in event_msg {
-				let trades_client = TfTradeEmitter::new(trades.tf);
+				let trades_client = TfTradeEmitter::new(trades.tf, gc.clone());
 				let until = if trades.id <= config.range as u64 {
 					1_u64
 				} else {
@@ -153,7 +169,7 @@ impl EventSink<TfTrades> for DirectionalIndexStudy {
 					let candle = Candle::from(&trade);
 					IndicatorInstance::next(&mut adi_instance, &candle);
 				}
-				let last_adii = mongo_client.adi.find(doc! {"symbol": config.symbol.clone(), "tf": bson::to_bson(&trades.tf).unwrap()}, Some(FindOptions::builder().sort(doc! {
+				let last_adii = mongo_client.adi.find(doc! {"symbol": config.symbol.symbol.clone(), "tf": bson::to_bson(&trades.tf).unwrap()}, Some(FindOptions::builder().sort(doc! {
 			"step_id": -1
 		}).limit(1).build())).await?.next().await;
 				

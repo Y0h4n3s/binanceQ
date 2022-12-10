@@ -1,5 +1,6 @@
 use yata::core::{OHLCV, ValueType};
-
+use rust_decimal::Decimal;
+use serde::{Serialize, Deserialize};
 pub type TfTrades = Vec<TfTrade>;
 
 #[derive(Debug, Clone, Default)]
@@ -65,30 +66,28 @@ impl From<&TfTrade> for Candle {
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AccessKey {
-    pub(crate) api_key: String,
-    pub(crate) secret_key: String,
+    pub api_key: String,
+    pub secret_key: String,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GlobalConfig {
     pub tf1: u64,
     pub tf2: u64,
     pub tf3: u64,
     pub key: AccessKey,
+    pub symbol: Symbol
 }
 
-#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Serialize, Deserialize)]
+#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Serialize, Deserialize, Debug, Default)]
 pub struct Symbol {
-    pub symbol: Symbol,
+    pub symbol: String,
     pub exchange: ExchangeId,
     pub base_asset_precision: u32,
     pub quote_asset_precision: u32,
 }
 
-use serde::{Deserialize, Serialize};
-use serde_with::*;
-use crate::types::Symbol;
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct ChoppinessIndexEntry {
@@ -164,7 +163,7 @@ pub struct TokenNode {
 }
 
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone,Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum Side{
     Bid,
     Ask
@@ -179,7 +178,7 @@ pub enum StudyTypes {
 }
 #[derive(Clone)]
 pub struct StudyConfig {
-    pub symbol: String,
+    pub symbol: Symbol,
     pub range: u16,
     pub tf1: u64,
     pub tf2: u64,
@@ -203,8 +202,9 @@ pub enum Sentiment {
     Bearish,
     VeryBearish,
 }
-
+#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Serialize, Deserialize, Debug, Default)]
 pub enum ExchangeId {
+    #[default]
     Simulated
 }
 
@@ -216,7 +216,7 @@ pub enum ExecutionCommand {
     CloseShortPosition(Symbol, f64),
 }
 
-#[derive(Hash, Eq,Ord, PartialOrd, PartialEq, Clone)]
+#[derive(Hash, Eq,Ord, PartialOrd, PartialEq, Clone, Debug)]
 pub enum OrderType {
     Limit,
     Market,
@@ -227,13 +227,13 @@ pub enum OrderType {
     StopLossTrailing,
 }
 
-#[derive(Hash, Eq, Ord, PartialOrd, PartialEq, Clone)]
+#[derive(Hash, Eq, Ord, PartialOrd, PartialEq, Clone, Debug)]
 pub enum OrderStatus {
     Pending(Order),
     Filled(Order),
     Canceled(Order, String),
 }
-#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq)]
+#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug)]
 pub struct Trade {
     pub id: u64,
     pub order_id: u64,
@@ -249,7 +249,7 @@ pub struct Trade {
     pub time: u64,
 }
 
-#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq)]
+#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug)]
 pub struct Order {
     pub id: u64,
     pub symbol: Symbol,
@@ -260,7 +260,7 @@ pub struct Order {
     pub order_type: OrderType,
 }
 
-#[derive(Hash, Eq, PartialEq, Clone)]
+#[derive(Hash, Eq, PartialEq, Clone, Debug)]
 pub struct SymbolAccount {
     pub symbol: Symbol,
     pub base_asset_free: Decimal,
