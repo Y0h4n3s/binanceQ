@@ -260,7 +260,7 @@ impl EventSink<OrderStatus> for SimulatedAccount {
         let all_positions = self.positions.clone();
         Ok(tokio::spawn(async move {
             match event_msg {
-                OrderStatus::Pending(order) => {
+                OrderStatus::Pending(order)  =>{
                     if open_orders.read().await.get(&order.symbol).is_none() {
                         open_orders
                             .write()
@@ -276,6 +276,23 @@ impl EventSink<OrderStatus> for SimulatedAccount {
                         .write()
                         .await
                         .insert(OrderStatus::Pending(order.clone()));
+                }
+                OrderStatus::PartiallyFilled(order, filled) => {
+                    if open_orders.read().await.get(&order.symbol).is_none() {
+                        open_orders
+                              .write()
+                              .await
+                              .insert(order.symbol.clone(), Arc::new(RwLock::new(HashSet::new())));
+                    }
+    
+                    open_orders
+                          .read()
+                          .await
+                          .get(&order.symbol)
+                          .unwrap()
+                          .write()
+                          .await
+                          .insert(OrderStatus::PartiallyFilled(order.clone(), filled));
                 }
                 // if the order was a market order it is immediately filled so  move it to order history and adjust position
                 OrderStatus::Filled(order) => {
