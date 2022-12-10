@@ -3,7 +3,6 @@ mod tests {
 	use binance_q_types::{ExchangeId, Order, OrderType, Side, Symbol};
 	use rust_decimal::Decimal;
 	use binance_q_executors::Position;
-	use super::*;
 	#[tokio::test]
 	async fn test_add_long() -> anyhow::Result<()> {
 		let symbol =  Symbol {

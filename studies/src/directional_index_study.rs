@@ -1,21 +1,17 @@
+#![allow(unused_assignments)]
 use tokio::task::JoinHandle;
-use anyhow::anyhow;
 use async_std::sync::Arc;
 use mongodb::options::{FindOptions};
-use async_trait::async_trait;
-use binance_q_types::{ATREntry, StudyTypes, AverageDirectionalIndexEntry, StudyConfig, TfTrades, Sentiment, Candle, GlobalConfig};
+use binance_q_types::{ StudyTypes, AverageDirectionalIndexEntry, StudyConfig, TfTrades, Sentiment, Candle, GlobalConfig};
 use binance_q_utils::helpers::change_percent;
-use async_broadcast::{Receiver, Sender};
+use async_broadcast::{Receiver};
 use binance_q_mongodb::loader::TfTradeEmitter;
 use binance_q_mongodb::client::MongoClient;
-use kanal::AsyncReceiver;
 use mongodb::bson;
 use futures::{TryStreamExt, StreamExt};
 use mongodb::bson::doc;
 use binance_q_events::EventSink;
-use yata::core::{IndicatorConfig, PeriodType, IndicatorInstance, IndicatorInstanceDyn};
-use yata::indicators::AverageDirectionalIndex;
-use yata::prelude::*;
+use yata::core::{IndicatorConfig, IndicatorInstance};
 use tokio::sync::RwLock;
 
 use crate::Study;

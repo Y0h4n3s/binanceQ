@@ -1,5 +1,5 @@
 use tokio::task::JoinHandle;
-use anyhow::{anyhow, Error};
+use anyhow::{anyhow};
 use async_std::sync::Arc;
 use tokio::sync::RwLock;
 use futures::{StreamExt, TryStreamExt};
@@ -9,7 +9,6 @@ use binance_q_mongodb::client::MongoClient;
 use binance_q_types::{ATREntry, Sentiment, StudyConfig, StudyTypes, TfTrades, Candle};
 use binance_q_utils::helpers::change_percent;
 
-use kanal::AsyncReceiver;
 use mongodb::bson;
 use mongodb::bson::doc;
 use async_broadcast::Receiver;

@@ -55,15 +55,15 @@ impl Position {
 						self.quote_qty += order.quantity * order.price;
 						None
 					} else {
-						let mut trade = Trade {
+						let trade = Trade {
 							id: 1,
 							order_id: order.id,
 							symbol: order.symbol.clone(),
 							maker: false,
 							price: order.price,
 							commission: Decimal::ZERO,
-							position_side: Side::Ask,
-							side: Side::Bid,
+							position_side: Side::Bid,
+							side: Side::Ask,
 							realized_pnl: order.quantity * order.price - (prev_avg_price * order.quantity),
 							qty: order.quantity,
 							quote_qty: order.quantity * order.price,
@@ -86,15 +86,15 @@ impl Position {
 						self.quote_qty += order.quantity * order.price;
 						None
 					} else {
-						let mut trade = Trade {
+						let trade = Trade {
 							id: 1,
 							order_id: order.id,
 							symbol: order.symbol.clone(),
 							maker: false,
 							price: order.price,
 							commission: Decimal::ZERO,
-							position_side: Side::Bid,
-							side: Side::Ask,
+							position_side: Side::Ask,
+							side: Side::Bid,
 							realized_pnl: order.quantity * order.price - (prev_avg_price * order.quantity),
 							qty: order.quantity,
 							quote_qty: order.quantity * order.price,

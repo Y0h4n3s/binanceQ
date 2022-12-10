@@ -1,10 +1,7 @@
-use anyhow::{anyhow, Error};
 use tokio::task::JoinHandle;
-use async_broadcast::{Receiver, Sender};
+use async_broadcast::{Receiver};
 use futures::{StreamExt, TryStreamExt};
-use async_trait::async_trait;
 use mongodb::bson;
-use kanal::AsyncReceiver;
 use async_std::sync::Arc;
 use binance_q_types::{ChoppinessIndexEntry, Sentiment, StudyConfig, TfTrades, StudyTypes, Candle, GlobalConfig};
 use binance_q_utils::helpers::change_percent;
@@ -96,7 +93,7 @@ impl Study for ChoppinessStudy {
 							step_id: i as u64,
 							tf,
 							value: choppiness_index,
-							delta: ((choppiness_index - prev_delta) * 100.0) / prev_delta,
+							delta: change_percent(prev_delta, choppiness_index),
 							close_time: trades[i - 1].trades.iter().map(|t| t.timestamp).max().unwrap(),
 						};
 						prev_delta = choppiness_index;
@@ -195,7 +192,7 @@ impl EventSink<TfTrades> for ChoppinessStudy {
 					step_id: trades.id,
 					tf: trades.tf,
 					value: choppiness_index,
-					delta: ((choppiness_index - last_chop.value) * 100.0) / last_chop.value,
+					delta: change_percent(last_chop.value, choppiness_index),
 					close_time: trades.trades.iter().map(|t| t.timestamp).max().unwrap_or(last_chop.close_time + trades.tf * 1000),
 				};
 			

@@ -6,7 +6,6 @@ edition = "2021"
 
 [dependencies]
 tokio = "1.23.0"
-kanal = "0.1.0-pre7"
 async-std = "1.12.0"
 anyhow = "1.0.66"
 futures = "0.3.25"
