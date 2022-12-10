@@ -2,40 +2,57 @@ pub mod simulated;
 
 
 use std::collections::HashSet;
+use std::ops::Mul;
 use async_std::sync::Arc;
 use async_trait::async_trait;
 use rust_decimal::Decimal;
 use binance_q_types::{ExchangeId, Order, OrderStatus, OrderType, Side, Symbol, SymbolAccount, Trade};
 use binance_q_events::{EventEmitter, EventSink};
 
-#[derive(Hash, Eq,Ord, PartialOrd, PartialEq, Clone)]
+#[derive(Hash, Eq,Ord, PartialOrd, PartialEq, Clone, Debug)]
 pub struct Position {
 	pub side: Side,
 	pub symbol: Symbol,
 	pub qty: Decimal,
-	pub quote_qty: Decimal
+	pub quote_qty: Decimal,
+	pub avg_price: Decimal,
 }
 impl Position {
+	
 	pub fn new(side: Side, symbol: Symbol, qty: Decimal, quote_qty: Decimal) -> Self {
 		Self {
 			side,
 			symbol,
 			qty,
-			quote_qty
+			quote_qty,
+			avg_price: Decimal::ZERO,
 		}
 	}
+	
+	pub fn is_long(&self) -> bool {
+		self.side == Side::Bid
+	}
+	pub fn is_short(&self) -> bool {
+		self.side == Side::Ask
+	}
+	pub fn is_open(&self) -> bool {
+		self.qty > Decimal::ZERO
+	}
 	pub fn apply_order(&mut self, order: &Order) -> Option<Trade> {
-		if self.quote_qty == Decimal::ZERO {
-			self.quote_qty = order.quantity;
-			self.qty = order.quantity / order.price;
+		if !self.is_open() {
+			self.qty = order.quantity;
+			self.quote_qty = order.quantity * order.price;
 			self.side = order.side.clone();
+			self.avg_price = order.price;
 			None
 		} else {
+			let prev_avg_price = self.avg_price;
+			self.avg_price = (self.avg_price.mul(self.qty) + order.price.mul(order.quantity)) / (self.qty + order.quantity);
 			match order.side {
 				Side::Ask => {
 					if self.side == Side::Ask {
-						self.qty += order.quantity / order.price;
-						self.quote_qty += order.quantity;
+						self.qty += order.quantity;
+						self.quote_qty += order.quantity * order.price;
 						None
 					} else {
 						let mut trade = Trade {
@@ -45,19 +62,19 @@ impl Position {
 							maker: false,
 							price: order.price,
 							commission: Decimal::ZERO,
-							position_side: Side::Bid,
-							side: Side::Ask,
-							realized_pnl: Decimal::ZERO,
-							qty: order.quantity / order.price,
-							quote_qty: order.quantity,
+							position_side: Side::Ask,
+							side: Side::Bid,
+							realized_pnl: order.quantity * order.price - (prev_avg_price * order.quantity),
+							qty: order.quantity,
+							quote_qty: order.quantity * order.price,
 							time: order.time
 						};
-						if self.qty > order.quantity / order.price {
-							self.qty -= order.quantity / order.price;
-							self.quote_qty -= order.quantity;
+						if self.qty >= order.quantity  {
+							self.qty -= order.quantity;
+							self.quote_qty -= order.quantity * order.price;
 						} else {
-							self.qty = order.quantity / order.price - self.qty;
-							self.quote_qty = order.quantity - self.quote_qty;
+							self.qty = order.quantity  - self.qty;
+							self.quote_qty = order.quantity * order.price - self.quote_qty;
 							self.side = Side::Ask;
 						}
 						Some(trade)
@@ -65,7 +82,7 @@ impl Position {
 				},
 				Side::Bid => {
 					if self.side == Side::Bid {
-						self.qty += order.quantity;
+						self.qty+= order.quantity;
 						self.quote_qty += order.quantity * order.price;
 						None
 					} else {
@@ -78,9 +95,9 @@ impl Position {
 							commission: Decimal::ZERO,
 							position_side: Side::Bid,
 							side: Side::Ask,
-							realized_pnl: Decimal::ZERO,
-							qty: order.quantity / order.price,
-							quote_qty: order.quantity,
+							realized_pnl: order.quantity * order.price - (prev_avg_price * order.quantity),
+							qty: order.quantity,
+							quote_qty: order.quantity * order.price,
 							time: order.time
 						};
 						if self.qty > order.quantity {
