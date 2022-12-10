@@ -117,7 +117,6 @@ impl BackTester {
 		    EventSink::<Order>::listen(&s_e).unwrap();
 	    }));
 	    
-	    tokio::time::sleep(Duration::from_secs(3)).await;
 	    threads.push(strategy_manager.emit().await?);
         let mut tf_trade_steps = mongo_client
             .tf_trades
