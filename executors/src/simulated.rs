@@ -51,13 +51,16 @@ impl SimulatedAccount {
 				symbol: symbol.clone(),
 				base_asset_free: Default::default(),
 				base_asset_locked: Default::default(),
-				quote_asset_free: Default::default(),
+				// TODO: extract this config
+				quote_asset_free: Decimal::new(10000, 0),
 				quote_asset_locked: Default::default()
 			};
+			let position = Position::new(Side::Ask, symbol.clone(), Decimal::ZERO, Decimal::ZERO);
 			symbol_accounts.write().await.insert(symbol.clone(), symbol_account);
 			open_orders.write().await.insert(symbol.clone(), Arc::new(RwLock::new(HashSet::new())));
 			order_history.write().await.insert(symbol.clone(), Arc::new(RwLock::new(HashSet::new())));
 			trade_history.write().await.insert(symbol.clone(), Arc::new(RwLock::new(HashSet::new())));
+			positions.write().await.insert(symbol.clone(), Arc::new(RwLock::new(position)));
 		}
 		Self {
 			symbol_accounts,
@@ -145,6 +148,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
 				let all_filled_orders = filled_orders.read().await;
 				let all_positions = positions.read().await;
 				let mut filled_orders = all_filled_orders.get(&symbol).unwrap().write().await;
+				let mut remove_orders = vec![];
 				for trade in tf_trade.trades {
 					for order in open_orders.read().await.iter() {
 						match order {
@@ -153,6 +157,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
 								if order.side == Side::Bid &&  order.price.gt(&Decimal::from_f64(trade.price).unwrap()) {
 									let mut position = all_positions.get(&symbol).unwrap();
 									let mut w = position.write().await;
+									remove_orders.push(order.clone());
 									if let Some(trade) = w.apply_order(order) {
 										let mut trade_q = trade_q.write().await;
 										trade_q.push_back(trade);
@@ -162,6 +167,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
 								} else if order.side == Side::Ask && order.price.lt(&Decimal::from_f64(trade.price).unwrap()) {
 									let mut position = all_positions.get(&symbol).unwrap();
 									let mut w = position.write().await;
+									remove_orders.push(order.clone());
 									if let Some(trade) = w.apply_order(order) {
 										let mut trade_q = trade_q.write().await;
 										trade_q.push_back(trade);
@@ -173,6 +179,10 @@ impl EventSink<TfTrades> for SimulatedAccount {
 							_ => {}
 						}
 					}
+				}
+				
+				for order in remove_orders {
+					open_orders.write().await.remove(&OrderStatus::Pending(order));
 				}
 				
 			}

@@ -25,8 +25,77 @@ impl Position {
 		}
 	}
 	pub fn apply_order(&mut self, order: &Order) -> Option<Trade> {
-		// TODO
-		None
+		if self.quote_qty == Decimal::ZERO {
+			self.quote_qty = order.quantity;
+			self.qty = order.quantity / order.price;
+			self.side = order.side.clone();
+			None
+		} else {
+			match order.side {
+				Side::Ask => {
+					if self.side == Side::Ask {
+						self.qty += order.quantity / order.price;
+						self.quote_qty += order.quantity;
+						None
+					} else {
+						let mut trade = Trade {
+							id: 1,
+							order_id: order.id,
+							symbol: order.symbol.clone(),
+							maker: false,
+							price: order.price,
+							commission: Decimal::ZERO,
+							position_side: Side::Bid,
+							side: Side::Ask,
+							realized_pnl: Decimal::ZERO,
+							qty: order.quantity / order.price,
+							quote_qty: order.quantity,
+							time: order.time
+						};
+						if self.qty > order.quantity / order.price {
+							self.qty -= order.quantity / order.price;
+							self.quote_qty -= order.quantity;
+						} else {
+							self.qty = order.quantity / order.price - self.qty;
+							self.quote_qty = order.quantity - self.quote_qty;
+							self.side = Side::Ask;
+						}
+						Some(trade)
+					}
+				},
+				Side::Bid => {
+					if self.side == Side::Bid {
+						self.qty += order.quantity;
+						self.quote_qty += order.quantity * order.price;
+						None
+					} else {
+						let mut trade = Trade {
+							id: 1,
+							order_id: order.id,
+							symbol: order.symbol.clone(),
+							maker: false,
+							price: order.price,
+							commission: Decimal::ZERO,
+							position_side: Side::Bid,
+							side: Side::Ask,
+							realized_pnl: Decimal::ZERO,
+							qty: order.quantity / order.price,
+							quote_qty: order.quantity,
+							time: order.time
+						};
+						if self.qty > order.quantity {
+							self.qty -= order.quantity;
+							self.quote_qty -= order.quantity * order.price;
+						} else {
+							self.qty = order.quantity - self.qty;
+							self.quote_qty = order.quantity * order.price - self.quote_qty;
+							self.side = Side::Bid;
+						}
+						Some(trade)
+					}
+				}
+			}
+		}
 	}
 }
 
