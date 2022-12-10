@@ -231,6 +231,7 @@ pub enum OrderType {
 pub enum OrderStatus {
     Pending(Order),
     Filled(Order),
+    PartiallyFilled(Order, Decimal),
     Canceled(Order, String),
 }
 #[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug)]
