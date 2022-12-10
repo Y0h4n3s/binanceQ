@@ -1,19 +1,24 @@
-use std::collections::VecDeque;
 use std::time::Duration;
 use async_std::sync::Arc;
 use binance_q_mongodb::client::MongoClient;
 use binance_q_mongodb::loader::TfTradeEmitter;
-use tokio::sync::{ RwLock};
-use binance_q_types::{ExecutionCommand, GlobalConfig, Order, OrderStatus, StudyConfig, TfTrade, TfTrades};
+use binance_q_strategies::chop_directional::ChopDirectionalStrategy;
+use binance_q_events::{EventSink, EventEmitter};
+use binance_q_managers::risk_manager::RiskManager;
+use binance_q_managers::strategy_manager::StrategyManager;
+use binance_q_types::{ExecutionCommand, GlobalConfig, Order,  StudyConfig, Symbol, TfTrades};
 use futures::TryStreamExt;
 use mongodb::bson::doc;
 
 use mongodb::options::FindOptions;
-use crate::ExchangeAccountInfo;
+use binance_q_executors::ExchangeAccountInfo;
+use binance_q_studies::choppiness_study::ChoppinessStudy;
+use binance_q_studies::directional_index_study::DirectionalIndexStudy;
+use binance_q_managers::risk_manager::RiskManagerConfig;
 
 #[derive(Debug, Clone)]
 pub struct BackTesterConfig {
-    pub symbol: String,
+    pub symbol: Symbol,
     pub length: u64,
 }
 pub struct BackTester {
@@ -21,12 +26,6 @@ pub struct BackTester {
     config: BackTesterConfig,
 }
 
-enum BackTestEvent {
-	TfTrade(TfTrade),
-	ExecutionCommand(ExecutionCommand),
-	Order(Order),
-	OrderStatus(OrderStatus)
-}
 
 impl BackTester {
     pub fn new(global_config: GlobalConfig, config: BackTesterConfig) -> Self {
@@ -48,16 +47,15 @@ impl BackTester {
         .await;
 	    let mut threads = vec![];
 
-        let trades_channel = kanal::bounded_async(1000);
-        let orders_channel = kanal::bounded_async(1000);
-        let execution_commands_channel = kanal::bounded_async(100);
+        let trades_channel = async_broadcast::broadcast(1000);
+        let orders_channel = async_broadcast::broadcast(1000);
+        let execution_commands_channel = async_broadcast::broadcast(100);
         // start tf trade emitters, don't subscribe to any trades, just build tf trades
         // Todo: move past trades logger to different func instead of in emit
         for tf in vec![self.global_config.tf1, self.global_config.tf2, self.global_config.tf3] {
-            let mut tf_trade = TfTradeEmitter::new(tf);
+            let tf_trade = TfTradeEmitter::new(tf, self.global_config.clone());
             threads.push(tf_trade.emit().await?);
         }
-        println!("Tf trade emitters started");
 	
 	    let config = StudyConfig {
 		    symbol: self.config.symbol.clone(),
@@ -70,7 +68,7 @@ impl BackTester {
         let adi_study = DirectionalIndexStudy::new(&config, trades_channel.1.clone());
 	    let chop_strategy = ChopDirectionalStrategy::new(self.global_config.clone(), adi_study.clone(), choppiness_study.clone());
 	    // receive orders from risk manager and apply mutations on accounts
-        let simulated_executor = executors::simulated::SimulatedExecutor::new(orders_channel.1);
+        let simulated_executor = binance_q_executors::simulated::SimulatedExecutor::new(orders_channel.1, trades_channel.1.clone(), vec![self.global_config.symbol.clone()]).await;
 	    
 	    let inner_account: Box<Arc<dyn ExchangeAccountInfo>> = Box::new(simulated_executor.account.clone());
 	    // calculate position size based on risk tolerance and send orders to executors
@@ -87,7 +85,7 @@ impl BackTester {
 	    
 	    
 	    // receive strategy edges from multiple strategies and forward them to risk manager
-        let mut strategy_manager = StrategyManager::new(self.global_config.clone())
+        let mut strategy_manager = StrategyManager::new(self.global_config.clone(), trades_channel.1.clone())
 	          .with_strategy(chop_strategy).await;
 	    
 	    // sends orders to executors
@@ -97,14 +95,30 @@ impl BackTester {
 	    strategy_manager
             .subscribe(execution_commands_channel.0)
             .await;
-	
-	    threads.push(adi_study.listen().await?);
-	    threads.push(choppiness_study.listen().await?);
-	    threads.push(strategy_manager.emit().await?);
-	    threads.push(EventSink::<ExecutionCommand>::listen(&risk_manager).await?);
-	    threads.push(EventSink::<TfTrades>::listen(&risk_manager).await?);
-	    threads.push(EventSink::<Order>::listen(&simulated_executor).await?);
+		let mut r_threads = vec![];
+	    let a_c = adi_study.clone();
+	    r_threads.push(std::thread::spawn(move || {
+		    a_c.listen().unwrap();
+	    }));
+	    let c_c = choppiness_study.clone();
+	    r_threads.push(std::thread::spawn(move || {
+		    c_c.listen().unwrap();
+	    }));
+	    let rc = risk_manager.clone();
+	    r_threads.push(std::thread::spawn(move || {
+		    EventSink::<ExecutionCommand>::listen(&rc).unwrap();
+	    }));
+	    let rc_1 = risk_manager.clone();
+	    r_threads.push(std::thread::spawn(move || {
+		    EventSink::<TfTrades>::listen(&rc_1).unwrap();
+	    }));
+	    let s_e = simulated_executor.clone();
+	    r_threads.push(std::thread::spawn(move || {
+		    EventSink::<Order>::listen(&s_e).unwrap();
+	    }));
 	    
+	    tokio::time::sleep(Duration::from_secs(3)).await;
+	    threads.push(strategy_manager.emit().await?);
         let mut tf_trade_steps = mongo_client
             .tf_trades
             .find(
@@ -112,7 +126,9 @@ impl BackTester {
                 Some(
                     FindOptions::builder()
                         .sort(doc! {
-                            "timestamp": 1
+                            "timestamp": {
+								"$gt": 0
+							}
                         })
                         .build(),
                 ),
@@ -125,12 +141,28 @@ impl BackTester {
 	    // let event_sequence: Arc<RwLock<VecDeque<Order>>> = Arc::new(RwLock::new(VecDeque::new()));
 	    // let mut event_registers = vec![];
 	    
+	    println!("Starting backtest for {} trades", tf_trade_steps.len());
 	    // step over each tf_trade
 	    // make use of tokio's barrier
 	    'step: loop {
 		    if let Some(trade) = tf_trade_steps.pop() {
-			    trades_channel.0.send(vec![trade]).await;
-			    tokio::time::sleep(Duration::from_millis(1)).await;
+			    match trades_channel.0.broadcast(vec![trade]).await {
+				    Ok(_) => {
+					    // wait for the trade to be propagated to all event sinks
+					    while EventSink::<TfTrades>::working(&risk_manager)
+					    || EventSink::<ExecutionCommand>::working(&risk_manager)
+					    || EventSink::<Order>::working(&simulated_executor)
+					    || EventSink::<TfTrades>::working(&choppiness_study)
+					    || EventSink::<TfTrades>::working(&adi_study) {
+						    tokio::time::sleep(Duration::from_micros(10)).await;
+					    }
+					    // continue 'step;
+				    }
+				    Err(e) => {
+					    // don't do anything, print and continue
+					    println!("Error: {}", e);
+				    }
+			    }
 		    } else {
 			    break 'step;
 		    }

@@ -33,7 +33,7 @@ impl ATRStudy {
 		
 	}
 }
-
+#[async_trait]
 impl Study for ATRStudy {
 	const ID: StudyTypes = StudyTypes::ATRStudy;
 	type Entry = ATREntry;
@@ -90,11 +90,11 @@ impl Study for ATRStudy {
 		})
 	}
 	
-	fn get_entry_for_tf(&self, _tf: u64) -> Self::Entry {
+	async fn get_entry_for_tf(&self, _tf: u64) -> Self::Entry {
 		todo!()
 	}
 	
-	fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Vec<Self::Entry> {
+	async fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Vec<Self::Entry> {
 		todo!()
 	}
 	

@@ -27,5 +27,12 @@ dyn-clone = "1.0.9"
 image = "0.24.5"
 kanal = "0.1.0-pre7"
 rand = "0.8.5"
+async-broadcast = "0.4.1"
 mongodb = {version = "2.1.0", default-features = false, features = ["tokio-runtime"]}
 binance_q_types = { path = "./types"}
+binance_q_events = { path = "./events"}
+binance_q_mongodb = { path = "./mongodb"}
+binance_q_studies = { path = "./studies"}
+binance_q_strategies = { path = "./strategies"}
+binance_q_managers = { path = "./managers"}
+binance_q_executors = { path = "./executors"}

@@ -208,7 +208,7 @@ pub enum ExchangeId {
     Simulated
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum ExecutionCommand {
     OpenLongPosition(Symbol, f64),
     OpenShortPosition(Symbol, f64),
@@ -226,6 +226,17 @@ pub enum OrderType {
     TakeProfitLimit,
     StopLossTrailing,
 }
+
+
+#[derive(Clone, PartialEq)]
+pub enum StrategyEdge {
+    Long(Symbol, f64),
+    Short(Symbol, f64),
+    CloseLong(Symbol, f64),
+    CloseShort(Symbol, f64),
+    Neutral(Symbol, f64),
+}
+
 
 #[derive(Hash, Eq, Ord, PartialOrd, PartialEq, Clone, Debug)]
 pub enum OrderStatus {

@@ -7,6 +7,7 @@ use binance_q_types::{ChoppinessIndexEntry, Sentiment, StudyConfig, TfTrades, St
 use binance_q_utils::helpers::change_percent;
 use binance_q_mongodb::client::MongoClient;
 use binance_q_mongodb::loader::TfTradeEmitter;
+use async_trait::async_trait;
 
 use binance_q_types::Sentiment::Bearish;
 use mongodb::bson::doc;
@@ -34,6 +35,7 @@ impl ChoppinessStudy {
 	}
 }
 
+#[async_trait]
 impl Study for ChoppinessStudy {
 	const ID: StudyTypes = StudyTypes::ChoppinessStudy;
 	type Entry = ChoppinessIndexEntry;
@@ -124,11 +126,18 @@ impl Study for ChoppinessStudy {
 		Sentiment::VeryBullish
 	}
 	
-	fn get_entry_for_tf(&self, _tf: u64) -> Self::Entry {
-		todo!()
+	async fn get_entry_for_tf(&self, tf: u64) -> Self::Entry {
+			let mongo_client = MongoClient::new().await;
+			mongo_client.choppiness.find(
+				doc! {
+					"symbol": self.config.symbol.symbol.clone(),
+					"tf": bson::to_bson(&tf).unwrap(),
+				},
+				FindOptions::builder().limit(1).build()
+			).await.unwrap().next().await.unwrap().unwrap()
 	}
 	
-	fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Vec<Self::Entry> {
+	async fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Vec<Self::Entry> {
 		todo!()
 	}
 }

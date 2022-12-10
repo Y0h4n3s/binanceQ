@@ -6,7 +6,7 @@ use async_broadcast::{Receiver, Sender};
 use tokio::sync::{RwLock};
 use tokio::task::JoinHandle;
 
-pub trait EventSink<EventType: Clone + Debug + Send + Sync + 'static>: Send + Sync {
+pub trait EventSink<EventType: Clone + Debug + Send + Sync >: Send + Sync {
     fn get_receiver(&self) -> Arc<RwLock<Receiver<EventType>>>;
     fn handle_event(
         &self,
@@ -50,7 +50,7 @@ pub trait EventSink<EventType: Clone + Debug + Send + Sync + 'static>: Send + Sy
 }
 
 #[async_trait]
-pub trait EventEmitter<'a, EventType: Send + Sync + 'static> {
+pub trait EventEmitter<EventType: Send + Sync + 'static> {
     fn get_subscribers(&self) -> Arc<RwLock<Sender<EventType>>>;
     async fn subscribe(&mut self, sender: Sender<EventType>) {
         let subs = self.get_subscribers();

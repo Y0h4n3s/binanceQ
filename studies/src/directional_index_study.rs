@@ -13,6 +13,7 @@ use mongodb::bson::doc;
 use binance_q_events::EventSink;
 use yata::core::{IndicatorConfig, IndicatorInstance};
 use tokio::sync::RwLock;
+use async_trait::async_trait;
 
 use crate::Study;
 
@@ -34,7 +35,7 @@ impl DirectionalIndexStudy {
 		
 	}
 }
-
+#[async_trait]
 impl Study for DirectionalIndexStudy {
 	const ID: StudyTypes = StudyTypes::DirectionalIndexStudy;
 	type Entry = AverageDirectionalIndexEntry;
@@ -104,11 +105,11 @@ impl Study for DirectionalIndexStudy {
 		})
 	}
 	
-	fn get_entry_for_tf(&self, _tf: u64) -> Self::Entry {
+	async fn get_entry_for_tf(&self, _tf: u64) -> Self::Entry {
 		todo!()
 	}
 	
-	fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Vec<Self::Entry> {
+	async fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Vec<Self::Entry> {
 		todo!()
 	}
 	

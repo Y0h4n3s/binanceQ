@@ -1,12 +1,14 @@
 #![feature(iterator_try_collect)]
 #![feature(async_closure)]
-use crate::events::{EventEmitter, EventSink, TfTradeEmitter};
+
+mod back_tester;
+
 use once_cell::sync::Lazy;
 use std::env;
-use ::mongodb::bson::doc;
-use ::mongodb::options::FindOptions;
+use binance_q_types::{AccessKey, ExchangeId, GlobalConfig, Symbol};
 
-use clap::{arg, command, value_parser, ArgAction, Command};
+use clap::{arg, command, Command, value_parser};
+use crate::back_tester::{BackTester, BackTesterConfig};
 
 
 static KEY: Lazy<AccessKey> = Lazy::new(|| {
@@ -32,18 +34,25 @@ async fn async_main() -> anyhow::Result<()> {
                     .arg(
                         arg!(-l --length <SECONDS> "The span of the backtest in seconds")
                             .required(true)
+                              .value_parser(value_parser!(u64)),
                     )
                     .arg(
                         arg!(--timeframe1 <SECONDS> "The first timeframe to use")
                             .required(true)
+                              .value_parser(value_parser!(u64)),
+
                     )
                     .arg(
                         arg!(--timeframe2 <SECONDS> "The second timeframe to use")
                             .required(true)
+                              .value_parser(value_parser!(u64)),
+
                     )
                     .arg(
                         arg!(--timeframe3 <SECONDS> "The third timeframe to use")
                             .required(true)
+                              .value_parser(value_parser!(u64)),
+
                     )
                     .arg(
                         arg!(-s --symbol <SYMBOL> "The symbol to backtest")
@@ -53,13 +62,19 @@ async fn async_main() -> anyhow::Result<()> {
           ).get_matches();
     
     if let Some(matches) = matches.subcommand_matches("backtest") {
-        let backtest_span = *matches.get_one::<u64>("length").ok_or(anyhow::anyhow!("Invalid span"))?;
         let symbol = matches.get_one::<String>("symbol").unwrap().clone();
+        let backtest_span = *matches.get_one::<u64>("length").ok_or(anyhow::anyhow!("Invalid span"))?;
         let tf1 = *matches.get_one::<u64>("timeframe1").ok_or(anyhow::anyhow!("Invalid tf1"))?;
         let tf2 = *matches.get_one::<u64>("timeframe2").ok_or(anyhow::anyhow!("Invalid tf2"))?;
         let tf3 = *matches.get_one::<u64>("timeframe3").ok_or(anyhow::anyhow!("Invalid tf3"))?;
-        
+        let symbol = Symbol {
+            symbol,
+            exchange: ExchangeId::Simulated,
+            base_asset_precision: 1,
+            quote_asset_precision: 2
+        };
         let global_config = GlobalConfig {
+            symbol: symbol.clone(),
             tf1,
             tf2,
             tf3,
@@ -70,27 +85,12 @@ async fn async_main() -> anyhow::Result<()> {
             length: backtest_span,
         };
         let back_tester = BackTester::new(global_config, back_tester_config);
-        back_tester.run().await;
+        back_tester.run().await?;
         
     
     } else {
         
     
-        let global_config = GlobalConfig {
-            tf1: 1,
-            tf2: 60,
-            tf3: 300,
-            key: KEY.clone(),
-        };
-
-    
-        let config = StudyConfig {
-            symbol: "XRPUSTDT".to_string(),
-            range: 10,
-            tf1: 1,
-            tf2: 60,
-            tf3: 300,
-        };
     
         
     }

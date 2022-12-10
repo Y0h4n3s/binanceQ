@@ -134,7 +134,7 @@ pub trait ExchangeAccount: ExchangeAccountInfo {
 }
 
 
-pub trait TradeExecutor: EventSink<Order> + for <'a> EventEmitter<'a,OrderStatus> {
+pub trait TradeExecutor: EventSink<Order> + EventEmitter<OrderStatus> {
 	const ID: ExchangeId;
 	type Account: ExchangeAccount;
 	fn get_id(&self) -> ExchangeId {

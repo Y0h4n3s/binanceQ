@@ -31,6 +31,7 @@ pub struct SimulatedAccount {
     order_statuses_working: Arc<std::sync::RwLock<bool>>,
 }
 
+#[derive(Clone)]
 pub struct SimulatedExecutor {
     pub account: Arc<SimulatedAccount>,
     pub orders: Arc<RwLock<Receiver<Order>>>,
@@ -97,12 +98,12 @@ impl SimulatedAccount {
 }
 
 impl SimulatedExecutor {
-    pub async fn new(orders_rx: Receiver<Order>, trades_rx: Receiver<TfTrades>) -> Self {
+    pub async fn new(orders_rx: Receiver<Order>, trades_rx: Receiver<TfTrades>, symbols: Vec<Symbol>) -> Self {
         let order_statuses_channel = async_broadcast::broadcast(100);
 
         Self {
             account: Arc::new(
-                SimulatedAccount::new(trades_rx, order_statuses_channel.1, vec![]).await,
+                SimulatedAccount::new(trades_rx, order_statuses_channel.1, symbols).await,
             ),
             orders: Arc::new(RwLock::new(orders_rx)),
             order_status_q: Arc::new(RwLock::new(VecDeque::new())),
@@ -113,7 +114,7 @@ impl SimulatedExecutor {
 }
 
 #[async_trait]
-impl EventEmitter<'_, Trade> for SimulatedAccount {
+impl EventEmitter<Trade> for SimulatedAccount {
     fn get_subscribers(&self) -> Arc<RwLock<Sender<Trade>>> {
         self.trade_subscribers.clone()
     }
@@ -372,7 +373,7 @@ impl EventSink<Order> for SimulatedExecutor {
 }
 
 #[async_trait]
-impl EventEmitter<'_, OrderStatus> for SimulatedExecutor {
+impl EventEmitter<OrderStatus> for SimulatedExecutor {
     fn get_subscribers(&self) -> Arc<RwLock<Sender<OrderStatus>>> {
         self.order_status_subscribers.clone()
     }

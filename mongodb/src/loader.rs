@@ -167,7 +167,7 @@ impl TfTradeEmitter {
     }
 }
 #[async_trait]
-impl EventEmitter<'_, TfTrades> for TfTradeEmitter {
+impl EventEmitter<TfTrades> for TfTradeEmitter {
     fn get_subscribers(&self) -> Arc<RwLock<Sender<TfTrades>>> {
         self.subscribers.clone()
     }
@@ -220,11 +220,14 @@ impl EventEmitter<'_, TfTrades> for TfTradeEmitter {
                     }
                     if tf_trades.len() > 0 {
                         last_timestamp = tf_trades.last().unwrap().trades.last().unwrap().timestamp;
-                            subscribers
+                        match subscribers
                                   .read()
                                   .await
                                   .broadcast(tf_trades.clone())
-                                  .await.unwrap();
+                                  .await {
+                            Ok(_) => {}
+                            Err(e) => {eprintln!("Error broadcasting tf trades {:?}", e)}
+                        }
                     }
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(tf)).await;
