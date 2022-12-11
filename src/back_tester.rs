@@ -153,6 +153,8 @@ impl BackTester {
 			    println!("{}/{} trades left", tf_trade_steps.len(), trades_len);
 			    match trades_channel.0.broadcast(vec![trade]).await {
 				    Ok(_) => {
+					    tokio::time::sleep(Duration::from_micros(10)).await;
+					
 					    // wait for the trade to be propagated to all event sinks
 					    while EventSink::<TfTrades>::working(&risk_manager) {
 						    println!("Risk manager is working tf trades");

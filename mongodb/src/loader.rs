@@ -165,6 +165,49 @@ impl TfTradeEmitter {
         let trades = trades.try_collect::<TfTrades>().await?;
         Ok(trades)
     }
+    
+    pub async fn log_history(&self)  {
+        let mut last_id = 1;
+        let mongo_client = MongoClient::new().await;
+        if let Ok(t) = mongo_client
+              .trades
+              .find(
+                  doc! {
+                            "timestamp": {
+                                "$gt": mongodb::bson::to_bson(0).unwrap()
+                            }
+                        },
+                  None,
+              )
+              .await
+        {
+            let trades = t.try_collect().await.unwrap_or_else(|_| vec![]);
+            let tf_trades = to_tf_chunks(self.tf, trades)
+                  .iter()
+                  .map(|t| {
+                      let trades = t.clone();
+                      let trade = TfTrade {
+                          id: last_id,
+                          tf: self.tf,
+                          symbol: self.config.symbol.clone(),
+                          timestamp: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs(),
+                          trades,
+                      };
+                      last_id += 1;
+                      trade
+                  })
+                  .collect::<Vec<_>>();
+            if !tf_trades.is_empty() {
+                mongo_client
+                      .tf_trades
+                      .insert_many(tf_trades.clone(), None)
+                      .await.unwrap();
+            }
+        }
+    }
 }
 #[async_trait]
 impl EventEmitter<TfTrades> for TfTradeEmitter {
@@ -174,13 +217,23 @@ impl EventEmitter<TfTrades> for TfTradeEmitter {
     
     async fn emit(&self) -> anyhow::Result<JoinHandle<()>> {
         let mongo_client = MongoClient::new().await;
+        let last_entry = mongo_client
+              .tf_trades
+              .find_one(
+                  doc! {"tf": bson::to_bson(&self.tf)?},
+                  FindOneOptions::builder().sort(doc! {"id": -1}).build(),
+              )
+              .await?;
         let mut last_timestamp = 0_u64;
         let mut last_id = 1_u64;
+        if let Some(t) = last_entry {
+            last_timestamp = t.timestamp;
+            last_id = t.id + 1;
+        }
         let tf = self.tf;
         let subscribers = self.subscribers.clone();
         let config = self.global_config.clone();
         Ok(tokio::spawn(async move {
-            println!("emitting");
             loop {
                 if let Ok(t) = mongo_client
                       .trades
