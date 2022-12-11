@@ -100,10 +100,14 @@ impl SimulatedAccount {
 impl SimulatedExecutor {
     pub async fn new(orders_rx: Receiver<Order>, trades_rx: Receiver<TfTrades>, symbols: Vec<Symbol>) -> Self {
         let order_statuses_channel = async_broadcast::broadcast(100);
-
+        let account = SimulatedAccount::new(trades_rx, order_statuses_channel.1, symbols).await;
+        let ac = account.clone();
+        std::thread::spawn(move || {
+            EventSink::<TfTrades>::listen(&ac).unwrap();
+        });
         Self {
             account: Arc::new(
-                SimulatedAccount::new(trades_rx, order_statuses_channel.1, symbols).await,
+                account
             ),
             orders: Arc::new(RwLock::new(orders_rx)),
             order_status_q: Arc::new(RwLock::new(VecDeque::new())),

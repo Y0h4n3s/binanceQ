@@ -13,7 +13,13 @@ use binance::futures::market::FuturesMarket;
 use binance::futures::model::{AggTrade};
 use binance::futures::model::AggTrades::AllAggTrades;
 use mongodb::results::InsertManyResult;
+use chrono::prelude::*;
 use binance_q_types::{Symbol, TradeEntry};
+use reqwest::Client;
+use serde::{Deserialize};
+use std::fs::{File, read_to_string};
+
+use std::io::{Read, Write};
 use crate::client::MongoClient;
 use binance_q_types::{TfTrades, TfTrade, GlobalConfig, AccessKey, };
 use binance_q_events::{EventEmitter};
@@ -68,14 +74,95 @@ pub async fn insert_trade_entries(
     client.trades.insert_many(entries, None).await
 }
 
+pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: u64) -> u64 {
+    let today = SystemTime::now();
+    let farthest = today - Duration::from_secs(fetch_history_span);
+    let farthest_date = DateTime::<Utc>::from(farthest).day();
+    let todays_date = DateTime::<Utc>::from(today).day();
+    let mut dir = std::env::temp_dir();
+    let mut start_time = (SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() - 60 * 60 * 1000 * 24 * 2) as u64;
+    
+    
+    let mut saved_files = vec![];
+    for i in farthest_date..todays_date - 1 {
+        let date = Utc.ymd(DateTime::<Utc>::from(today - Duration::from_secs(60 * 60 * 24 * i as u64)).year() , DateTime::<Utc>::from(today - Duration::from_secs(60 * 60 * 24 * i as u64)).month(), i);
+        let date_str = date.format("%Y-%m-%d").to_string();
+        let url = format!("https://data.binance.vision/data/futures/um/daily/aggTrades/{}/{}-aggTrades-{}.zip", symbol.symbol.clone(), symbol.symbol.clone(), date_str.clone());
+        let client = Client::new();
+        let res = client.get(&url).send().await;
+        let file_name = format!("{}-aggTrades-{}.zip", symbol.symbol.clone(), date_str);
+    
+        if res.is_err() {
+            panic!("Failed to fetch archive {} {:?}", file_name, res.unwrap_err());
+        }
+        
+        let file_path = dir.join(file_name);
+        let mut file = File::create(file_path.clone()).unwrap();
+        let content = res.unwrap().bytes().await;
+        
+        file.write_all(&content.unwrap()).unwrap();
+        saved_files.push(file_path);
+    }
+    
+    for file in saved_files {
+        let mut archive = zip::ZipArchive::new(File::open(file).unwrap()).unwrap();
+        println!("Extracting {:?}", archive.by_index(0).unwrap().name());
+        archive.extract(std::env::temp_dir()).unwrap();
+        let file_contents = read_to_string(std::env::temp_dir().join(archive.by_index(0).unwrap().name())).unwrap();
+        let mut reader = csv::Reader::from_reader(file_contents.as_bytes());
+        let mut trades = vec![];
+        for result in reader.deserialize::<ArchiveAggTrade>() {
+            let record: ArchiveAggTrade = result.unwrap();
+            trades.push(AggTrade::from(record));
+        }
+        if let Ok(_) = insert_trade_entries(&trades, symbol.clone()).await {
+            start_time = trades.iter().max_by(|a, b| a.time.cmp(&b.time)).unwrap().time;
+        } else {
+            panic!("Failed to insert trades");
+        }
+        
+    }
+    
+    start_time
+}
+#[derive(Deserialize)]
+struct ArchiveAggTrade {
+    agg_trade_id: u64,
+    price: f64,
+    quantity: f64,
+    first_trade_id: u64,
+    last_trade_id: u64,
+    transact_time: u64,
+    is_buyer_maker: bool
+}
+
+impl From<ArchiveAggTrade> for AggTrade {
+    fn from(a: ArchiveAggTrade) -> Self {
+        AggTrade {
+            agg_id: a.agg_trade_id,
+            price: a.price,
+            qty: a.quantity,
+            first_id: a.first_trade_id,
+            last_id: a.last_trade_id,
+            time: a.transact_time,
+            maker: a.is_buyer_maker
+        }
+    }
+}
 pub async fn load_history(key: AccessKey, symbol: Symbol, fetch_history_span: u64) {
     let market = FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
-
+    let mut span = fetch_history_span;
+    if fetch_history_span > 24 * 60 * 60 * 2 {
+        println!("Using zip download for history longer than 48h");
+        let last_time = load_history_from_archive(symbol.clone(), fetch_history_span).await;
+        span = (SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 - last_time);
+    }
+    
     let starting_time = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    let mut start_time = starting_time as u64 - fetch_history_span;
+    let mut start_time = starting_time as u64 - span;
     loop {
         println!("Fetching history from {} to {}", start_time, starting_time);
         if start_time > starting_time as u64 {

@@ -82,13 +82,13 @@ impl BackTester {
                 max_risk_per_trade: 0.01,
             },
             trades_channel.1.clone(),
-            execution_commands_channel.1.clone(),
+            execution_commands_channel.1,
             inner_account,
         );
 	    
 	    
 	    // receive strategy edges from multiple strategies and forward them to risk manager
-        let mut strategy_manager = StrategyManager::new(self.global_config.clone(), trades_channel.1.clone())
+        let mut strategy_manager = StrategyManager::new(self.global_config.clone(), trades_channel.1)
 	          .with_strategy(random_strategy).await;
 	    
 	    // sends orders to executors
@@ -157,19 +157,19 @@ impl BackTester {
 					
 					    // wait for the trade to be propagated to all event sinks
 					    while EventSink::<TfTrades>::working(&risk_manager) {
-						    println!("Risk manager is working tf trades");
+						    // println!("Risk manager is working tf trades");
 						    tokio::time::sleep(Duration::from_micros(10)).await;
 					    }
 					    while EventSink::<ExecutionCommand>::working(&risk_manager) {
-						    println!("Risk manager is working execution commands");
+						    // println!("Risk manager is working execution commands");
 						    tokio::time::sleep(Duration::from_micros(10)).await;
 					    }
 					    while EventSink::<Order>::working(&simulated_executor){
-						    println!("Simulated executor is working");
+						    // println!("Simulated executor is working");
 						    tokio::time::sleep(Duration::from_micros(10)).await;
 					    }
 					    while EventSink::<TfTrades>::working(&strategy_manager){
-						    println!("Strategy manager is working");
+						    // println!("Strategy manager is working");
 						    tokio::time::sleep(Duration::from_micros(10)).await;
 					    }
 					    // || EventSink::<TfTrades>::working(&choppiness_study)
