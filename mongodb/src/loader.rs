@@ -180,6 +180,7 @@ impl EventEmitter<TfTrades> for TfTradeEmitter {
         let subscribers = self.subscribers.clone();
         let config = self.global_config.clone();
         Ok(tokio::spawn(async move {
+            println!("emitting");
             loop {
                 if let Ok(t) = mongo_client
                       .trades

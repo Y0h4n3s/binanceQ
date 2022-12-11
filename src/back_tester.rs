@@ -3,6 +3,7 @@ use async_std::sync::Arc;
 use binance_q_mongodb::client::MongoClient;
 use binance_q_mongodb::loader::TfTradeEmitter;
 use binance_q_strategies::chop_directional::ChopDirectionalStrategy;
+use binance_q_strategies::random_strategy::RandomStrategy;
 use binance_q_events::{EventSink, EventEmitter};
 use binance_q_managers::risk_manager::RiskManager;
 use binance_q_managers::strategy_manager::StrategyManager;
@@ -64,9 +65,11 @@ impl BackTester {
 		    tf2: self.global_config.tf2,
 		    tf3: self.global_config.tf3,
 	    };
-	    let choppiness_study = ChoppinessStudy::new(&config, trades_channel.1.clone());
-        let adi_study = DirectionalIndexStudy::new(&config, trades_channel.1.clone());
-	    let chop_strategy = ChopDirectionalStrategy::new(self.global_config.clone(), adi_study.clone(), choppiness_study.clone());
+	    // let choppiness_study = ChoppinessStudy::new(&config, trades_channel.1.clone());
+        // let adi_study = DirectionalIndexStudy::new(&config, trades_channel.1.clone());
+	    // let chop_strategy = ChopDirectionalStrategy::new(self.global_config.clone(), adi_study.clone(), choppiness_study.clone());
+	    let random_strategy = RandomStrategy::new();
+	    
 	    // receive orders from risk manager and apply mutations on accounts
         let simulated_executor = binance_q_executors::simulated::SimulatedExecutor::new(orders_channel.1, trades_channel.1.clone(), vec![self.global_config.symbol.clone()]).await;
 	    
@@ -86,7 +89,7 @@ impl BackTester {
 	    
 	    // receive strategy edges from multiple strategies and forward them to risk manager
         let mut strategy_manager = StrategyManager::new(self.global_config.clone(), trades_channel.1.clone())
-	          .with_strategy(chop_strategy).await;
+	          .with_strategy(random_strategy).await;
 	    
 	    // sends orders to executors
         risk_manager.subscribe(orders_channel.0).await;
@@ -96,17 +99,21 @@ impl BackTester {
             .subscribe(execution_commands_channel.0)
             .await;
 		let mut r_threads = vec![];
-	    let a_c = adi_study.clone();
-	    r_threads.push(std::thread::spawn(move || {
-		    a_c.listen().unwrap();
-	    }));
-	    let c_c = choppiness_study.clone();
-	    r_threads.push(std::thread::spawn(move || {
-		    c_c.listen().unwrap();
-	    }));
+	    // let a_c = adi_study.clone();
+	    // r_threads.push(std::thread::spawn(move || {
+		//     a_c.listen().unwrap();
+	    // }));
+	    // let c_c = choppiness_study.clone();
+	    // r_threads.push(std::thread::spawn(move || {
+		//     c_c.listen().unwrap();
+	    // }));
 	    let rc = risk_manager.clone();
 	    r_threads.push(std::thread::spawn(move || {
 		    EventSink::<ExecutionCommand>::listen(&rc).unwrap();
+	    }));
+	    let sm = strategy_manager.clone();
+	    r_threads.push(std::thread::spawn(move || {
+		    EventSink::<TfTrades>::listen(&sm).unwrap();
 	    }));
 	    let rc_1 = risk_manager.clone();
 	    r_threads.push(std::thread::spawn(move || {
@@ -116,21 +123,17 @@ impl BackTester {
 	    r_threads.push(std::thread::spawn(move || {
 		    EventSink::<Order>::listen(&s_e).unwrap();
 	    }));
-	    
+	    tokio::time::sleep(Duration::from_secs(3)).await;
 	    threads.push(strategy_manager.emit().await?);
         let mut tf_trade_steps = mongo_client
             .tf_trades
             .find(
-                None,
-                Some(
-                    FindOptions::builder()
-                        .sort(doc! {
+	            doc! {
                             "timestamp": {
 								"$gt": 0
 							}
-                        })
-                        .build(),
-                ),
+                        },
+                None
             )
             .await?
             .try_collect()
@@ -143,16 +146,21 @@ impl BackTester {
 	    println!("Starting backtest for {} trades", tf_trade_steps.len());
 	    // step over each tf_trade
 	    // make use of tokio's barrier
+	    let start = std::time::SystemTime::now();
+	    let trades_len = tf_trade_steps.len();
 	    'step: loop {
 		    if let Some(trade) = tf_trade_steps.pop() {
+			    println!("{}/{} trades left", tf_trade_steps.len(), trades_len);
 			    match trades_channel.0.broadcast(vec![trade]).await {
 				    Ok(_) => {
 					    // wait for the trade to be propagated to all event sinks
 					    while EventSink::<TfTrades>::working(&risk_manager)
 					    || EventSink::<ExecutionCommand>::working(&risk_manager)
 					    || EventSink::<Order>::working(&simulated_executor)
-					    || EventSink::<TfTrades>::working(&choppiness_study)
-					    || EventSink::<TfTrades>::working(&adi_study) {
+					    || EventSink::<TfTrades>::working(&strategy_manager)
+					    // || EventSink::<TfTrades>::working(&choppiness_study)
+					    // || EventSink::<TfTrades>::working(&adi_study)
+					    {
 						    tokio::time::sleep(Duration::from_micros(10)).await;
 					    }
 					    // continue 'step;
@@ -166,6 +174,7 @@ impl BackTester {
 			    break 'step;
 		    }
         }
+	    println!("Backtest finished in {:?} seconds", start.elapsed().unwrap());
 	    
 	    Ok(())
 	    

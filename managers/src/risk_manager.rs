@@ -94,16 +94,12 @@ impl EventSink<ExecutionCommand> for RiskManager {
                         time: 0,
                         order_type: OrderType::Limit,
                     };
-                    println!("OpenLongPosition");
                 }
                 ExecutionCommand::OpenShortPosition(symbol, confidence) => {
-                    println!("OpenShortPosition");
                 }
                 ExecutionCommand::CloseLongPosition(symbol, confidence) => {
-                    println!("CloseLongPosition");
                 }
                 ExecutionCommand::CloseShortPosition(symbol, confidence) => {
-                    println!("CloseShortPosition");
                 }
             }
             Ok(())

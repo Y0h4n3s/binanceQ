@@ -31,10 +31,10 @@ impl SignalGenerator for ChopDirectionalStrategy {
 	async fn get_signal(&self) -> StrategyEdge {
 		// calculate here
 		let symbol = self.global_config.symbol.clone();
-		// let chop = self.choppiness_study.get_entry_for_tf(self.global_config.tf1).await;
+		let chop = self.choppiness_study.get_entry_for_tf(self.global_config.tf1).await;
 		let _atr = self.adi_study.get_entry_for_tf(self.global_config.tf3);
 		let _tf1 = self.global_config.tf1;
-		if true {
+		if chop.value > 60.0 && chop.delta > 20.0 {
 			StrategyEdge::Long(symbol.clone(), 70.0)
 		} else {
 			StrategyEdge::Neutral(symbol.clone(), 70.0)

@@ -55,7 +55,7 @@ impl Study for DirectionalIndexStudy {
 					let mut adi_instance = None;
 					adi.method1 = ("ema-".to_string() + config.range.to_string().as_str()).parse().unwrap();
 					adi.method2 = ("ema-".to_string() + config.range.to_string().as_str()).parse().unwrap();
-					adi.period1 = config.range as u8;
+					adi.period1 = config.range as u8 - 1;
 					let mut prev_value = None;
 					let mut adi_entries: Vec<AverageDirectionalIndexEntry> = vec![];
 					for (i, span) in trades.iter().enumerate() {
@@ -146,7 +146,7 @@ impl EventSink<TfTrades> for DirectionalIndexStudy {
 			let mut adi = yata::indicators::AverageDirectionalIndex::default();
 			adi.method1 = ("ema-".to_string() + config.range.to_string().as_str()).parse().unwrap();
 			adi.method2 = ("ema-".to_string() + config.range.to_string().as_str()).parse().unwrap();
-			adi.period1 = config.range as u8;
+			adi.period1 = config.range as u8 - 1;
 			let mut adi_instance = adi.init(&Candle::default())?;
 			let gc = GlobalConfig {
 				symbol: config.symbol.clone(),

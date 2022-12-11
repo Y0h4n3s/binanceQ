@@ -15,6 +15,7 @@ use binance_q_events::{EventEmitter, EventSink};
 use binance_q_types::{ExecutionCommand, GlobalConfig, StrategyEdge, TfTrades};
 
 
+#[derive(Clone)]
 pub struct StrategyManager {
 	global_config: GlobalConfig,
 	pub open_long_strategies: Arc<RwLock<Vec<Box<dyn SignalGenerator>>>>,
