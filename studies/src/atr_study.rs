@@ -90,14 +90,25 @@ impl Study for ATRStudy {
 		})
 	}
 	
-	async fn get_entry_for_tf(&self, _tf: u64) -> Self::Entry {
-		todo!()
+	async fn get_entry_for_tf(&self, tf: u64) -> Option<Self::Entry> {
+		let mongo_client = MongoClient::new().await;
+		let res = mongo_client.atr.find(
+			doc! {
+					"symbol": self.config.symbol.symbol.clone(),
+					"tf": bson::to_bson(&tf).unwrap(),
+				},
+			FindOptions::builder().limit(1).build()
+		).await.unwrap().next().await;
+		if let Some(Ok(entry)) = res {
+			Some(entry)
+		} else {
+			None
+		}
 	}
 	
-	async fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Vec<Self::Entry> {
+	async fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Option<Vec<Self::Entry>> {
 		todo!()
 	}
-	
 	fn sentiment(&self) -> Sentiment {
 		Sentiment::Neutral
 	}

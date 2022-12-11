@@ -7,7 +7,7 @@ use async_broadcast::{Receiver, Sender};
 use async_trait::async_trait;
 use binance_q_events::{EventEmitter, EventSink};
 use binance_q_executors::ExchangeAccountInfo;
-use binance_q_types::{ExecutionCommand, GlobalConfig, Order, OrderType, Side, TfTrades};
+use binance_q_types::{ExecutionCommand, GlobalConfig, Order, OrderType, Side, TfTrades, Trade};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 #[derive(Clone)]
@@ -22,11 +22,13 @@ pub struct RiskManager {
     pub config: RiskManagerConfig,
     pub account: Box<Arc<dyn ExchangeAccountInfo>>,
     tf_trades: Arc<RwLock<Receiver<TfTrades>>>,
+    trades: Arc<RwLock<Receiver<Trade>>>,
     execution_commands: Arc<RwLock<Receiver<ExecutionCommand>>>,
     subscribers: Arc<RwLock<Sender<Order>>>,
     order_q: Arc<RwLock<VecDeque<Order>>>,
     execution_commands_working: Arc<std::sync::RwLock<bool>>,
     tf_trades_working: Arc<std::sync::RwLock<bool>>,
+    trade_working: Arc<std::sync::RwLock<bool>>,
 }
 
 #[async_trait]
@@ -52,6 +54,28 @@ impl EventEmitter<Order> for RiskManager {
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
+        }))
+    }
+}
+
+impl EventSink<Trade> for RiskManager {
+    fn get_receiver(&self) -> Arc<RwLock<Receiver<Trade>>> {
+        self.trades.clone()
+    }
+    fn working(&self) -> bool {
+        self.trade_working.read().unwrap().clone()
+    }
+    fn set_working(&self, working: bool) -> anyhow::Result<()> {
+        *self.trade_working.write().unwrap() = working;
+        Ok(())
+    }
+    // Act on trade events for risk manager
+    fn handle_event(&self, event: Trade) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+        let global_config = self.global_config.clone();
+        let account = self.account.clone();
+        Ok(tokio::spawn(async move {
+            
+            Ok(())
         }))
     }
 }
@@ -140,6 +164,7 @@ impl RiskManager {
         global_config: GlobalConfig,
         config: RiskManagerConfig,
         tf_trades: Receiver<TfTrades>,
+        trades: Receiver<Trade>,
         execution_commands: Receiver<ExecutionCommand>,
         account: Box<Arc<dyn ExchangeAccountInfo>>,
     ) -> Self {
@@ -150,11 +175,13 @@ impl RiskManager {
             config,
             account,
             tf_trades: Arc::new(RwLock::new(tf_trades)),
+            trades: Arc::new(RwLock::new(trades)),
             execution_commands: Arc::new(RwLock::new(execution_commands)),
             subscribers: Arc::new(RwLock::new(async_broadcast::broadcast(1).0)),
             order_q: Arc::new(RwLock::new(VecDeque::new())),
             execution_commands_working: Arc::new(std::sync::RwLock::new(false)),
             tf_trades_working: Arc::new(std::sync::RwLock::new(false)),
+            trade_working: Arc::new(std::sync::RwLock::new(false)),
         }
     }
 }

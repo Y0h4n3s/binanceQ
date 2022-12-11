@@ -14,6 +14,7 @@ use binance_q_events::EventSink;
 use yata::core::{IndicatorConfig, IndicatorInstance};
 use tokio::sync::RwLock;
 use async_trait::async_trait;
+use yata::helpers::MA;
 
 use crate::Study;
 
@@ -105,14 +106,30 @@ impl Study for DirectionalIndexStudy {
 		})
 	}
 	
-	async fn get_entry_for_tf(&self, _tf: u64) -> Self::Entry {
-		todo!()
+	async fn get_entry_for_tf(&self, tf: u64) -> Option<Self::Entry> {
+		let mongo_client = MongoClient::new().await;
+		let res = mongo_client.adi.find(
+			doc! {
+					"symbol": bson::to_bson(&self.config.symbol).unwrap(),
+					"tf": bson::to_bson(&tf).unwrap(),
+				},
+			FindOptions::builder()
+				  .sort(
+				doc! {
+					"step_id": -1
+				}
+			).limit(1).build()
+		).await.unwrap().next().await;
+		if let Some(Ok(entry)) = res {
+			Some(entry)
+		} else {
+			None
+		}
 	}
 	
-	async fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Vec<Self::Entry> {
+	async fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Option<Vec<Self::Entry>> {
 		todo!()
 	}
-	
 	fn sentiment(&self) -> Sentiment {
 		Sentiment::Neutral
 	}
@@ -144,9 +161,9 @@ impl EventSink<TfTrades> for DirectionalIndexStudy {
 			let mongo_client = MongoClient::new().await;
 			
 			let mut adi = yata::indicators::AverageDirectionalIndex::default();
-			adi.method1 = ("ema-".to_string() + config.range.to_string().as_str()).parse().unwrap();
-			adi.method2 = ("ema-".to_string() + config.range.to_string().as_str()).parse().unwrap();
-			adi.period1 = config.range as u8 - 1;
+			adi.method1 = MA::RMA(config.range as u8 + 1);
+			adi.method2 = MA::RMA(config.range as u8 + 1);
+			adi.period1 = config.range as u8;
 			let mut adi_instance = adi.init(&Candle::default())?;
 			let gc = GlobalConfig {
 				symbol: config.symbol.clone(),
@@ -155,18 +172,16 @@ impl EventSink<TfTrades> for DirectionalIndexStudy {
 			};
 			for trades in event_msg {
 				let trades_client = TfTradeEmitter::new(trades.tf, gc.clone());
-				let until = if trades.id <= config.range as u64 {
-					1_u64
-				} else {
-					trades.id - config.range as u64 + 1
-					
-				};
-				let past_trades = trades_client.get_tf_trades_until(until).await?;
+				if trades.id < config.range as u64 {
+					continue
+				}
+				let past_trades = trades_client.get_tf_trades_until(trades.id, config.range as u64).await?;
 				for trade in past_trades {
 					let candle = Candle::from(&trade);
+					
 					IndicatorInstance::next(&mut adi_instance, &candle);
 				}
-				let last_adii = mongo_client.adi.find(doc! {"symbol": config.symbol.symbol.clone(), "tf": bson::to_bson(&trades.tf).unwrap()}, Some(FindOptions::builder().sort(doc! {
+				let last_adii = mongo_client.adi.find(doc! {"symbol":  bson::to_bson(&config.symbol).unwrap(), "tf": bson::to_bson(&trades.tf).unwrap()}, Some(FindOptions::builder().sort(doc! {
 			"step_id": -1
 		}).limit(1).build())).await?.next().await;
 				
@@ -175,9 +190,9 @@ impl EventSink<TfTrades> for DirectionalIndexStudy {
 				} else {
 					last_adii.unwrap().unwrap()
 				};
-				
 				let candle = Candle::from(&trades);
 				let value = IndicatorInstance::next(&mut adi_instance, &candle);
+				println!("{}: {:?}", trades.tf, value.values());
 				let delta = change_percent(prev_value.value, value.value(0));
 				
 				let positive_delta =
@@ -198,7 +213,6 @@ impl EventSink<TfTrades> for DirectionalIndexStudy {
 					step_id: trades.id,
 					close_time: trades.trades.iter().max_by(|a, b| a.timestamp.cmp(&b.timestamp)).unwrap().timestamp,
 				};
-				
 				mongo_client.adi.insert_one(adi_entry, None).await?;
 			}
 			Ok(())

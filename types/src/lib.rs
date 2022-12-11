@@ -234,7 +234,7 @@ pub enum StrategyEdge {
     Short(Symbol, f64),
     CloseLong(Symbol, f64),
     CloseShort(Symbol, f64),
-    Neutral(Symbol, f64),
+    Neutral,
 }
 
 
@@ -245,7 +245,7 @@ pub enum OrderStatus {
     PartiallyFilled(Order, Decimal),
     Canceled(Order, String),
 }
-#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug)]
+#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Trade {
     pub id: u64,
     pub order_id: u64,

@@ -4,7 +4,7 @@ use async_broadcast::{Sender};
 use async_trait::async_trait;
 use mongodb::bson::doc;
 use mongodb::bson;
-use mongodb::options::FindOneOptions;
+use mongodb::options::{FindOneOptions, FindOptions};
 use async_std::sync::Arc;
 use futures::TryStreamExt;
 use tokio::sync::{RwLock};
@@ -82,13 +82,13 @@ pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: u64) 
     let mut dir = std::env::temp_dir();
     let mut start_time = (SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() - 60 * 60 * 1000 * 24 * 2) as u64;
     
+    let client = Client::new();
     
     let mut saved_files = vec![];
     for i in farthest_date..todays_date - 1 {
         let date = Utc.ymd(DateTime::<Utc>::from(today - Duration::from_secs(60 * 60 * 24 * i as u64)).year() , DateTime::<Utc>::from(today - Duration::from_secs(60 * 60 * 24 * i as u64)).month(), i);
         let date_str = date.format("%Y-%m-%d").to_string();
         let url = format!("https://data.binance.vision/data/futures/um/daily/aggTrades/{}/{}-aggTrades-{}.zip", symbol.symbol.clone(), symbol.symbol.clone(), date_str.clone());
-        let client = Client::new();
         let res = client.get(&url).send().await;
         let file_name = format!("{}-aggTrades-{}.zip", symbol.symbol.clone(), date_str);
     
@@ -149,10 +149,12 @@ impl From<ArchiveAggTrade> for AggTrade {
         }
     }
 }
+
+// TODO: need to get recent history also for when we were loading
 pub async fn load_history(key: AccessKey, symbol: Symbol, fetch_history_span: u64) {
     let market = FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
     let mut span = fetch_history_span;
-    if fetch_history_span > 24 * 60 * 60 * 2 {
+    if fetch_history_span > 24 * 60 * 60 * 2 * 1000 {
         println!("Using zip download for history longer than 48h");
         let last_time = load_history_from_archive(symbol.clone(), fetch_history_span).await;
         span = (SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 - last_time);
@@ -241,13 +243,13 @@ impl TfTradeEmitter {
     
     
     
-    pub async fn get_tf_trades_until(&self, until: u64) -> anyhow::Result<Vec<TfTrade>> {
+    pub async fn get_tf_trades_until(&self, until: u64, limit: u64) -> anyhow::Result<Vec<TfTrade>> {
         let mongo_client = MongoClient::new().await;
         let trades = mongo_client
               .tf_trades
               .find(
-                  doc! {"tf": bson::to_bson(&self.tf)?, "id": {"$gte": bson::to_bson(&until)?}},
-                  None,
+                  doc! {"tf": bson::to_bson(&self.tf)?, "id": {"$lte": bson::to_bson(&until)?}},
+                  FindOptions::builder().sort(doc! {"id": -1}).limit(limit as i64).build(),
               )
               .await?;
         let trades = trades.try_collect::<TfTrades>().await?;
@@ -278,10 +280,7 @@ impl TfTradeEmitter {
                           id: last_id,
                           tf: self.tf,
                           symbol: self.global_config.symbol.clone(),
-                          timestamp: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap()
-                                .as_secs(),
+                          timestamp: trades.iter().max_by(|a, b| a.timestamp.cmp(&b.timestamp)).unwrap().timestamp,
                           trades,
                       };
                       last_id += 1;

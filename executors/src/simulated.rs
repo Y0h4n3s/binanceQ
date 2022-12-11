@@ -10,6 +10,7 @@ use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
+use binance_q_mongodb::client::MongoClient;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
@@ -98,9 +99,11 @@ impl SimulatedAccount {
 }
 
 impl SimulatedExecutor {
-    pub async fn new(orders_rx: Receiver<Order>, trades_rx: Receiver<TfTrades>, symbols: Vec<Symbol>) -> Self {
+    pub async fn new(orders_rx: Receiver<Order>, trades_rx: Receiver<TfTrades>, symbols: Vec<Symbol>, trades: Sender<Trade>) -> Self {
         let order_statuses_channel = async_broadcast::broadcast(100);
-        let account = SimulatedAccount::new(trades_rx, order_statuses_channel.1, symbols).await;
+        let mut account = SimulatedAccount::new(trades_rx, order_statuses_channel.1, symbols).await;
+        account.subscribe(trades).await;
+        account.emit().await;
         let ac = account.clone();
         std::thread::spawn(move || {
             EventSink::<TfTrades>::listen(&ac).unwrap();
@@ -128,11 +131,13 @@ impl EventEmitter<Trade> for SimulatedAccount {
         let subscribers = self.trade_subscribers.clone();
         let trade_history = self.trade_history.clone();
         Ok(tokio::spawn(async move {
+            let mongo_client = MongoClient::new().await;
             loop {
                 let mut w = trade_q.write().await;
                 let trade = w.pop_front();
                 std::mem::drop(w);
                 if let Some(trade) = trade {
+                    mongo_client.past_trades.insert_one(trade.clone(), None).await.unwrap();
                     let thw = trade_history.read().await;
                     let mut th = thw.get(&trade.symbol).unwrap().write().await;
                     th.insert(trade.clone());

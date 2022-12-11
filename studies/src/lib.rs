@@ -12,8 +12,8 @@ pub trait Study: EventSink<TfTrades> {
 	const ID: StudyTypes;
 	type Entry;
 	fn log_history(&self) -> JoinHandle<()>;
-	async fn get_entry_for_tf(&self, tf: u64) -> Self::Entry;
-	async fn get_n_entries_for_tf(&self, n: u64, tf: u64) -> Vec<Self::Entry>;
+	async fn get_entry_for_tf(&self, tf: u64) -> Option<Self::Entry>;
+	async fn get_n_entries_for_tf(&self, n: u64, tf: u64) -> Option<Vec<Self::Entry>>;
 	fn sentiment(&self) -> Sentiment;
 	fn sentiment_with_one<T>(&self, other: T) -> Sentiment
 		where T: Study;

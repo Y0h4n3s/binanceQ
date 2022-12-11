@@ -1,6 +1,6 @@
 use mongodb::Client;
 
-use binance_q_types::{ATREntry, AverageDirectionalIndexEntry, BookSideEntry, ChoppinessIndexEntry, OpenInterestEntry, TfTrade, TradeEntry};
+use binance_q_types::{ATREntry, AverageDirectionalIndexEntry, BookSideEntry, ChoppinessIndexEntry, OpenInterestEntry, TfTrade, Trade, TradeEntry};
 
 pub struct MongoClient {
     pub database: mongodb::Database,
@@ -11,6 +11,7 @@ pub struct MongoClient {
     pub atr: mongodb::Collection<ATREntry>,
     pub adi: mongodb::Collection<AverageDirectionalIndexEntry>,
     pub choppiness: mongodb::Collection<ChoppinessIndexEntry>,
+    pub past_trades: mongodb::Collection<Trade>,
 }
 
 impl MongoClient {
@@ -30,6 +31,7 @@ impl MongoClient {
         let atr = database.collection::<ATREntry>("atr");
         let adi = database.collection::<AverageDirectionalIndexEntry>("adi");
         let choppiness = database.collection::<ChoppinessIndexEntry>("choppiness");
+        let past_trades = database.collection::<Trade>("past_trades");
         MongoClient {
             database,
             open_interest,
@@ -38,7 +40,8 @@ impl MongoClient {
             tf_trades,
             atr,
             adi,
-            choppiness
+            choppiness,
+            past_trades
         }
     }
     pub async fn reset_db(&self) {

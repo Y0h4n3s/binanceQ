@@ -24,7 +24,7 @@ impl SignalGenerator for RandomStrategy {
 			base_asset_precision: 1,
 			quote_asset_precision: 2
 		};
-		let choices = [StrategyEdge::Long(symbol.clone(), 70.0), StrategyEdge::Short(symbol.clone(), 70.0), StrategyEdge::CloseLong(symbol.clone(), 70.0), StrategyEdge::CloseShort(symbol.clone(), 70.0), StrategyEdge::Neutral(symbol.clone(), 70.0)];
+		let choices = [StrategyEdge::Long(symbol.clone(), 70.0), StrategyEdge::Short(symbol.clone(), 70.0), StrategyEdge::CloseLong(symbol.clone(), 70.0), StrategyEdge::CloseShort(symbol.clone(), 70.0), StrategyEdge::Neutral];
 		let mut rng = rand::thread_rng();
 		
 		return choices[rng.gen_range(0..5)].clone()

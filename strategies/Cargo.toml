@@ -11,3 +11,4 @@ async-trait = "0.1.59"
 rand = "0.8.5"
 binance_q_types = { path = "../types" }
 binance_q_studies = { path = "../studies" }
+binance_q_utils = { path = "../util" }

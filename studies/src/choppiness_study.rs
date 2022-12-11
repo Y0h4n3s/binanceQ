@@ -8,7 +8,7 @@ use binance_q_utils::helpers::change_percent;
 use binance_q_mongodb::client::MongoClient;
 use binance_q_mongodb::loader::TfTradeEmitter;
 use async_trait::async_trait;
-
+use yata::core::OHLCV;
 use binance_q_types::Sentiment::Bearish;
 use mongodb::bson::doc;
 use tokio::sync::RwLock;
@@ -126,18 +126,28 @@ impl Study for ChoppinessStudy {
 		Sentiment::VeryBullish
 	}
 	
-	async fn get_entry_for_tf(&self, tf: u64) -> Self::Entry {
+	async fn get_entry_for_tf(&self, tf: u64) -> Option<Self::Entry> {
 			let mongo_client = MongoClient::new().await;
-			mongo_client.choppiness.find(
+			let res = mongo_client.choppiness.find(
 				doc! {
-					"symbol": self.config.symbol.symbol.clone(),
+					"symbol": bson::to_bson(&self.config.symbol).unwrap(),
 					"tf": bson::to_bson(&tf).unwrap(),
 				},
-				FindOptions::builder().limit(1).build()
-			).await.unwrap().next().await.unwrap().unwrap()
+				FindOptions::builder()
+					  .sort(
+						  doc! {
+					"step_id": -1
+				}
+					  ).limit(1).build()
+			).await.unwrap().next().await;
+		    if let Some(Ok(entry)) = res {
+			    Some(entry)
+		    } else {
+			    None
+		    }
 	}
 	
-	async fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Vec<Self::Entry> {
+	async fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Option<Vec<Self::Entry>> {
 		todo!()
 	}
 }
@@ -165,28 +175,27 @@ impl EventSink<TfTrades> for ChoppinessStudy {
 				..Default::default()
 			};
 			for trades in event_msg {
-				let trades_client = TfTradeEmitter::new(trades.tf, gc.clone());
-				let until = if trades.id <= config.range as u64 {
-					1_u64
-				} else {
-					trades.id - config.range as u64 + 1
+				if trades.id <= config.range as u64 {
+					continue
+				}
 				
-				};
-				let mut past_trades = trades_client.get_tf_trades_until(until).await?;
+				let trades_client = TfTradeEmitter::new(trades.tf, gc.clone());
+				let mut past_trades = trades_client.get_tf_trades_until(trades.id, config.range as u64).await?;
 				past_trades.push(trades.clone());
-				let last_chopp = mongo_client.choppiness.find(doc! {"symbol": symbol.symbol.clone(), "tf": bson::to_bson(&trades.tf)?}, Some(FindOptions::builder().sort(doc! {
+				let last_chopp = mongo_client.choppiness.find(doc! {"symbol":  bson::to_bson(&config.symbol).unwrap(), "tf": bson::to_bson(&trades.tf)?}, Some(FindOptions::builder().sort(doc! {
 			"step_id": -1
 		}).limit(1).build())).await?.next().await;
 				
 				let last_chop = if last_chopp.is_none() || last_chopp.clone().unwrap().is_err() {
 					ChoppinessIndexEntry::default()
 				} else {
-					last_chopp.unwrap()?
+					last_chopp.as_ref().unwrap().clone()?
 				};
-				
+				let mut past_candle = Candle::from(&past_trades.pop().unwrap());
 				let true_ranges = past_trades.iter().map(|chunk| {
 					let candle = Candle::from(chunk);
-					let tr = candle.high - candle.low;
+					let tr = candle.tr(&past_candle) as f64;
+					past_candle = candle.clone();
 					(tr, candle.high, candle.low)
 				}).collect::<Vec<(f64, f64, f64)>>();
 				let tr_sum = true_ranges.iter().map(|tr| tr.0).sum::<f64>();
@@ -196,6 +205,7 @@ impl EventSink<TfTrades> for ChoppinessStudy {
 				} else {
 					last_chop.value
 				};
+				
 				let choppiness_entry = ChoppinessIndexEntry {
 					symbol: config.symbol.clone(),
 					step_id: trades.id,
