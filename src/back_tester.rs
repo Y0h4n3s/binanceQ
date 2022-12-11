@@ -154,15 +154,25 @@ impl BackTester {
 			    match trades_channel.0.broadcast(vec![trade]).await {
 				    Ok(_) => {
 					    // wait for the trade to be propagated to all event sinks
-					    while EventSink::<TfTrades>::working(&risk_manager)
-					    || EventSink::<ExecutionCommand>::working(&risk_manager)
-					    || EventSink::<Order>::working(&simulated_executor)
-					    || EventSink::<TfTrades>::working(&strategy_manager)
-					    // || EventSink::<TfTrades>::working(&choppiness_study)
-					    // || EventSink::<TfTrades>::working(&adi_study)
-					    {
+					    while EventSink::<TfTrades>::working(&risk_manager) {
+						    println!("Risk manager is working tf trades");
 						    tokio::time::sleep(Duration::from_micros(10)).await;
 					    }
+					    while EventSink::<ExecutionCommand>::working(&risk_manager) {
+						    println!("Risk manager is working execution commands");
+						    tokio::time::sleep(Duration::from_micros(10)).await;
+					    }
+					    while EventSink::<Order>::working(&simulated_executor){
+						    println!("Simulated executor is working");
+						    tokio::time::sleep(Duration::from_micros(10)).await;
+					    }
+					    while EventSink::<TfTrades>::working(&strategy_manager){
+						    println!("Strategy manager is working");
+						    tokio::time::sleep(Duration::from_micros(10)).await;
+					    }
+					    // || EventSink::<TfTrades>::working(&choppiness_study)
+					    // || EventSink::<TfTrades>::working(&adi_study)
+					    
 					    // continue 'step;
 				    }
 				    Err(e) => {
