@@ -112,6 +112,7 @@ impl EventSink<TfTrades> for RiskManager {
         self.tf_trades.clone()
     }
     fn working(&self) -> bool {
+        println!("locking");
         self.tf_trades_working.read().unwrap().clone()
     }
     fn set_working(&self, working: bool) -> anyhow::Result<()> {

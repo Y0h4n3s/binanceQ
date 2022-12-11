@@ -4,6 +4,7 @@ use async_broadcast::{Sender};
 use async_trait::async_trait;
 use mongodb::bson::doc;
 use mongodb::bson;
+use mongodb::options::FindOneOptions;
 use async_std::sync::Arc;
 use futures::TryStreamExt;
 use tokio::sync::{RwLock};
@@ -174,7 +175,7 @@ impl TfTradeEmitter {
               .find(
                   doc! {
                             "timestamp": {
-                                "$gt": mongodb::bson::to_bson(0).unwrap()
+                                "$gt": mongodb::bson::to_bson(&0).unwrap()
                             }
                         },
                   None,
@@ -189,7 +190,7 @@ impl TfTradeEmitter {
                       let trade = TfTrade {
                           id: last_id,
                           tf: self.tf,
-                          symbol: self.config.symbol.clone(),
+                          symbol: self.global_config.symbol.clone(),
                           timestamp: std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap()

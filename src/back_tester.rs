@@ -55,7 +55,7 @@ impl BackTester {
         // Todo: move past trades logger to different func instead of in emit
         for tf in vec![self.global_config.tf1, self.global_config.tf2, self.global_config.tf3] {
             let tf_trade = TfTradeEmitter::new(tf, self.global_config.clone());
-            threads.push(tf_trade.emit().await?);
+            tf_trade.log_history().await;
         }
 	
 	    let config = StudyConfig {
