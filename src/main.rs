@@ -25,6 +25,8 @@ static KEY: Lazy<AccessKey> = Lazy::new(|| {
 fn main() -> Result<(), anyhow::Error> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
           .enable_all()
+          .worker_threads(32)
+          .max_blocking_threads(1024)
           .build()
           .unwrap();
     runtime.block_on(async_main())

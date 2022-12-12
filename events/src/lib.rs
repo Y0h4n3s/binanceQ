@@ -15,10 +15,10 @@ pub trait EventSink<EventType: Clone + Debug + Send + Sync >: Send + Sync {
     fn working(&self) -> bool;
     fn set_working(&self, working: bool) -> anyhow::Result<()>;
     fn listen(&self) -> std::result::Result<(), anyhow::Error> {
-        let runtime = Runtime::new()?;
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
         let task_set = tokio::task::LocalSet::new();
         let receiver = self.get_receiver();
-        task_set.block_on(&runtime, async move {
+        runtime.block_on(async move {
             let sender_closed = Arc::new(RwLock::new(false));
             loop {
                 let mut w = receiver.write().await;

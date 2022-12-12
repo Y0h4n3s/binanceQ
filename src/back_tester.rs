@@ -2,7 +2,7 @@ use std::time::Duration;
 use async_std::sync::Arc;
 use binance_q_mongodb::client::MongoClient;
 use binance_q_mongodb::loader::TfTradeEmitter;
-use binance_q_strategies::chop_directional::ChopDirectionalEntryStrategy;
+use binance_q_strategies::chop_directional::{ChopDirectionalEntryStrategy, ChopDirectionalExitStrategy};
 use binance_q_strategies::random_strategy::RandomStrategy;
 use binance_q_events::{EventSink, EventEmitter};
 use binance_q_managers::risk_manager::RiskManager;
@@ -44,11 +44,11 @@ impl BackTester {
             self.global_config.key.clone(),
             self.config.symbol.clone(),
             self.config.length * 1000,
+	        true
         )
         .await;
-	    let mut threads = vec![];
 
-        let tf_trades_channel = async_broadcast::broadcast(1000);
+        let tf_trades_channel = async_broadcast::broadcast(10000);
         let trades_channel = async_broadcast::broadcast(1000);
         let orders_channel = async_broadcast::broadcast(1000);
         let execution_commands_channel = async_broadcast::broadcast(100);
@@ -69,6 +69,7 @@ impl BackTester {
 	    let choppiness_study = ChoppinessStudy::new(&config, tf_trades_channel.1.clone());
         let adi_study = DirectionalIndexStudy::new(&config, tf_trades_channel.1.clone());
 	    let chop_strategy = ChopDirectionalEntryStrategy::new(self.global_config.clone(), adi_study.clone(), choppiness_study.clone());
+	    let chop_strategy_exit = ChopDirectionalExitStrategy::new(self.global_config.clone(), adi_study.clone(), choppiness_study.clone());
 	    let random_strategy = RandomStrategy::new();
 	    
 	    // receive orders from risk manager and apply mutations on accounts
@@ -91,7 +92,8 @@ impl BackTester {
 	    
 	    // receive strategy edges from multiple strategies and forward them to risk manager
         let mut strategy_manager = StrategyManager::new(self.global_config.clone(), tf_trades_channel.1)
-	          .with_strategy(chop_strategy).await;
+	          .with_entry_strategy(chop_strategy).await
+	          .with_exit_strategy(chop_strategy_exit).await;
 	    
 	    // sends orders to executors
         risk_manager.subscribe(orders_channel.0).await;
@@ -129,73 +131,107 @@ impl BackTester {
 	    r_threads.push(std::thread::spawn(move || {
 		    EventSink::<Order>::listen(&s_e).unwrap();
 	    }));
-	    threads.push(strategy_manager.emit().await?);
-	    threads.push(risk_manager.emit().await?);
-	    threads.push(simulated_executor.emit().await?);
+	    let sm = strategy_manager.clone();
+	    r_threads.push(std::thread::spawn(move || {
+		    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		    runtime.block_on(async move {
+			    sm.emit().await.unwrap().await
+		    });
+	    }));
+	    let rc = risk_manager.clone();
+	    r_threads.push(std::thread::spawn(move || {
+		    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		    runtime.block_on(async move {
+			    rc.emit().await.unwrap().await
+		    });
+	    }));
+	    let s_e = simulated_executor.clone();
+	    r_threads.push(std::thread::spawn(move || {
+		    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+		    runtime.block_on(async move {
+			    s_e.emit().await.unwrap().await
+		    });
+	    }));
 	    // Todo: chunk these for longer backtests or just use the cursor
-        let mut tf_trade_steps = mongo_client
-            .tf_trades
-            .find(
-	            None,
-                FindOptions::builder()
-					.sort(doc! {
-						"timestamp": 1
-					})
-					.build(),
-            )
-            .await?;
-	    // let event_sequence: Arc<RwLock<VecDeque<Order>>> = Arc::new(RwLock::new(VecDeque::new()));
-	    // let mut event_registers = vec![];
-	    
-	    // step over each tf_trade
-	    // make use of tokio's barrier
+	    let mut last_timestamp = 0;
+	    let chunk_size = 20000;
 	    let start = std::time::SystemTime::now();
-	    println!("Starting backtest");
-	
-	    'step: loop {
-		    if let Some(trade) = tf_trade_steps.next().await {
-			    let trade = trade.unwrap();
-			    match tf_trades_channel.0.broadcast(vec![trade]).await {
-				    Ok(_) => {
-					    tokio::time::sleep(Duration::from_micros(10)).await;
-					
-					    // wait for the trade to be propagated to all event sinks
-					    while EventSink::<TfTrades>::working(&risk_manager) {
-						    // println!("Risk manager is working tf trades");
-						    tokio::time::sleep(Duration::from_micros(10)).await;
-					    }
-					    while EventSink::<ExecutionCommand>::working(&risk_manager) {
-						    // println!("Risk manager is working execution commands");
-						    tokio::time::sleep(Duration::from_micros(10)).await;
-					    }
-					    while EventSink::<Order>::working(&simulated_executor){
-						    // println!("Simulated executor is working");
-						    tokio::time::sleep(Duration::from_micros(10)).await;
-					    }
-					    while EventSink::<TfTrades>::working(&strategy_manager){
-						    // println!("Strategy manager is working");
-						    tokio::time::sleep(Duration::from_micros(10)).await;
-					    }
-					   while EventSink::<TfTrades>::working(&choppiness_study) {
-						   // println!("choppiness study is working");
-						   tokio::time::sleep(Duration::from_micros(10)).await;
-					   }
-					   while EventSink::<TfTrades>::working(&adi_study) {
-						   // println!("adi study is working");
-						   tokio::time::sleep(Duration::from_micros(10)).await;
-					   }
-					   
-				    }
-					    // continue 'step
-				    Err(e) => {
-					    // don't do anything, print and continue
-					    println!("Error: {}", e);
-				    }
-			    }
-		    } else {
-			    break 'step;
+	    let mut i = 0;
+	    let count = mongo_client
+		      .tf_trades
+		      .count_documents(
+			      None,
+			      None
+		      )
+		      .await?;
+	    'main: loop {
+		    let mut tf_trade_steps = mongo_client
+			      .tf_trades
+			      .find(
+				      doc! {
+					      "timestamp": {
+						      "$gt": mongodb::bson::to_bson(&last_timestamp).unwrap()
+					      }
+				      },
+				      FindOptions::builder()
+						    .sort(doc! {
+						"timestamp": 1
+					}).allow_disk_use(true).limit(chunk_size)
+						    .build(),
+			      )
+			      .await?
+			      .try_collect()
+			      .await
+			      .unwrap_or_else(|_| vec![]);
+		    
+		    if tf_trade_steps.is_empty() {
+			    break 'main;
 		    }
-        }
+		    last_timestamp = tf_trade_steps.last().unwrap().timestamp;
+		    
+		    
+		    // let event_sequence: Arc<RwLock<VecDeque<Order>>> = Arc::new(RwLock::new(VecDeque::new()));
+		    // let mut event_registers = vec![];
+		
+		    println!("Starting backtest for {} trades", count);
+		    for trade in tf_trade_steps {
+				    match tf_trades_channel.0.broadcast(vec![trade]).await {
+					    Ok(_) => {
+						    if tf_trades_channel.0.len() == tf_trades_channel.0.capacity() {
+							    println!("Step: {}/{}", i, count);
+							    println!("Channel full, waiting for consumers to catch up");
+							    tokio::time::sleep(Duration::from_millis(tf_trades_channel.0.capacity() as u64)).await;
+						    }
+						
+						    // wait for the trade to be propagated to all event sinks
+						    // while EventSink::<TfTrades>::working(&risk_manager) ||
+						    //       EventSink::<ExecutionCommand>::working(&risk_manager) ||
+						    //       EventSink::<Order>::working(&simulated_executor) ||
+						    //       EventSink::<TfTrades>::working(&strategy_manager) ||
+						    //       EventSink::<TfTrades>::working(&choppiness_study) ||
+						    //       EventSink::<TfTrades>::working(&adi_study)
+						    //        {
+						    //     // println!("event being processed {}", i);
+						    //     tokio::time::sleep(Duration::from_millis(5)).await;
+						    // }
+						
+					    }
+					    // continue 'step
+					    Err(e) => {
+						    // don't do anything, print and continue
+						    println!("Error: {}", e);
+					    }
+				    }
+				    i += 1;
+			    }
+		    
+		
+	    }
+	    while tf_trades_channel.0.len() > 0
+	    {
+		    println!("event being processed {}", tf_trades_channel.0.len());
+		    tokio::time::sleep(Duration::from_secs(2)).await;
+	    }
 	    println!("Backtest finished in {:?} seconds", start.elapsed().unwrap());
 	    
 	    Ok(())

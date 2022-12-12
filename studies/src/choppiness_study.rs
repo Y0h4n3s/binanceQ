@@ -127,28 +127,42 @@ impl Study for ChoppinessStudy {
 	}
 	
 	async fn get_entry_for_tf(&self, tf: u64) -> Option<Self::Entry> {
-			let mongo_client = MongoClient::new().await;
-			let res = mongo_client.choppiness.find(
-				doc! {
+		match self.get_n_entries_for_tf(1, tf).await {
+			Some(mut entries) => {
+				if entries.len() > 0 {
+					Some(entries.remove(0))
+				} else {
+					None
+				}
+			},
+			None => None
+		}
+	}
+	
+	async fn get_n_entries_for_tf(&self, n: u64, tf: u64) -> Option<Vec<Self::Entry>> {
+		let mongo_client = MongoClient::new().await;
+		let res = mongo_client.choppiness.find(
+			doc! {
 					"symbol": bson::to_bson(&self.config.symbol).unwrap(),
 					"tf": bson::to_bson(&tf).unwrap(),
 				},
-				FindOptions::builder()
-					  .sort(
-						  doc! {
+			FindOptions::builder()
+				  .sort(
+					  doc! {
 					"step_id": -1
 				}
-					  ).limit(1).build()
-			).await.unwrap().next().await;
-		    if let Some(Ok(entry)) = res {
-			    Some(entry)
-		    } else {
-			    None
-		    }
-	}
-	
-	async fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Option<Vec<Self::Entry>> {
-		todo!()
+				  ).limit(n as i64).build()
+		).await;
+		if let Ok(res) = res {
+			if let Ok(bunch) = res.try_collect().await {
+				Some(bunch)
+			} else {
+				None
+			}
+		} else {
+			None
+		}
+		
 	}
 }
 

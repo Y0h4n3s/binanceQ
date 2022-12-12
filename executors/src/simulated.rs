@@ -389,7 +389,6 @@ impl EventEmitter<OrderStatus> for SimulatedExecutor {
                         }
                     }
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
             }
         }))
     }

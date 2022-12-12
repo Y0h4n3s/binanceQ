@@ -51,8 +51,6 @@ impl EventEmitter<Order> for RiskManager {
                     // there is only one subscriber
                     let subs = subscribers.read().await;
                     subs.broadcast(order).await.unwrap();
-                } else {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             }
         }))
@@ -144,8 +142,43 @@ impl EventSink<ExecutionCommand> for RiskManager {
                     oq.push_back(order);
                 }
                 ExecutionCommand::CloseLongPosition(symbol, confidence) => {
+                    let position = account.get_position(&symbol).await;
+                    if position.is_long() {
+                        let order = Order {
+                            id: 0,
+                            symbol,
+                            side: Side::Ask,
+                            price: Default::default(),
+                            quantity: Decimal::new(1000, 0),
+                            time: SystemTime::now()
+                                  .duration_since(UNIX_EPOCH)
+                                  .unwrap()
+                                  .as_millis() as u64,
+                            order_type: OrderType::Market,
+                        };
+                        let mut oq = order_q.write().await;
+                        oq.push_back(order);
+                    }
                 }
                 ExecutionCommand::CloseShortPosition(symbol, confidence) => {
+                    let position = account.get_position(&symbol).await;
+    
+                    if position.is_short() {
+                        let order = Order {
+                            id: 0,
+                            symbol,
+                            side: Side::Bid,
+                            price: Default::default(),
+                            quantity: Decimal::new(1000, 0),
+                            time: SystemTime::now()
+                                  .duration_since(UNIX_EPOCH)
+                                  .unwrap()
+                                  .as_millis() as u64,
+                            order_type: OrderType::Market,
+                        };
+                        let mut oq = order_q.write().await;
+                        oq.push_back(order);
+                    }
                 }
             }
             Ok(())

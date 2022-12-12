@@ -76,14 +76,13 @@ pub async fn insert_trade_entries(
 
 pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: u64) -> u64 {
     let today = SystemTime::now();
-    let farthest = today - Duration::from_secs(fetch_history_span);
+    let farthest = today - Duration::from_millis(fetch_history_span);
     let farthest_date = DateTime::<Utc>::from(farthest).day();
     let todays_date = DateTime::<Utc>::from(today).day();
     let mut dir = std::env::temp_dir();
     let mut start_time = (SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() - 60 * 60 * 1000 * 24 * 2) as u64;
     
     let client = Client::new();
-    
     let mut saved_files = vec![];
     for i in farthest_date..todays_date - 1 {
         let date = Utc.ymd(DateTime::<Utc>::from(today - Duration::from_secs(60 * 60 * 24 * i as u64)).year() , DateTime::<Utc>::from(today - Duration::from_secs(60 * 60 * 24 * i as u64)).month(), i);
@@ -105,7 +104,7 @@ pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: u64) 
     }
     
     for file in saved_files {
-        let mut archive = zip::ZipArchive::new(File::open(file).unwrap()).unwrap();
+        let mut archive = zip::ZipArchive::new(File::open(file.clone()).unwrap()).unwrap();
         println!("Extracting {:?}", archive.by_index(0).unwrap().name());
         archive.extract(std::env::temp_dir()).unwrap();
         let file_contents = read_to_string(std::env::temp_dir().join(archive.by_index(0).unwrap().name())).unwrap();
@@ -151,13 +150,16 @@ impl From<ArchiveAggTrade> for AggTrade {
 }
 
 // TODO: need to get recent history also for when we were loading
-pub async fn load_history(key: AccessKey, symbol: Symbol, fetch_history_span: u64) {
+pub async fn load_history(key: AccessKey, symbol: Symbol, fetch_history_span: u64, zip_only: bool) {
     let market = FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
     let mut span = fetch_history_span;
     if fetch_history_span > 24 * 60 * 60 * 2 * 1000 {
         println!("Using zip download for history longer than 48h");
         let last_time = load_history_from_archive(symbol.clone(), fetch_history_span).await;
         span = (SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 - last_time);
+    }
+    if zip_only {
+        return;
     }
     
     let starting_time = SystemTime::now()
@@ -166,7 +168,7 @@ pub async fn load_history(key: AccessKey, symbol: Symbol, fetch_history_span: u6
         .as_millis();
     let mut start_time = starting_time as u64 - span;
     loop {
-        println!("Fetching history from {} to {}", start_time, starting_time);
+        println!("Fetching history from {} to {}", chrono::prelude::Local.timestamp_millis_opt(start_time as i64).unwrap().time().to_string(), chrono::prelude::Local.timestamp_millis_opt(starting_time as i64).unwrap().time().to_string());
         if start_time > starting_time as u64 {
             break;
         }
@@ -185,7 +187,6 @@ pub async fn load_history(key: AccessKey, symbol: Symbol, fetch_history_span: u6
             }
         }
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 

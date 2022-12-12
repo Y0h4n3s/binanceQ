@@ -108,6 +108,19 @@ impl Study for DirectionalIndexStudy {
 	}
 	
 	async fn get_entry_for_tf(&self, tf: u64) -> Option<Self::Entry> {
+		match self.get_n_entries_for_tf(1, tf).await {
+			Some(mut entries) => {
+				if entries.len() > 0 {
+					Some(entries.remove(0))
+				} else {
+					None
+				}
+			},
+			None => None
+		}
+	}
+	
+	async fn get_n_entries_for_tf(&self, n: u64, tf: u64) -> Option<Vec<Self::Entry>> {
 		let mongo_client = MongoClient::new().await;
 		let res = mongo_client.adi.find(
 			doc! {
@@ -116,20 +129,21 @@ impl Study for DirectionalIndexStudy {
 				},
 			FindOptions::builder()
 				  .sort(
-				doc! {
+					  doc! {
 					"step_id": -1
 				}
-			).limit(1).build()
-		).await.unwrap().next().await;
-		if let Some(Ok(entry)) = res {
-			Some(entry)
+				  ).limit(n as i64).build()
+		).await;
+		if let Ok(res) = res {
+			if let Ok(bunch) = res.try_collect().await {
+				Some(bunch)
+			} else {
+				None
+			}
 		} else {
 			None
 		}
-	}
-	
-	async fn get_n_entries_for_tf(&self, _n: u64, _tf: u64) -> Option<Vec<Self::Entry>> {
-		todo!()
+		
 	}
 	fn sentiment(&self) -> Sentiment {
 		Sentiment::Neutral
@@ -204,9 +218,9 @@ impl EventSink<TfTrades> for DirectionalIndexStudy {
 					let din = my_values.iter().map(|a| a.2).reduce(|a, b| {
 						a + b
 					}).unwrap();
-					let dip = (dip / atr * 100.0).abs();
-					let din = (din / atr * 100.0).abs();
-					let dx = ((dip - din).abs() / (dip + din)) * 100.0;
+					let dip = dip / atr * 100.0;
+					let din = din / atr * 100.0;
+					let dx = ((dip.abs() - din.abs()).abs() / (dip.abs() + din.abs())) * 100.0;
 					dx_values.push((dx, dip, din));
 				}
 				let adi = dx_values.iter().map(|a| a.0).reduce(|a, b| {
