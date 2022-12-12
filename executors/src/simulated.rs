@@ -2,15 +2,15 @@ use crate::{ExchangeAccount, ExchangeAccountInfo, Position, TradeExecutor};
 use async_broadcast::{Receiver, Sender};
 use async_trait::async_trait;
 use binance_q_events::{EventEmitter, EventSink};
+use binance_q_mongodb::client::MongoClient;
 use binance_q_types::{
     ExchangeId, Order, OrderStatus, Side, Symbol, SymbolAccount, TfTrades, Trade,
 };
-use rust_decimal::prelude::{FromPrimitive};
+use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
-use binance_q_mongodb::client::MongoClient;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
@@ -99,7 +99,12 @@ impl SimulatedAccount {
 }
 
 impl SimulatedExecutor {
-    pub async fn new(orders_rx: Receiver<Order>, trades_rx: Receiver<TfTrades>, symbols: Vec<Symbol>, trades: Sender<Trade>) -> Self {
+    pub async fn new(
+        orders_rx: Receiver<Order>,
+        trades_rx: Receiver<TfTrades>,
+        symbols: Vec<Symbol>,
+        trades: Sender<Trade>,
+    ) -> Self {
         let order_statuses_channel = async_broadcast::broadcast(100);
         let mut account = SimulatedAccount::new(trades_rx, order_statuses_channel.1, symbols).await;
         account.subscribe(trades).await;
@@ -108,10 +113,12 @@ impl SimulatedExecutor {
         std::thread::spawn(move || {
             EventSink::<TfTrades>::listen(&ac).unwrap();
         });
+        let ac = account.clone();
+        std::thread::spawn(move || {
+            EventSink::<OrderStatus>::listen(&ac).unwrap();
+        });
         Self {
-            account: Arc::new(
-                account
-            ),
+            account: Arc::new(account),
             orders: Arc::new(RwLock::new(orders_rx)),
             order_status_q: Arc::new(RwLock::new(VecDeque::new())),
             order_status_subscribers: Arc::new(RwLock::new(order_statuses_channel.0)),
@@ -137,7 +144,11 @@ impl EventEmitter<Trade> for SimulatedAccount {
                 let trade = w.pop_front();
                 std::mem::drop(w);
                 if let Some(trade) = trade {
-                    mongo_client.past_trades.insert_one(trade.clone(), None).await.unwrap();
+                    mongo_client
+                        .past_trades
+                        .insert_one(trade.clone(), None)
+                        .await
+                        .unwrap();
                     let thw = trade_history.read().await;
                     let mut th = thw.get(&trade.symbol).unwrap().write().await;
                     th.insert(trade.clone());
@@ -167,90 +178,108 @@ impl EventSink<TfTrades> for SimulatedAccount {
                 let open_orders = open_orders.read().await.get(&symbol).unwrap().clone();
                 let all_filled_orders = filled_orders.read().await;
                 let all_positions = positions.read().await;
-                let mut filled_orders = all_filled_orders.get(&symbol).unwrap().write().await;
-                let mut remove_orders = vec![];
                 let mut partial_fills = vec![];
                 for trade in tf_trade.trades {
-                    for order in open_orders.read().await.iter() {
-                        match order {
-                            OrderStatus::Pending(order) => {
-                                if (order.side == Side::Bid
-                                    && (Decimal::from_f64(trade.price).unwrap().lt(&order.price)
+                    let mut open_orders = open_orders.write().await;
+                    if open_orders.len() == 0 {
+                        continue;
+                    }
+                    let last = open_orders.iter().next().unwrap().clone();
+                    let rem = open_orders.remove(&last.clone());
+                    drop(open_orders);
+                    match last {
+                        OrderStatus::Pending(order) => {
+                            if (order.side == Side::Bid
+                                && (Decimal::from_f64(trade.price).unwrap().lt(&order.price)
+                                    || order.price.eq(&Decimal::from_f64(trade.price).unwrap())))
+                                || (order.side == Side::Ask
+                                    && (order.price.lt(&Decimal::from_f64(trade.price).unwrap())
                                         || order
                                             .price
                                             .eq(&Decimal::from_f64(trade.price).unwrap())))
-                                    || (order.side == Side::Ask
-                                        && (order
-                                            .price
-                                            .lt(&Decimal::from_f64(trade.price).unwrap())
-                                            || order
-                                                .price
-                                                .eq(&Decimal::from_f64(trade.price).unwrap())))
-                                {
-                                    let position = all_positions.get(&symbol).unwrap();
-                                    let mut w = position.write().await;
-                                    let filled_qty = Decimal::from_f64(trade.qty).unwrap();
-                                    let filled_price = Decimal::from_f64(trade.price).unwrap();
-                                    let mut filled_order = order.clone();
-                                    filled_order.quantity = filled_qty.max(order.quantity);
-                                    filled_order.price = filled_price;
-                                    if let Some(trade) = w.apply_order(&filled_order) {
-                                        let mut trade_q = trade_q.write().await;
-                                        trade_q.push_back(trade);
-                                    }
-                                    remove_orders.push(order.clone());
-                                    if filled_qty < order.quantity {
-                                        partial_fills.push(OrderStatus::PartiallyFilled(
-                                            order.clone(),
-                                            Decimal::from_f64(trade.qty).unwrap(),
-                                        ));
-                                    } else {
-                                        filled_orders.insert(OrderStatus::Filled(order.clone()));
-                                    }
+                            {
+                                let position = all_positions.get(&symbol).unwrap();
+                                let mut w = position.write().await;
+                                let filled_qty = Decimal::from_f64(trade.qty).unwrap();
+                                let filled_price = Decimal::from_f64(trade.price).unwrap();
+                                let mut filled_order = order.clone();
+                                filled_order.quantity = filled_qty.max(order.quantity);
+                                filled_order.price = filled_price;
+                                filled_order.time = trade.timestamp;
+    
+                                if let Some(trade) = w.apply_order(&filled_order) {
+                                    let mut trade_q = trade_q.write().await;
+                                    trade_q.push_back(trade);
+                                }
+                                if filled_qty < order.quantity {
+                                    partial_fills.push(OrderStatus::PartiallyFilled(
+                                        order.clone(),
+                                        Decimal::from_f64(trade.qty).unwrap(),
+                                    ));
+                                } else {
+                                    let mut filled_orders =
+                                        all_filled_orders.get(&symbol).unwrap().write().await;
+
+                                    filled_orders.insert(OrderStatus::Filled(order.clone()));
                                 }
                             }
-                            OrderStatus::PartiallyFilled(order, filled_qty_so_far) => {
-                                if (order.side == Side::Bid
-                                    && order.price.gt(&Decimal::from_f64(trade.price).unwrap()))
-                                    || (order.side == Side::Ask
-                                        && order.price.lt(&Decimal::from_f64(trade.price).unwrap()))
-                                {
-                                    let position = all_positions.get(&symbol).unwrap();
-                                    let mut w = position.write().await;
-                                    let filled_qty = Decimal::from_f64(trade.qty).unwrap();
-                                    let filled_price = Decimal::from_f64(trade.price).unwrap();
-
-                                    let mut filled_order = order.clone();
-                                    filled_order.quantity =
-                                        filled_qty.max(order.quantity - filled_qty_so_far);
-                                    filled_order.price = filled_price;
-
-                                    if let Some(trade) = w.apply_order(&filled_order) {
-                                        let mut trade_q = trade_q.write().await;
-                                        trade_q.push_back(trade);
-                                    }
-                                    remove_orders.push(order.clone());
-                                    if filled_qty < order.quantity {
-                                        partial_fills.push(OrderStatus::PartiallyFilled(
-                                            order.clone(),
-                                            filled_qty + filled_qty_so_far,
-                                        ));
-                                    } else {
-                                        filled_orders.insert(OrderStatus::Filled(order.clone()));
-                                    }
-                                }
-                            }
-                            _ => {}
                         }
+                        OrderStatus::PartiallyFilled(order, filled_qty_so_far) => {
+                            if (order.side == Side::Bid
+                                && order.price.gt(&Decimal::from_f64(trade.price).unwrap()))
+                                || (order.side == Side::Ask
+                                    && order.price.lt(&Decimal::from_f64(trade.price).unwrap()))
+                            {
+                                let position = all_positions.get(&symbol).unwrap();
+                                let mut w = position.write().await;
+                                let filled_qty = Decimal::from_f64(trade.qty).unwrap();
+                                let filled_price = Decimal::from_f64(trade.price).unwrap();
+
+                                let mut filled_order = order.clone();
+                                filled_order.quantity =
+                                    filled_qty.max(order.quantity - filled_qty_so_far);
+                                filled_order.price = filled_price;
+                                filled_order.time = trade.timestamp;
+
+                                if let Some(trade) = w.apply_order(&filled_order) {
+                                    let mut trade_q = trade_q.write().await;
+                                    trade_q.push_back(trade);
+                                }
+                                if filled_qty < order.quantity {
+                                    partial_fills.push(OrderStatus::PartiallyFilled(
+                                        order.clone(),
+                                        filled_qty + filled_qty_so_far,
+                                    ));
+                                } else {
+                                    let mut filled_orders =
+                                        all_filled_orders.get(&symbol).unwrap().write().await;
+
+                                    filled_orders.insert(OrderStatus::Filled(order.clone()));
+                                }
+                            }
+                        }
+                        OrderStatus::Filled(order) => {
+                            let position = all_positions.get(&symbol).unwrap();
+                            let mut w = position.write().await;
+                            let filled_qty = Decimal::from_f64(trade.qty).unwrap();
+                            let filled_price = Decimal::from_f64(trade.price).unwrap();
+
+                            let mut filled_order = order.clone();
+
+                            filled_order.price = filled_price;
+                            filled_order.time = trade.timestamp;
+                            if let Some(trade) = w.apply_order(&filled_order) {
+                                let mut trade_q = trade_q.write().await;
+                                trade_q.push_back(trade);
+                            }
+                            let mut filled_orders =
+                                all_filled_orders.get(&symbol).unwrap().write().await;
+                            filled_orders.insert(OrderStatus::Filled(filled_order.clone()));
+                        }
+                        _ => {}
                     }
                 }
-
-                for order in remove_orders {
-                    open_orders
-                        .write()
-                        .await
-                        .remove(&OrderStatus::Pending(order));
-                }
+                
                 for order in partial_fills {
                     open_orders.write().await.insert(order);
                 }
@@ -280,8 +309,11 @@ impl EventSink<OrderStatus> for SimulatedAccount {
         let trade_q = self.trade_q.clone();
         let all_positions = self.positions.clone();
         Ok(tokio::spawn(async move {
-            match event_msg {
-                OrderStatus::Pending(order) => {
+            match &event_msg {
+                OrderStatus::Pending(order)
+                | OrderStatus::PartiallyFilled(order, _)
+                | OrderStatus::Filled(order)
+                | OrderStatus::Canceled(order, _) => {
                     if open_orders.read().await.get(&order.symbol).is_none() {
                         open_orders
                             .write()
@@ -296,54 +328,7 @@ impl EventSink<OrderStatus> for SimulatedAccount {
                         .unwrap()
                         .write()
                         .await
-                        .insert(OrderStatus::Pending(order.clone()));
-                }
-                OrderStatus::PartiallyFilled(order, filled) => {
-                    if open_orders.read().await.get(&order.symbol).is_none() {
-                        open_orders
-                            .write()
-                            .await
-                            .insert(order.symbol.clone(), Arc::new(RwLock::new(HashSet::new())));
-                    }
-
-                    open_orders
-                        .read()
-                        .await
-                        .get(&order.symbol)
-                        .unwrap()
-                        .write()
-                        .await
-                        .insert(OrderStatus::PartiallyFilled(order.clone(), filled));
-                }
-                // if the order was a market order it is immediately filled so  move it to order history and adjust position
-                OrderStatus::Filled(order) => {
-                    order_history
-                        .read()
-                        .await
-                        .get(&order.symbol)
-                        .unwrap()
-                        .write()
-                        .await
-                        .insert(OrderStatus::Filled(order.clone()));
-                    // adjust position
-                    let positions = all_positions.read().await;
-                    let position = positions.get(&order.symbol).unwrap();
-                    let mut position = position.write().await;
-                    if let Some(trade) = position.apply_order(&order) {
-                        trade_q.write().await.push_back(trade);
-    
-                    }
-                }
-                OrderStatus::Canceled(order, reason) => {
-                    eprintln!("order canceled reason: {:?}", reason);
-                    order_history
-                        .read()
-                        .await
-                        .get(&order.symbol)
-                        .unwrap()
-                        .write()
-                        .await
-                        .insert(OrderStatus::Canceled(order, reason));
+                        .insert(event_msg);
                 }
             }
             Ok(())
@@ -488,12 +473,30 @@ impl ExchangeAccount for SimulatedAccount {
         todo!()
     }
 
-    async fn market_long(&self, _order: Order) -> anyhow::Result<OrderStatus> {
-        todo!()
+    async fn market_long(&self, order: Order) -> anyhow::Result<OrderStatus> {
+        let accounts = self.symbol_accounts.read().await;
+        let symbol_account = accounts.get(&order.symbol).unwrap();
+        // if symbol_account.base_asset_free < order.quantity {
+        //     return Ok(OrderStatus::Canceled(
+        //         order,
+        //         "Insufficient balance".to_string(),
+        //     ));
+        // }
+
+        Ok(OrderStatus::Filled(order))
     }
 
-    async fn market_short(&self, _order: Order) -> anyhow::Result<OrderStatus> {
-        todo!()
+    async fn market_short(&self, order: Order) -> anyhow::Result<OrderStatus> {
+        let accounts = self.symbol_accounts.read().await;
+        let symbol_account = accounts.get(&order.symbol).unwrap();
+        // if symbol_account.base_asset_free < order.quantity {
+        //     return Ok(OrderStatus::Canceled(
+        //         order,
+        //         "Insufficient balance".to_string(),
+        //     ));
+        // }
+
+        Ok(OrderStatus::Filled(order))
     }
 }
 
@@ -501,7 +504,7 @@ impl ExchangeAccount for SimulatedAccount {
 impl TradeExecutor for SimulatedExecutor {
     const ID: ExchangeId = ExchangeId::Simulated;
     type Account = SimulatedAccount;
-    fn get_account(&self) -> &Self::Account {
-        &self.account
+    fn get_account(&self) -> Arc<Self::Account> {
+        self.account.clone()
     }
 }

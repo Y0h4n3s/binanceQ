@@ -130,6 +130,8 @@ impl BackTester {
 		    EventSink::<Order>::listen(&s_e).unwrap();
 	    }));
 	    threads.push(strategy_manager.emit().await?);
+	    threads.push(risk_manager.emit().await?);
+	    threads.push(simulated_executor.emit().await?);
 	    // Todo: chunk these for longer backtests or just use the cursor
         let mut tf_trade_steps = mongo_client
             .tf_trades
@@ -142,7 +144,6 @@ impl BackTester {
 					.build(),
             )
             .await?;
-	    
 	    // let event_sequence: Arc<RwLock<VecDeque<Order>>> = Arc::new(RwLock::new(VecDeque::new()));
 	    // let mut event_registers = vec![];
 	    

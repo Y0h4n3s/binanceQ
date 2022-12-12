@@ -32,19 +32,17 @@ impl SignalGenerator for ChopDirectionalEntryStrategy {
 		// calculate here
 		let symbol = self.global_config.symbol.clone();
 		let chop = self.choppiness_study.get_entry_for_tf(self.global_config.tf2).await;
-		let adi = self.adi_study.get_entry_for_tf(self.global_config.tf3).await;
+		let adi = self.adi_study.get_entry_for_tf(self.global_config.tf2).await;
 		if chop.is_none() || adi.is_none() {
 			return StrategyEdge::Neutral;
 		}
 		let chop = chop.unwrap();
 		let adi = adi.unwrap();
-		// println!("chop: {:?}, adi: {:?}", chop, adi);
-		// println!("adi: {:?}", adi);
 		let _tf1 = self.global_config.tf1;
-		if chop.value > 60.0 && chop.delta > 20.0 && adi.positive > adi.negative && adi.value > 20.0 && adi.delta > 0.0 {
+		if chop.value > 70.0 && chop.delta > 20.0 && adi.positive > adi.negative && adi.value > 20.0  {
 			let confidence = normalize(chop.value * chop.delta * adi.positive, 0.0, 10000.0 * 100.0);
 			StrategyEdge::Long(symbol.clone(), confidence)
-		} else if chop.value > 60.0 && chop.delta > 20.0 && adi.positive < adi.negative && adi.value > 20.0 && adi.delta > 0.0 {
+		} else if chop.value > 70.0 && chop.delta > 20.0 && adi.positive < adi.negative && adi.value > 20.0  {
 			let confidence = normalize(chop.value * chop.delta * adi.negative, 0.0, 10000.0 * 100.0);
 			StrategyEdge::Short(symbol.clone(), confidence)
 		} else {

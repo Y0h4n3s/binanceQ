@@ -23,7 +23,10 @@ static KEY: Lazy<AccessKey> = Lazy::new(|| {
 });
 
 fn main() -> Result<(), anyhow::Error> {
-    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+          .enable_all()
+          .build()
+          .unwrap();
     runtime.block_on(async_main())
 }
 async fn async_main() -> anyhow::Result<()> {

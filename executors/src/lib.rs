@@ -136,11 +136,11 @@ pub trait ExchangeAccount: ExchangeAccountInfo {
 
 pub trait TradeExecutor: EventSink<Order> + EventEmitter<OrderStatus> {
 	const ID: ExchangeId;
-	type Account: ExchangeAccount;
+	type Account: ExchangeAccount + 'static;
 	fn get_id(&self) -> ExchangeId {
 		Self::ID
 	}
-	fn get_account(&self) -> &Self::Account;
+	fn get_account(&self) -> Arc<Self::Account>;
 	
 	fn execute_order(&self, order: Order) -> anyhow::Result<OrderStatus> {
 		let handle = tokio::runtime::Handle::try_current()?;
@@ -148,20 +148,34 @@ pub trait TradeExecutor: EventSink<Order> + EventEmitter<OrderStatus> {
 			OrderType::Limit => {
 				match order.side {
 					Side::Bid => {
-						handle.block_on(self.get_account().limit_long(order))
+						tokio::task::block_in_place(move || {
+							tokio::runtime::Handle::current().block_on(self.get_account().limit_long(order))
+						})
 					},
 					Side::Ask => {
-						handle.block_on(self.get_account().limit_short(order))
+						tokio::task::block_in_place(move || {
+							tokio::runtime::Handle::current().block_on(self.get_account().limit_long(order))
+						})
 					}
 				}
 			},
 			OrderType::Market => {
 				match order.side {
 					Side::Bid => {
-						handle.block_on(self.get_account().market_long(order))
+						let account: Arc<<Self as TradeExecutor>::Account> = self.get_account();
+						let res = std::thread::spawn(move || {
+							let rt = tokio::runtime::Runtime::new().unwrap();
+							rt.block_on(account.market_long(order))
+						});
+						res.join().unwrap()
 					},
 					Side::Ask => {
-						handle.block_on(self.get_account().market_short(order))
+						let account = self.get_account();
+						let res = std::thread::spawn(move || {
+							let rt = tokio::runtime::Runtime::new().unwrap();
+							rt.block_on(account.market_short(order))
+						});
+						res.join().unwrap()
 					}
 				}
 			},

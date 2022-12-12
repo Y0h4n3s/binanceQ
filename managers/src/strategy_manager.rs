@@ -43,7 +43,7 @@ impl EventEmitter<ExecutionCommand> for StrategyManager {
 				drop(w);
 				if let Some(first) = first {
 					let mut ws = subs.write().await;
-					ws.broadcast(first).await;
+					ws.broadcast(first).await.unwrap();
 				}
 				tokio::time::sleep(Duration::from_micros(100)).await;
 			}

@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use binance_q_events::{EventEmitter, EventSink};
 use binance_q_executors::ExchangeAccountInfo;
 use binance_q_types::{ExecutionCommand, GlobalConfig, Order, OrderType, Side, TfTrades, Trade};
+use rust_decimal::Decimal;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 #[derive(Clone)]
@@ -97,6 +98,7 @@ impl EventSink<ExecutionCommand> for RiskManager {
     ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
         let account = self.account.clone();
         let global_config = self.global_config.clone();
+        let order_q = self.order_q.clone();
         /// decide on size and price and order_type and send to order_q
         Ok(tokio::spawn(async move {
             match event_msg {
@@ -114,12 +116,32 @@ impl EventSink<ExecutionCommand> for RiskManager {
                         symbol,
                         side: Side::Bid,
                         price: Default::default(),
-                        quantity: Default::default(),
-                        time: 0,
-                        order_type: OrderType::Limit,
+                        quantity: Decimal::new(1000, 0),
+                        time: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64,
+                        order_type: OrderType::Market,
                     };
+                    let mut oq = order_q.write().await;
+                    oq.push_back(order);
+                    
                 }
                 ExecutionCommand::OpenShortPosition(symbol, confidence) => {
+                    let order = Order {
+                        id: 0,
+                        symbol,
+                        side: Side::Ask,
+                        price: Default::default(),
+                        quantity: Decimal::new(1000, 0),
+                        time: SystemTime::now()
+                              .duration_since(UNIX_EPOCH)
+                              .unwrap()
+                              .as_millis() as u64,
+                        order_type: OrderType::Market,
+                    };
+                    let mut oq = order_q.write().await;
+                    oq.push_back(order);
                 }
                 ExecutionCommand::CloseLongPosition(symbol, confidence) => {
                 }

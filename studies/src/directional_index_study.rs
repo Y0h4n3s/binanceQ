@@ -11,11 +11,12 @@ use mongodb::bson;
 use futures::{TryStreamExt, StreamExt};
 use mongodb::bson::doc;
 use binance_q_events::EventSink;
-use yata::core::{IndicatorConfig, IndicatorInstance};
+use yata::core::{IndicatorConfig, IndicatorInstance, MovingAverageConstructor};
 use tokio::sync::RwLock;
 use async_trait::async_trait;
-use yata::helpers::MA;
-
+use yata::helpers::{MA, Peekable};
+use yata::core::OHLCV;
+use yata::core::Method;
 use crate::Study;
 
 #[derive(Clone)]
@@ -142,7 +143,7 @@ impl Study for DirectionalIndexStudy {
 	}
 }
 
-
+// https://www.investopedia.com/terms/a/adx.asp
 impl EventSink<TfTrades> for DirectionalIndexStudy {
 	fn get_receiver(&self) -> Arc<RwLock<Receiver<TfTrades>>> {
 		self.tf_trades.clone()
@@ -172,15 +173,45 @@ impl EventSink<TfTrades> for DirectionalIndexStudy {
 			};
 			for trades in event_msg {
 				let trades_client = TfTradeEmitter::new(trades.tf, gc.clone());
-				if trades.id < config.range as u64 {
+				if trades.id <= config.range as u64 * 2 {
 					continue
 				}
-				let past_trades = trades_client.get_tf_trades_until(trades.id, config.range as u64).await?;
-				for trade in past_trades {
-					let candle = Candle::from(&trade);
-					
-					IndicatorInstance::next(&mut adi_instance, &candle);
+				let mut past_trades = trades_client.get_tf_trades_until(trades.id, config.range as u64 * 2).await?;
+				let mut past_candle = Candle::from(&past_trades.pop().unwrap());
+				let values = past_trades.iter().map(|chunk| {
+					let candle = Candle::from(chunk);
+					let tr = candle.tr(&past_candle) as f64;
+					let dmp = candle.high - past_candle.high;
+					let dmn = past_candle.low - candle.low;
+					past_candle = candle.clone();
+					(tr, dmp, dmn)
+				}).collect::<Vec<(f64, f64, f64)>>();
+				
+				let mut dx_values = Vec::new();
+				for i in config.range..config.range*2 {
+					if i < config.range {
+						continue
+					}
+					let my_values = &values[(i - config.range) as usize..i as usize];
+					let atr = my_values.iter().map(|a| a.0 ).reduce(|a, b| {
+						a + b
+					}).unwrap();
+					let mut emai = yata::methods::EMA::new(config.range as u8, &my_values.first().unwrap().1).unwrap();
+					let dip = my_values.iter().map(|a| a.1).reduce(|a,b| {
+						a + b
+					}).unwrap();
+					let mut emai = yata::methods::EMA::new(config.range as u8, &my_values .first().unwrap().2).unwrap();
+					let din = my_values.iter().map(|a| a.2).reduce(|a, b| {
+						a + b
+					}).unwrap();
+					let dip = (dip / atr * 100.0).abs();
+					let din = (din / atr * 100.0).abs();
+					let dx = ((dip - din).abs() / (dip + din)) * 100.0;
+					dx_values.push((dx, dip, din));
 				}
+				let adi = dx_values.iter().map(|a| a.0).reduce(|a, b| {
+					a + b
+				}).unwrap() / config.range as f64;
 				let last_adii = mongo_client.adi.find(doc! {"symbol":  bson::to_bson(&config.symbol).unwrap(), "tf": bson::to_bson(&trades.tf).unwrap()}, Some(FindOptions::builder().sort(doc! {
 			"step_id": -1
 		}).limit(1).build())).await?.next().await;
@@ -191,21 +222,21 @@ impl EventSink<TfTrades> for DirectionalIndexStudy {
 					last_adii.unwrap().unwrap()
 				};
 				let candle = Candle::from(&trades);
-				let value = IndicatorInstance::next(&mut adi_instance, &candle);
-				println!("{}: {:?}", trades.tf, value.values());
-				let delta = change_percent(prev_value.value, value.value(0));
+
+				let value = (adi, dx_values.last().unwrap().1, dx_values.last().unwrap().2);
+				let delta = change_percent(prev_value.value, value.0);
 				
 				let positive_delta =
-					change_percent(prev_value.positive, value.value(1));
+					change_percent(prev_value.positive, value.1);
 				
 				let negative_delta =
-					change_percent(prev_value.negative, value.value(2));
+					change_percent(prev_value.negative, value.2);
 				
 				let adi_entry = AverageDirectionalIndexEntry {
 					tf: trades.tf,
-					value: value.value(0),
-					positive: value.value(1),
-					negative: value.value(2),
+					value: value.0,
+					positive: value.1,
+					negative: value.2,
 					delta,
 					positive_delta,
 					negative_delta,
