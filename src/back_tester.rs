@@ -21,6 +21,7 @@ use binance_q_managers::risk_manager::RiskManagerConfig;
 pub struct BackTesterConfig {
     pub symbol: Symbol,
     pub length: u64,
+	pub load_history: bool,
 }
 pub struct BackTester {
     global_config: GlobalConfig,
@@ -38,27 +39,30 @@ impl BackTester {
 
     pub async fn run(&self) -> anyhow::Result<()> {
         let mongo_client = MongoClient::new().await;
-        mongo_client.reset_db().await;
-
-        binance_q_mongodb::loader::load_history(
-            self.global_config.key.clone(),
-            self.config.symbol.clone(),
-            self.config.length * 1000,
-	        true
-        )
-        .await;
+        
+	    if self.config.load_history {
+		    mongo_client.reset_db().await;
+		    binance_q_mongodb::loader::load_history(
+			    self.global_config.key.clone(),
+			    self.config.symbol.clone(),
+			    self.config.length * 1000,
+			    true
+		    )
+			      .await;
+		    for tf in vec![self.global_config.tf1, self.global_config.tf2, self.global_config.tf3] {
+			    let tf_trade = TfTradeEmitter::new(tf, self.global_config.clone());
+			    tf_trade.log_history().await;
+		    }
+		
+	    }
+	    mongo_client.reset_studies().await;
+	    mongo_client.reset_trades().await;
 
         let tf_trades_channel = async_broadcast::broadcast(10000);
         let trades_channel = async_broadcast::broadcast(1000);
         let orders_channel = async_broadcast::broadcast(1000);
         let execution_commands_channel = async_broadcast::broadcast(100);
-        // start tf trade emitters, don't subscribe to any trades, just build tf trades
-        // Todo: move past trades logger to different func instead of in emit
-        for tf in vec![self.global_config.tf1, self.global_config.tf2, self.global_config.tf3] {
-            let tf_trade = TfTradeEmitter::new(tf, self.global_config.clone());
-            tf_trade.log_history().await;
-        }
-	
+
 	    let config = StudyConfig {
 		    symbol: self.config.symbol.clone(),
 		    range: 10,
@@ -197,10 +201,9 @@ impl BackTester {
 		    for trade in tf_trade_steps {
 				    match tf_trades_channel.0.broadcast(vec![trade]).await {
 					    Ok(_) => {
-						    if tf_trades_channel.0.len() == tf_trades_channel.0.capacity() {
-							    println!("Step: {}/{}", i, count);
-							    println!("Channel full, waiting for consumers to catch up");
-							    tokio::time::sleep(Duration::from_millis(tf_trades_channel.0.capacity() as u64)).await;
+						    while tf_trades_channel.0.len() > 0 {
+							    println!("event being processed {}", i);
+							    tokio::time::sleep(Duration::from_millis(20)).await;
 						    }
 						
 						    // wait for the trade to be propagated to all event sinks
@@ -227,11 +230,7 @@ impl BackTester {
 		    
 		
 	    }
-	    while tf_trades_channel.0.len() > 0
-	    {
-		    println!("event being processed {}", tf_trades_channel.0.len());
-		    tokio::time::sleep(Duration::from_secs(2)).await;
-	    }
+	    
 	    println!("Backtest finished in {:?} seconds", start.elapsed().unwrap());
 	    
 	    Ok(())

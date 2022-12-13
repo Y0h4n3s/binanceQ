@@ -146,6 +146,7 @@ impl StrategyManager {
 	}
 	
 	async fn emit_close_short_signals( css: Vec<Box<dyn SignalGenerator>>, q: Arc<RwLock<VecDeque<ExecutionCommand>>>){
+		
 		for s in css.iter() {
 			let s1 = dyn_clone::clone_box(&**s);
 			let signal = s1.get_signal().await;

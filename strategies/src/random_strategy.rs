@@ -16,7 +16,9 @@ impl RandomStrategy {
 }
 #[async_trait]
 impl SignalGenerator for RandomStrategy {
-	
+	fn get_name(&self) -> String {
+		"RandomStrategy".to_string()
+	}
 	async fn get_signal(&self) -> StrategyEdge {
 		let symbol = Symbol {
 			symbol: "BTCUSDT".to_string(),

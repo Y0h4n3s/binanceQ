@@ -57,7 +57,7 @@ impl SimulatedAccount {
                 base_asset_free: Default::default(),
                 base_asset_locked: Default::default(),
                 // TODO: extract this config
-                quote_asset_free: Decimal::new(10000, 0),
+                quote_asset_free: Decimal::new(100000, 0),
                 quote_asset_locked: Default::default(),
             };
             let position = Position::new(Side::Ask, symbol.clone(), Decimal::ZERO, Decimal::ZERO);
@@ -263,7 +263,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                             let mut w = position.write().await;
                             let filled_qty = Decimal::from_f64(trade.qty).unwrap();
                             let filled_price = Decimal::from_f64(trade.price).unwrap();
-
+                            
                             let mut filled_order = order.clone();
 
                             filled_order.price = filled_price;
@@ -274,6 +274,8 @@ impl EventSink<TfTrades> for SimulatedAccount {
                             }
                             let mut filled_orders =
                                 all_filled_orders.get(&symbol).unwrap().write().await;
+                            let mongo_client = MongoClient::new().await;
+                            mongo_client.orders.insert_one(filled_order.clone(), None).await;
                             filled_orders.insert(OrderStatus::Filled(filled_order.clone()));
                         }
                         _ => {}

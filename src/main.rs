@@ -64,6 +64,11 @@ async fn async_main() -> anyhow::Result<()> {
                             .required(false)
                             .default_value("BTCUSDT")
                     )
+                    .arg(
+                        arg!(--loadhistory "Load history from binance")
+                            .required(false)
+                            
+                    )
           ).get_matches();
     
     if let Some(matches) = matches.subcommand_matches("backtest") {
@@ -88,6 +93,7 @@ async fn async_main() -> anyhow::Result<()> {
         let back_tester_config = BackTesterConfig {
             symbol,
             length: backtest_span,
+            load_history: matches.get_flag("loadhistory")
         };
         let back_tester = BackTester::new(global_config, back_tester_config);
         back_tester.run().await?;

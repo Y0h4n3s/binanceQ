@@ -47,19 +47,20 @@ impl ChopDirectionalExitStrategy {
 
 #[async_trait]
 impl SignalGenerator for ChopDirectionalEntryStrategy {
-	
+	fn get_name(&self) -> String {
+		"ChopDirectionalEntry".to_string()
+	}
 	async fn get_signal(&self) -> StrategyEdge {
 		// calculate here
 		let symbol = self.global_config.symbol.clone();
 		let recent_chop = self.choppiness_study.get_n_entries_for_tf(20, self.global_config.tf1).await;
-		let recent_adi = self.adi_study.get_n_entries_for_tf(100, self.global_config.tf2).await;
+		let recent_adi = self.adi_study.get_n_entries_for_tf(100, self.global_config.tf1).await;
 		if recent_chop.is_none() || recent_adi.is_none() {
 			return StrategyEdge::Neutral;
 		}
 		
 		let chop = recent_chop.unwrap();
 		let adi = recent_adi.unwrap();
-		
 		if chop.len() < 20 || adi.len() < 100 {
 			return StrategyEdge::Neutral;
 		}
@@ -84,11 +85,13 @@ impl SignalGenerator for ChopDirectionalEntryStrategy {
 
 #[async_trait]
 impl SignalGenerator for ChopDirectionalExitStrategy {
-	
+	fn get_name(&self) -> String {
+		"ChopDirectionalExit".to_string()
+	}
 	async fn get_signal(&self) -> StrategyEdge {
 		// calculate here
 		let symbol = self.global_config.symbol.clone();
-		let adi = self.adi_study.get_n_entries_for_tf(30, self.global_config.tf1).await;
+		let adi = self.adi_study.get_n_entries_for_tf(30, self.global_config.tf3).await;
 		if adi.is_none() {
 			return StrategyEdge::Neutral;
 		}

@@ -216,7 +216,7 @@ pub enum ExecutionCommand {
     CloseShortPosition(Symbol, f64),
 }
 
-#[derive(Hash, Eq,Ord, PartialOrd, PartialEq, Clone, Debug)]
+#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
 pub enum OrderType {
     Limit,
     Market,
@@ -261,7 +261,7 @@ pub struct Trade {
     pub time: u64,
 }
 
-#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug)]
+#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Order {
     pub id: u64,
     pub symbol: Symbol,

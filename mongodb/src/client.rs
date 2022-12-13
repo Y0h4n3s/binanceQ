@@ -1,6 +1,6 @@
 use mongodb::Client;
 
-use binance_q_types::{ATREntry, AverageDirectionalIndexEntry, BookSideEntry, ChoppinessIndexEntry, OpenInterestEntry, TfTrade, Trade, TradeEntry};
+use binance_q_types::{ATREntry, AverageDirectionalIndexEntry, BookSideEntry, ChoppinessIndexEntry, OpenInterestEntry, Order, TfTrade, Trade, TradeEntry};
 
 pub struct MongoClient {
     pub database: mongodb::Database,
@@ -10,6 +10,7 @@ pub struct MongoClient {
     pub tf_trades: mongodb::Collection<TfTrade>,
     pub atr: mongodb::Collection<ATREntry>,
     pub adi: mongodb::Collection<AverageDirectionalIndexEntry>,
+    pub orders: mongodb::Collection<Order>,
     pub choppiness: mongodb::Collection<ChoppinessIndexEntry>,
     pub past_trades: mongodb::Collection<Trade>,
 }
@@ -30,11 +31,13 @@ impl MongoClient {
         let tf_trades = database.collection::<TfTrade>("tf_trade");
         let atr = database.collection::<ATREntry>("atr");
         let adi = database.collection::<AverageDirectionalIndexEntry>("adi");
+        let orders = database.collection::<Order>("orders");
         let choppiness = database.collection::<ChoppinessIndexEntry>("choppiness");
         let past_trades = database.collection::<Trade>("past_trades");
         MongoClient {
             database,
             open_interest,
+            orders,
             book_side,
             trades,
             tf_trades,
@@ -46,5 +49,13 @@ impl MongoClient {
     }
     pub async fn reset_db(&self) {
         self.database.drop(None).await.unwrap();
+    }
+    pub async fn reset_studies(&self) {
+        self.atr.drop(None).await.unwrap();
+        self.choppiness.drop(None).await.unwrap();
+        self.adi.drop(None).await.unwrap();
+    }
+    pub async fn reset_trades(&self) {
+        self.past_trades.drop(None).await.unwrap();
     }
 }

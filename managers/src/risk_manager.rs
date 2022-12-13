@@ -99,12 +99,16 @@ impl EventSink<ExecutionCommand> for RiskManager {
         let order_q = self.order_q.clone();
         /// decide on size and price and order_type and send to order_q
         Ok(tokio::spawn(async move {
+            let position = account.get_position(&global_config.symbol).await;
+            println!("position: {:?}", event_msg);
+            println!("position: {:?}", position);
             match event_msg {
                 // try different configs here
                 ExecutionCommand::OpenLongPosition(symbol, confidence) => {
                     let symbol_balance = account.get_symbol_account(&symbol).await;
                     let trade_history = account.get_past_trades(&symbol, None).await;
                     let position = account.get_position(&symbol).await;
+                    
                     // calculate size here
                     let size = symbol_balance.quote_asset_free;
                     // get the price based on confidence level
@@ -143,7 +147,7 @@ impl EventSink<ExecutionCommand> for RiskManager {
                 }
                 ExecutionCommand::CloseLongPosition(symbol, confidence) => {
                     let position = account.get_position(&symbol).await;
-                    if position.is_long() {
+                    if position.is_long() && position.qty != Decimal::ZERO {
                         let order = Order {
                             id: 0,
                             symbol,
@@ -163,8 +167,8 @@ impl EventSink<ExecutionCommand> for RiskManager {
                 ExecutionCommand::CloseShortPosition(symbol, confidence) => {
                     let position = account.get_position(&symbol).await;
     
-                    if position.is_short() {
-                        let order = Order {
+                    if position.is_short() && position.qty != Decimal::ZERO {
+                        let order = Order  {
                             id: 0,
                             symbol,
                             side: Side::Bid,
