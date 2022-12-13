@@ -5,6 +5,7 @@ mod back_tester;
 
 use once_cell::sync::Lazy;
 use std::env;
+use binance_q_mongodb::loader::load_klines_from_archive;
 use binance_q_types::{AccessKey, ExchangeId, GlobalConfig, Symbol};
 
 use clap::{arg, command, Command, value_parser};
@@ -69,7 +70,18 @@ async fn async_main() -> anyhow::Result<()> {
                             .required(false)
                             
                     )
-          ).get_matches();
+          ).subcommand(Command::new("download")
+          .arg(
+              arg!(--timeframe <TIMEFRAME> "The first timeframe to use")
+                    .required(true)
+      
+          )   .arg(
+        arg!(-s --symbol <SYMBOL> "The symbol to backtest")
+              .required(false)
+              .default_value("BTCUSDT")
+    )
+          .about("download candles"))
+          .get_matches();
     
     if let Some(matches) = matches.subcommand_matches("backtest") {
         let symbol = matches.get_one::<String>("symbol").unwrap().clone();
@@ -99,8 +111,20 @@ async fn async_main() -> anyhow::Result<()> {
         back_tester.run().await?;
         
     
-    } else {
-        
+    }
+    
+    if let Some(matches) = matches.subcommand_matches("download") {
+    
+        let symbol = matches.get_one::<String>("symbol").unwrap().clone();
+        let tf1 = matches.get_one::<String>("timeframe").ok_or(anyhow::anyhow!("Invalid tf1"))?.clone();
+    
+        let symbol = Symbol {
+            symbol,
+            exchange: ExchangeId::Simulated,
+            base_asset_precision: 1,
+            quote_asset_precision: 2
+        };
+        load_klines_from_archive(symbol, tf1).await;
     
     
         

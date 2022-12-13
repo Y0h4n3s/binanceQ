@@ -246,6 +246,23 @@ pub enum OrderStatus {
     Canceled(Order, String),
 }
 #[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Kline {
+    pub symbol: Symbol,
+    pub open_time: u64,
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
+    pub close: Decimal,
+    pub volume: Decimal,
+    pub close_time: u64,
+    pub quote_volume: Decimal,
+    pub count: u64,
+    pub taker_buy_volume: Decimal,
+    pub taker_buy_quote_volume: Decimal,
+    pub ignore: u64
+}
+
+#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Trade {
     pub id: u64,
     pub order_id: u64,

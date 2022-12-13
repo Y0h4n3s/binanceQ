@@ -7,7 +7,7 @@ use mongodb::bson;
 use mongodb::options::{FindOneOptions, FindOptions};
 use async_std::sync::Arc;
 use futures::TryStreamExt;
-use tokio::sync::{RwLock};
+use tokio::sync::{RwLock, Semaphore};
 use binance::api::Binance;
 use binance::futures::market::FuturesMarket;
 use binance::futures::model::{AggTrade};
@@ -17,11 +17,12 @@ use chrono::prelude::*;
 use binance_q_types::{Symbol, TradeEntry};
 use reqwest::Client;
 use serde::{Deserialize};
-use std::fs::{File, read_to_string};
-
+use std::fs::{File, read, read_to_string};
+use rust_decimal::prelude::*;
+use csv::StringRecord;
 use std::io::{Read, Write};
 use crate::client::MongoClient;
-use binance_q_types::{TfTrades, TfTrade, GlobalConfig, AccessKey, };
+use binance_q_types::{TfTrades,Kline, TfTrade, GlobalConfig, AccessKey, };
 use binance_q_events::{EventEmitter};
 
 
@@ -72,6 +73,114 @@ pub async fn insert_trade_entries(
         entries.push(entry);
     }
     client.trades.insert_many(entries, None).await
+}
+
+
+#[derive(Deserialize)]
+struct ArchiveKline {
+    pub open_time: u64,
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
+    pub close: Decimal,
+    pub volume: Decimal,
+    pub close_time: u64,
+    pub quote_volume: Decimal,
+    pub count: u64,
+    pub taker_buy_volume: Decimal,
+    pub taker_buy_quote_volume: Decimal,
+    pub ignore: u64
+}
+
+pub async fn load_klines_from_archive(symbol: Symbol, tf: String) {
+    let client = MongoClient::new().await;
+    client.kline.delete_many(doc! {"symbol": bson::to_bson(&symbol.clone()).unwrap(), "tf": tf.clone()}, None).await.unwrap();
+    let today = chrono::DateTime::<Utc>::from(SystemTime::now());
+    let tf = Arc::new(tf);
+    let symbol = Arc::new(symbol);
+    let permits = Arc::new(Semaphore::new(100));
+    let dates = Arc::new(RwLock::new(vec![]));
+    // initialize dates with 20 years of days
+    for i in 0..365 * 20 {
+        let date = today - chrono::Duration::days(i);
+        dates.write().await.push(date);
+    }
+    dates.write().await.reverse();
+    'loader: loop {
+        let permit = permits.clone().acquire_owned().await.unwrap();
+        let date = dates.write().await.pop();
+        if date.is_none() {
+            break 'loader;
+        }
+        let tf = tf.clone();
+        let symbol = symbol.clone();
+        let date = date.unwrap();
+        let mut futures = vec![];
+        futures.push(tokio::spawn(async move {
+            let mut dir = std::env::temp_dir();
+            let date_str = date.format("%Y-%m-%d").to_string();
+            let url = format!("https://data.binance.vision/data/futures/um/daily/klines/{}/{}/{}-{}-{}.zip", symbol.symbol.clone(), tf, symbol.symbol.clone(), tf, date_str.clone());
+            let client = Client::new();
+            let exists = client.head(&url).send().await.unwrap();
+            if exists.status() != 200 {
+                println!("{} does not exist", url);
+                drop(permit);
+                return
+            }
+            let res = client.get(&url).send().await;
+            if let Ok(res) = res {
+                let file_name = format!("{}-{}-{}.zip", symbol.symbol.clone(), tf, date_str);
+                let file_path = dir.join(file_name);
+                let mut file = File::create(file_path.clone()).unwrap();
+                let content = res.bytes().await;
+                file.write_all(&content.unwrap()).unwrap();
+                let mut archive = zip::ZipArchive::new(File::open(file_path).unwrap()).unwrap();
+                println!("Extracting {:?}", archive.by_index(0).unwrap().name());
+                archive.extract(std::env::temp_dir()).unwrap();
+                let file_contents = read_to_string(std::env::temp_dir().join(archive.by_index(0).unwrap().name())).unwrap();
+                let mut reader = csv::Reader::from_reader(file_contents.as_bytes());
+                let mut trades = vec![];
+                if &reader.headers().unwrap()[0] != "open_time" {
+                    let headers = StringRecord::from(vec!["open_time", "open", "high", "low", "close", "volume", "close_time", "quote_volume", "count", "taker_buy_volume", "taker_buy_quote_volume", "ignore"]);
+                    reader.set_headers(headers);
+                }
+                
+                for result in reader.deserialize::<ArchiveKline>() {
+                    
+                    let record: ArchiveKline = result.unwrap();
+                    let symbol = Symbol {
+                        symbol: symbol.symbol.clone(),
+                        exchange: symbol.exchange.clone(),
+                        base_asset_precision: symbol.base_asset_precision,
+                        quote_asset_precision: symbol.quote_asset_precision
+                    };
+                    let r = Kline {
+                        open_time: record.open_time,
+                        close_time: record.close_time,
+                        quote_volume:record.quote_volume,
+                        count: record.count,
+                        taker_buy_volume: record.taker_buy_volume,
+                        taker_buy_quote_volume: record.taker_buy_quote_volume,
+                        symbol: symbol,
+                        open: record.open,
+                        close: record.close,
+                        high: record.high,
+                        low: record.low,
+                        volume: record.volume,
+                        ignore: record.ignore
+                    };
+                    trades.push(r);
+                }
+                let client = MongoClient::new().await;
+                client.kline.insert_many(&trades, None).await;
+                drop(permit);
+            }
+            
+        }));
+        let futures = futures.iter().filter(|f| f.is_pending()).collect::<Vec<_>>();
+        futures::future::join_all(futures).await;
+    }
+    
 }
 
 pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: u64) -> u64 {
