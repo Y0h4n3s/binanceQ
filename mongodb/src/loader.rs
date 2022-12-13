@@ -19,7 +19,7 @@ use reqwest::Client;
 use serde::{Deserialize};
 use std::fs::{File, read, read_to_string};
 use rust_decimal::prelude::*;
-use csv::StringRecord;
+use csv::{Reader, ReaderBuilder, StringRecord};
 use std::io::{Read, Write};
 use crate::client::MongoClient;
 use binance_q_types::{TfTrades,Kline, TfTrade, GlobalConfig, AccessKey, };
@@ -100,12 +100,14 @@ pub async fn load_klines_from_archive(symbol: Symbol, tf: String) {
     let symbol = Arc::new(symbol);
     let permits = Arc::new(Semaphore::new(100));
     let dates = Arc::new(RwLock::new(vec![]));
+    let inserts = Arc::new(RwLock::new(0));
     // initialize dates with 20 years of days
     for i in 0..365 * 20 {
         let date = today - chrono::Duration::days(i);
         dates.write().await.push(date);
     }
     dates.write().await.reverse();
+    let mut futures = vec![];
     'loader: loop {
         let permit = permits.clone().acquire_owned().await.unwrap();
         let date = dates.write().await.pop();
@@ -115,7 +117,7 @@ pub async fn load_klines_from_archive(symbol: Symbol, tf: String) {
         let tf = tf.clone();
         let symbol = symbol.clone();
         let date = date.unwrap();
-        let mut futures = vec![];
+        let inserts = inserts.clone();
         futures.push(tokio::spawn(async move {
             let mut dir = std::env::temp_dir();
             let date_str = date.format("%Y-%m-%d").to_string();
@@ -130,24 +132,29 @@ pub async fn load_klines_from_archive(symbol: Symbol, tf: String) {
             let res = client.get(&url).send().await;
             if let Ok(res) = res {
                 let file_name = format!("{}-{}-{}.zip", symbol.symbol.clone(), tf, date_str);
-                let file_path = dir.join(file_name);
+                let file_path = dir.join(file_name.clone());
                 let mut file = File::create(file_path.clone()).unwrap();
                 let content = res.bytes().await;
                 file.write_all(&content.unwrap()).unwrap();
                 let mut archive = zip::ZipArchive::new(File::open(file_path).unwrap()).unwrap();
-                println!("Extracting {:?}", archive.by_index(0).unwrap().name());
                 archive.extract(std::env::temp_dir()).unwrap();
                 let file_contents = read_to_string(std::env::temp_dir().join(archive.by_index(0).unwrap().name())).unwrap();
+                let mut sers: Vec<StringRecord> = vec![];
                 let mut reader = csv::Reader::from_reader(file_contents.as_bytes());
                 let mut trades = vec![];
-                if &reader.headers().unwrap()[0] != "open_time" {
-                    let headers = StringRecord::from(vec!["open_time", "open", "high", "low", "close", "volume", "close_time", "quote_volume", "count", "taker_buy_volume", "taker_buy_quote_volume", "ignore"]);
-                    reader.set_headers(headers);
+                let header = reader.headers().unwrap().clone();
+                if  &header[0] == "open_time" {
+                    let mut modified = reader.records().map(|e| e.unwrap()).collect::<Vec<StringRecord>>();
+                    let f: Vec<StringRecord> = modified;
+                    sers = f;
+                } else {
+                    let mut left = reader.into_records().map(|e| e.unwrap()).collect::<Vec<StringRecord>>();
+                    left.splice(0..0, vec![header.clone()]);
+                    sers = left;
                 }
-                
-                for result in reader.deserialize::<ArchiveKline>() {
+                for ser in sers {
                     
-                    let record: ArchiveKline = result.unwrap();
+                    let record: ArchiveKline = ser.deserialize(None).unwrap();
                     let symbol = Symbol {
                         symbol: symbol.symbol.clone(),
                         exchange: symbol.exchange.clone(),
@@ -172,14 +179,15 @@ pub async fn load_klines_from_archive(symbol: Symbol, tf: String) {
                     trades.push(r);
                 }
                 let client = MongoClient::new().await;
-                client.kline.insert_many(&trades, None).await;
+                client.kline.insert_many(&trades, None).await.unwrap();
                 drop(permit);
             }
             
         }));
-        let futures = futures.iter().filter(|f| f.is_pending()).collect::<Vec<_>>();
-        futures::future::join_all(futures).await;
+        
     }
+    let futures = futures.into_iter().filter(|f| !f.is_finished()).collect::<Vec<_>>();
+    futures::future::join_all(futures).await;
     
 }
 
