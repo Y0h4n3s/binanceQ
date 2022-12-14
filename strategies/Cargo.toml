@@ -10,7 +10,6 @@ dyn-clone = "1.0.9"
 async-trait = "0.1.59"
 rand = "0.8.5"
 binance_q_types = { path = "../types" }
-binance_q_studies = { path = "../studies" }
 binance_q_utils = { path = "../util" }
 ndarray = "0.15.6"
 yata = "0.6.1"

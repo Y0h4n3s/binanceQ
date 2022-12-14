@@ -16,5 +16,4 @@ async-broadcast = "0.4.1"
 futures = "0.3.25"
 binance_q_events = { path = "../events" }
 binance_q_mongodb = { path = "../mongodb" }
-binance_q_studies = { path = "../studies" }
 mongodb = {version = "2.1.0", default-features = false, features = ["tokio-runtime"]}

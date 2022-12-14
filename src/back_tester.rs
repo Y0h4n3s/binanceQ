@@ -13,8 +13,6 @@ use mongodb::bson::doc;
 
 use mongodb::options::FindOptions;
 use binance_q_executors::ExchangeAccountInfo;
-use binance_q_studies::choppiness_study::ChoppinessStudy;
-use binance_q_studies::directional_index_study::DirectionalIndexStudy;
 use binance_q_managers::risk_manager::RiskManagerConfig;
 
 #[derive(Debug, Clone)]
@@ -70,11 +68,6 @@ impl BackTester {
 		    tf2: self.global_config.tf2,
 		    tf3: self.global_config.tf3,
 	    };
-	    let choppiness_study = ChoppinessStudy::new(&config, tf_trades_channel.1.clone());
-        let adi_study = DirectionalIndexStudy::new(&config, tf_trades_channel.1.clone());
-	    let chop_strategy = ChopDirectionalEntryStrategy::new(self.global_config.clone(), adi_study.clone(), choppiness_study.clone());
-	    let chop_strategy_exit = ChopDirectionalExitStrategy::new(self.global_config.clone(), adi_study.clone(), choppiness_study.clone());
-	    let random_strategy = RandomStrategy::new();
 	    
 	    // receive orders from risk manager and apply mutations on accounts
         let simulated_executor = binance_q_executors::simulated::SimulatedExecutor::new(orders_channel.1, tf_trades_channel.1.clone(), vec![self.global_config.symbol.clone()], trades_channel.0).await;
@@ -95,9 +88,7 @@ impl BackTester {
 	    
 	    
 	    // receive strategy edges from multiple strategies and forward them to risk manager
-        let mut strategy_manager = StrategyManager::new(self.global_config.clone(), tf_trades_channel.1)
-	          .with_entry_strategy(chop_strategy).await
-	          .with_exit_strategy(chop_strategy_exit).await;
+        let mut strategy_manager = StrategyManager::new(self.global_config.clone(), tf_trades_channel.1);
 	    
 	    // sends orders to executors
         risk_manager.subscribe(orders_channel.0).await;
@@ -107,14 +98,6 @@ impl BackTester {
             .subscribe(execution_commands_channel.0)
             .await;
 		let mut r_threads = vec![];
-	    let a_c = adi_study.clone();
-	    r_threads.push(std::thread::spawn(move || {
-		    a_c.listen().unwrap();
-	    }));
-	    let c_c = choppiness_study.clone();
-	    r_threads.push(std::thread::spawn(move || {
-		    c_c.listen().unwrap();
-	    }));
 	    let rc = risk_manager.clone();
 	    r_threads.push(std::thread::spawn(move || {
 		    EventSink::<ExecutionCommand>::listen(&rc).unwrap();

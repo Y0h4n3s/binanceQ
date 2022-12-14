@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 pub mod chop_directional;
 pub mod random_strategy;
+pub mod cpd;
+
 use dyn_clone::DynClone;
 use binance_q_types::StrategyEdge;
 #[async_trait]
