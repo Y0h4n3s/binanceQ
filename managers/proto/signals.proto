@@ -1,0 +1,22 @@
+syntax = "proto3";
+package signals;
+
+enum SignalSource {
+    SIGNAL_SOURCE_UNSPECIFIED = 0;
+    SIGNAL_SOURCE_CHANGE_POINT_DETECTOR = 1;
+}
+
+service SignalGenerator {
+    rpc NotifySignal (Signal) returns (NotifySignalResponse);
+}
+
+message Signal {
+    SignalSource source = 1;
+    string name = 2;
+    float probability = 3;
+
+}
+
+message NotifySignalResponse {
+    bool confirmed = 1;
+}

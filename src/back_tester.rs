@@ -2,8 +2,6 @@ use std::time::Duration;
 use async_std::sync::Arc;
 use binance_q_mongodb::client::MongoClient;
 use binance_q_mongodb::loader::TfTradeEmitter;
-use binance_q_strategies::chop_directional::{ChopDirectionalEntryStrategy, ChopDirectionalExitStrategy};
-use binance_q_strategies::random_strategy::RandomStrategy;
 use binance_q_events::{EventSink, EventEmitter};
 use binance_q_managers::risk_manager::RiskManager;
 use binance_q_managers::strategy_manager::StrategyManager;

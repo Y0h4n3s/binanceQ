@@ -32,6 +32,10 @@ mongodb = {version = "2.1.0", default-features = false, features = ["tokio-runti
 binance_q_types = { path = "./types"}
 binance_q_events = { path = "./events"}
 binance_q_mongodb = { path = "./mongodb"}
-binance_q_strategies = { path = "./strategies"}
 binance_q_managers = { path = "./managers"}
 binance_q_executors = { path = "./executors"}
+tonic = "0.8.3"
+prost = "0.11.3"
+
+[dev-dependencies]
+tonic-build = "0.8.4"
