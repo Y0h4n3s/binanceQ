@@ -16,6 +16,7 @@ pub struct Position {
 	pub qty: Decimal,
 	pub quote_qty: Decimal,
 	pub avg_price: Decimal,
+	pub trade_id: u64,
 }
 impl Position {
 	
@@ -26,6 +27,7 @@ impl Position {
 			qty,
 			quote_qty,
 			avg_price: Decimal::ZERO,
+			trade_id: 0,
 		}
 	}
 	
@@ -37,6 +39,10 @@ impl Position {
 	}
 	pub fn is_open(&self) -> bool {
 		self.qty > Decimal::ZERO
+	}
+	pub fn increment_trade_id(&mut self) -> u64 {
+		self.trade_id += 1;
+		self.trade_id
 	}
 	pub fn apply_order(&mut self, order: &Order) -> Option<Trade> {
 		if !self.is_open() {
@@ -56,7 +62,7 @@ impl Position {
 						None
 					} else {
 						let trade = Trade {
-							id: 1,
+							id: self.increment_trade_id(),
 							order_id: order.id,
 							symbol: order.symbol.clone(),
 							maker: false,
@@ -67,7 +73,8 @@ impl Position {
 							realized_pnl: order.quantity * order.price - (prev_avg_price * order.quantity),
 							qty: order.quantity,
 							quote_qty: order.quantity * order.price,
-							time: order.time
+							time: order.time,
+							exit_order_type: order.order_type.clone(),
 						};
 						if self.qty >= order.quantity  {
 							self.qty -= order.quantity;
@@ -87,7 +94,7 @@ impl Position {
 						None
 					} else {
 						let trade = Trade {
-							id: 1,
+							id: self.increment_trade_id(),
 							order_id: order.id,
 							symbol: order.symbol.clone(),
 							maker: false,
@@ -98,7 +105,8 @@ impl Position {
 							realized_pnl: order.quantity * order.price - (prev_avg_price * order.quantity),
 							qty: order.quantity,
 							quote_qty: order.quantity * order.price,
-							time: order.time
+							time: order.time,
+							exit_order_type: order.order_type.clone(),
 						};
 						if self.qty > order.quantity {
 							self.qty -= order.quantity;
@@ -116,6 +124,26 @@ impl Position {
 	}
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct Spread {
+	pub symbol: Symbol,
+	pub spread: Decimal,
+	pub time: u64,
+}
+
+impl Spread {
+	pub fn new(symbol: Symbol) -> Self {
+		Self {
+			symbol,
+			spread: Decimal::ZERO,
+			time: 0,
+		}
+	}
+	
+	pub fn update(&mut self, price: Decimal) {
+		self.spread = price;
+	}
+}
 #[async_trait]
 pub trait ExchangeAccountInfo: Send + Sync {
 	fn get_exchange_id(&self) -> ExchangeId;
@@ -123,6 +151,7 @@ pub trait ExchangeAccountInfo: Send + Sync {
 	async fn get_symbol_account(&self, symbol: &Symbol) -> SymbolAccount;
 	async fn get_past_trades(&self, symbol: &Symbol, length: Option<usize>) -> Arc<HashSet<Trade>>;
 	async fn get_position(&self, symbol: &Symbol) -> Arc<Position>;
+	async fn get_spread(&self, symbol: &Symbol) -> Arc<Spread>;
 }
 
 #[async_trait]
@@ -131,6 +160,7 @@ pub trait ExchangeAccount: ExchangeAccountInfo {
 	async fn limit_short(&self, order: Order) -> anyhow::Result<OrderStatus>;
 	async fn market_long(&self, order: Order) -> anyhow::Result<OrderStatus>;
 	async fn market_short(&self, order: Order) -> anyhow::Result<OrderStatus>;
+	async fn cancel_order(&self, order: Order) -> anyhow::Result<OrderStatus>;
 }
 
 
@@ -142,22 +172,38 @@ pub trait TradeExecutor: EventSink<Order> + EventEmitter<OrderStatus> {
 	}
 	fn get_account(&self) -> Arc<Self::Account>;
 	
-	fn execute_order(&self, order: Order) -> anyhow::Result<OrderStatus> {
+	fn process_order(&self, order: Order) -> anyhow::Result<OrderStatus> {
 		let handle = tokio::runtime::Handle::try_current()?;
 		match order.order_type {
-			OrderType::Limit => {
+			OrderType::Limit | OrderType::TakeProfit(_) | OrderType::StopLoss(_) => {
 				match order.side {
 					Side::Bid => {
-						tokio::task::block_in_place(move || {
-							tokio::runtime::Handle::current().block_on(self.get_account().limit_long(order))
-						})
+						let account = self.get_account();
+						let res = std::thread::spawn(move || {
+							let rt = tokio::runtime::Runtime::new().unwrap();
+							rt.block_on(account.limit_long(order))
+						});
+						res.join().unwrap()
 					},
 					Side::Ask => {
-						tokio::task::block_in_place(move || {
-							tokio::runtime::Handle::current().block_on(self.get_account().limit_long(order))
-						})
+						let account = self.get_account();
+						let res = std::thread::spawn(move || {
+							let rt = tokio::runtime::Runtime::new().unwrap();
+							rt.block_on(account.limit_short(order))
+						});
+						res.join().unwrap()
+						
 					}
 				}
+			},
+			OrderType::Cancel(_) => {
+				let account = self.get_account();
+				let res = std::thread::spawn(move || {
+					let rt = tokio::runtime::Runtime::new().unwrap();
+					rt.block_on(account.cancel_order(order))
+				});
+				res.join().unwrap()
+				
 			},
 			OrderType::Market => {
 				match order.side {

@@ -77,6 +77,7 @@ pub struct GlobalConfig {
     pub tf2: u64,
     pub tf3: u64,
     pub key: AccessKey,
+    pub verbose: bool,
     pub symbol: Symbol
 }
 
@@ -208,7 +209,7 @@ pub enum ExchangeId {
     Simulated
 }
 
-#[derive(Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum ExecutionCommand {
     OpenLongPosition(Symbol, f64),
     OpenShortPosition(Symbol, f64),
@@ -220,9 +221,10 @@ pub enum ExecutionCommand {
 pub enum OrderType {
     Limit,
     Market,
-    StopLoss,
+    Cancel(u64),
+    StopLoss(u64),
     StopLossLimit,
-    TakeProfit,
+    TakeProfit(u64),
     TakeProfitLimit,
     StopLossTrailing,
 }
@@ -273,9 +275,17 @@ pub struct Trade {
     pub position_side: Side,
     pub side: Side,
     pub realized_pnl: Decimal,
+    pub exit_order_type: OrderType,
     pub qty: Decimal,
     pub quote_qty: Decimal,
     pub time: u64,
+}
+
+#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
+pub enum ClosePolicy {
+    BreakEven,
+    BreakEvenOrMarketClose,
+    ImmediateMarket,
 }
 
 #[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
@@ -287,6 +297,8 @@ pub struct Order {
     pub quantity: Decimal,
     pub time: u64,
     pub order_type: OrderType,
+    pub lifetime: u64,
+    pub close_policy: ClosePolicy,
 }
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]

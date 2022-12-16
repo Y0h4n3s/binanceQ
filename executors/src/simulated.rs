@@ -1,16 +1,15 @@
-use crate::{ExchangeAccount, ExchangeAccountInfo, Position, TradeExecutor};
+use crate::{ExchangeAccount, ExchangeAccountInfo, Position, Spread, TradeExecutor};
 use async_broadcast::{Receiver, Sender};
 use async_trait::async_trait;
 use binance_q_events::{EventEmitter, EventSink};
 use binance_q_mongodb::client::MongoClient;
-use binance_q_types::{
-    ExchangeId, Order, OrderStatus, Side, Symbol, SymbolAccount, TfTrades, Trade,
-};
+use binance_q_types::{ExchangeId, Order, OrderStatus, OrderType, Side, Symbol, SymbolAccount, TfTrades, Trade};
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
+use async_std::io::WriteExt;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
@@ -30,6 +29,7 @@ pub struct SimulatedAccount {
     order_statuses: Arc<RwLock<Receiver<OrderStatus>>>,
     tf_trades_working: Arc<std::sync::RwLock<bool>>,
     order_statuses_working: Arc<std::sync::RwLock<bool>>,
+    spreads:  ArcMap<Symbol, Arc<RwLock<Spread>>>,
 }
 
 #[derive(Clone)]
@@ -51,6 +51,8 @@ impl SimulatedAccount {
         let order_history = Arc::new(RwLock::new(HashMap::new()));
         let trade_history = Arc::new(RwLock::new(HashMap::new()));
         let positions = Arc::new(RwLock::new(HashMap::new()));
+        let spreads = Arc::new(RwLock::new(HashMap::new()));
+        
         for symbol in symbols {
             let symbol_account = SymbolAccount {
                 symbol: symbol.clone(),
@@ -61,6 +63,7 @@ impl SimulatedAccount {
                 quote_asset_locked: Default::default(),
             };
             let position = Position::new(Side::Ask, symbol.clone(), Decimal::ZERO, Decimal::ZERO);
+            let spread = Spread::new(symbol.clone());
             symbol_accounts
                 .write()
                 .await
@@ -81,6 +84,10 @@ impl SimulatedAccount {
                 .write()
                 .await
                 .insert(symbol.clone(), Arc::new(RwLock::new(position)));
+            spreads
+                  .write()
+                  .await
+                  .insert(symbol.clone(), Arc::new(RwLock::new(spread)));
         }
         Self {
             symbol_accounts,
@@ -88,6 +95,7 @@ impl SimulatedAccount {
             order_history,
             trade_history,
             positions,
+            spreads,
             tf_trades: Arc::new(RwLock::new(tf_trades)),
             trade_q: Arc::new(RwLock::new(VecDeque::new())),
             trade_subscribers: Arc::new(RwLock::new(async_broadcast::broadcast(1).0)),
@@ -167,11 +175,27 @@ impl EventSink<TfTrades> for SimulatedAccount {
         self.tf_trades.clone()
     }
     fn handle_event(&self, event_msg: TfTrades) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+        if event_msg.is_empty() {
+            return Ok(tokio::spawn(async move { Ok(()) }));
+        }
         let open_orders = self.open_orders.clone();
         let trade_q = self.trade_q.clone();
         let filled_orders = self.order_history.clone();
         let positions = self.positions.clone();
+        let spreads = self.spreads.clone();
+    
+    
         Ok(tokio::spawn(async move {
+            
+            // update spread first with the last trade
+            let spreads = spreads.read().await;
+            if let Some(last_trade) = event_msg.last() {
+                if let Some(last) = last_trade.trades.last() {
+                    let mut spread = spreads.get(&last_trade.symbol).unwrap().write().await;
+                    spread.update(Decimal::from_f64(last.price).unwrap());
+                }
+            }
+            
             // if any open orders are fillable move them to filled orders and update position and push a trade event to trade queue if it is a order opposite to position
             for tf_trade in event_msg {
                 let symbol = tf_trade.symbol.clone();
@@ -179,6 +203,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                 let all_filled_orders = filled_orders.read().await;
                 let all_positions = positions.read().await;
                 let mut partial_fills = vec![];
+                let mut remove_ids = vec![];
                 for trade in tf_trade.trades {
                     let mut open_orders = open_orders.write().await;
                     if open_orders.len() == 0 {
@@ -189,40 +214,76 @@ impl EventSink<TfTrades> for SimulatedAccount {
                     drop(open_orders);
                     match last {
                         OrderStatus::Pending(order) => {
-                            if (order.side == Side::Bid
-                                && (Decimal::from_f64(trade.price).unwrap().lt(&order.price)
-                                    || order.price.eq(&Decimal::from_f64(trade.price).unwrap())))
-                                || (order.side == Side::Ask
-                                    && (order.price.lt(&Decimal::from_f64(trade.price).unwrap())
-                                        || order
-                                            .price
-                                            .eq(&Decimal::from_f64(trade.price).unwrap())))
-                            {
-                                let position = all_positions.get(&symbol).unwrap();
-                                let mut w = position.write().await;
-                                let filled_qty = Decimal::from_f64(trade.qty).unwrap();
-                                let filled_price = Decimal::from_f64(trade.price).unwrap();
-                                let mut filled_order = order.clone();
-                                filled_order.quantity = filled_qty.max(order.quantity);
-                                filled_order.price = filled_price;
-                                filled_order.time = trade.timestamp;
-    
-                                if let Some(trade) = w.apply_order(&filled_order) {
-                                    let mut trade_q = trade_q.write().await;
-                                    trade_q.push_back(trade);
+                            match order.order_type {
+                                OrderType::StopLossTrailing | OrderType::StopLossLimit | OrderType::TakeProfitLimit | OrderType::Cancel(_) => {
+                                
                                 }
-                                if filled_qty < order.quantity {
-                                    partial_fills.push(OrderStatus::PartiallyFilled(
-                                        order.clone(),
-                                        Decimal::from_f64(trade.qty).unwrap(),
-                                    ));
-                                } else {
-                                    let mut filled_orders =
-                                        all_filled_orders.get(&symbol).unwrap().write().await;
-
-                                    filled_orders.insert(OrderStatus::Filled(order.clone()));
+                                OrderType::Market | OrderType::Limit => {
+                                    if (order.side == Side::Bid
+                                          && (Decimal::from_f64(trade.price).unwrap().lt(&order.price)
+                                          || order.price.eq(&Decimal::from_f64(trade.price).unwrap())))
+                                          || (order.side == Side::Ask
+                                          && (order.price.lt(&Decimal::from_f64(trade.price).unwrap())
+                                          || order
+                                          .price
+                                          .eq(&Decimal::from_f64(trade.price).unwrap())))
+                                    {
+                                        let position = all_positions.get(&symbol).unwrap();
+                                        let mut w = position.write().await;
+                                        let filled_qty = Decimal::from_f64(trade.qty).unwrap();
+                                        let filled_price = Decimal::from_f64(trade.price).unwrap();
+                                        let mut filled_order = order.clone();
+                                        filled_order.quantity = filled_qty.max(order.quantity);
+                                        filled_order.price = filled_price;
+                                        filled_order.time = trade.timestamp;
+        
+                                        if let Some(trade) = w.apply_order(&filled_order) {
+                                            let mut trade_q = trade_q.write().await;
+                                            trade_q.push_back(trade);
+                                        }
+                                        if filled_qty < order.quantity {
+                                            partial_fills.push(OrderStatus::PartiallyFilled(
+                                                order.clone(),
+                                                Decimal::from_f64(trade.qty).unwrap(),
+                                            ));
+                                        } else {
+                                            let mut filled_orders =
+                                                  all_filled_orders.get(&symbol).unwrap().write().await;
+            
+                                            filled_orders.insert(OrderStatus::Filled(order.clone()));
+                                        }
+                                    }
+                                }
+                                
+                                // skip partial fills for target and stop orders, if price reaches one of the targets or stop, the order will be immediately filled
+                                OrderType::TakeProfit(for_id) | OrderType::StopLoss(for_id) => {
+                                    if (order.side == Side::Bid
+                                          && (Decimal::from_f64(trade.price).unwrap().lt(&order.price)
+                                          || order.price.eq(&Decimal::from_f64(trade.price).unwrap())))
+                                          || (order.side == Side::Ask
+                                          && (order.price.lt(&Decimal::from_f64(trade.price).unwrap())
+                                          || order
+                                          .price
+                                          .eq(&Decimal::from_f64(trade.price).unwrap())))
+                                    {
+                                        let position = all_positions.get(&symbol).unwrap();
+                                        let mut w = position.write().await;
+                                        
+        
+                                        if let Some(trade) = w.apply_order(&order) {
+                                            let mut trade_q = trade_q.write().await;
+                                            trade_q.push_back(trade);
+                                        }
+                                            remove_ids.push(for_id);
+    
+                                            let mut filled_orders =
+                                                  all_filled_orders.get(&symbol).unwrap().write().await;
+            
+                                            filled_orders.insert(OrderStatus::Filled(order.clone()));
+                                    }
                                 }
                             }
+                            
                         }
                         OrderStatus::PartiallyFilled(order, filled_qty_so_far) => {
                             if (order.side == Side::Bid
@@ -278,8 +339,48 @@ impl EventSink<TfTrades> for SimulatedAccount {
                             mongo_client.orders.insert_one(filled_order.clone(), None).await;
                             filled_orders.insert(OrderStatus::Filled(filled_order.clone()));
                         }
-                        _ => {}
+                        
+                        // removes all orders that are sent in Cancel(id)
+                        // including target and stop order with for_id
+                        // to only cancel target or stop orders, use their associated id
+                        // canceling an order that has stop or target orders will cancel all of them
+                        OrderStatus::Canceled(order, reason) => {
+                            let mut filled_orders =
+                                all_filled_orders.get(&symbol).unwrap().write().await;
+                            filled_orders.insert(OrderStatus::Canceled(order.clone(), reason));
+                            match order.order_type {
+                                OrderType::Cancel(id) => {
+                                    remove_ids.push(id);
+                                }
+                                _ => {}
+                            }
+                        }
                     }
+                }
+                
+                for id in remove_ids {
+                    let r = open_orders.read().await;
+                    while let Some(order) = r.iter().find(|o| {
+                        match o {
+                            OrderStatus::Pending(order) => {
+                                match order.order_type {
+                                    OrderType::TakeProfit(for_id) | OrderType::StopLoss(for_id) => {
+                                        for_id == id || order.id == id
+                                    }
+                                    _ => {
+                                        order.id == id
+                                    }
+                                    
+                                    _ => false,
+                                }
+                            }
+                            _ => false,
+                        }
+                    }) {
+                        let mut open_orders = open_orders.write().await;
+                        open_orders.remove(order);
+                    }
+                    
                 }
                 
                 for order in partial_fills {
@@ -350,7 +451,7 @@ impl EventSink<Order> for SimulatedExecutor {
         self.orders.clone()
     }
     fn handle_event(&self, event_msg: Order) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
-        let fut = self.execute_order(event_msg);
+        let fut = self.process_order(event_msg);
         let order_status_q = self.order_status_q.clone();
         Ok(tokio::spawn(async move {
             if let Ok(res) = fut {
@@ -453,51 +554,35 @@ impl ExchangeAccountInfo for SimulatedAccount {
         let position = position_lock.read().await.clone();
         Arc::new(position)
     }
+    
+    async fn get_spread(&self, symbol: &Symbol) -> Arc<Spread> {
+        let spreads = self.spreads.read().await;
+        let spread_lock = spreads.get(symbol).unwrap();
+        let spread = spread_lock.read().await.clone();
+        Arc::new(spread)
+    }
 }
 
 #[async_trait]
 impl ExchangeAccount for SimulatedAccount {
     async fn limit_long(&self, order: Order) -> anyhow::Result<OrderStatus> {
-        let accounts = self.symbol_accounts.read().await;
-        let symbol_account = accounts.get(&order.symbol).unwrap();
-        if symbol_account.base_asset_free < order.quantity {
-            return Ok(OrderStatus::Canceled(
-                order,
-                "Insufficient balance".to_string(),
-            ));
-        }
-
         Ok(OrderStatus::Pending(order))
     }
 
-    async fn limit_short(&self, _order: Order) -> anyhow::Result<OrderStatus> {
-        todo!()
+    async fn limit_short(&self, order: Order) -> anyhow::Result<OrderStatus> {
+        Ok(OrderStatus::Pending(order))
     }
 
     async fn market_long(&self, order: Order) -> anyhow::Result<OrderStatus> {
-        let accounts = self.symbol_accounts.read().await;
-        let symbol_account = accounts.get(&order.symbol).unwrap();
-        // if symbol_account.base_asset_free < order.quantity {
-        //     return Ok(OrderStatus::Canceled(
-        //         order,
-        //         "Insufficient balance".to_string(),
-        //     ));
-        // }
-
         Ok(OrderStatus::Filled(order))
     }
 
     async fn market_short(&self, order: Order) -> anyhow::Result<OrderStatus> {
-        let accounts = self.symbol_accounts.read().await;
-        let symbol_account = accounts.get(&order.symbol).unwrap();
-        // if symbol_account.base_asset_free < order.quantity {
-        //     return Ok(OrderStatus::Canceled(
-        //         order,
-        //         "Insufficient balance".to_string(),
-        //     ));
-        // }
-
         Ok(OrderStatus::Filled(order))
+    }
+    
+    async fn cancel_order(&self, order: Order) -> anyhow::Result<OrderStatus> {
+        Ok(OrderStatus::Canceled(order, "canceled".to_string()))
     }
 }
 

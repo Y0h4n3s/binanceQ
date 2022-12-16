@@ -33,7 +33,8 @@ fn main() -> Result<(), anyhow::Error> {
     runtime.block_on(async_main())
 }
 async fn async_main() -> anyhow::Result<()> {
-    let matches = command!()
+    let main_matches = command!()
+          .arg(arg!( -v --verbose "Verbose output"))
           .subcommand(
               Command::new("backtest")
                     .about("Backtest a strategy")
@@ -83,7 +84,7 @@ async fn async_main() -> anyhow::Result<()> {
           .about("download candles"))
           .get_matches();
     
-    if let Some(matches) = matches.subcommand_matches("backtest") {
+    if let Some(matches) = main_matches.subcommand_matches("backtest") {
         let symbol = matches.get_one::<String>("symbol").unwrap().clone();
         let backtest_span = *matches.get_one::<u64>("length").ok_or(anyhow::anyhow!("Invalid span"))?;
         let tf1 = *matches.get_one::<u64>("timeframe1").ok_or(anyhow::anyhow!("Invalid tf1"))?;
@@ -100,7 +101,8 @@ async fn async_main() -> anyhow::Result<()> {
             tf1,
             tf2,
             tf3,
-            key: KEY.clone()
+            key: KEY.clone(),
+            verbose: main_matches.get_flag("verbose")
         };
         let back_tester_config = BackTesterConfig {
             symbol,
@@ -113,7 +115,7 @@ async fn async_main() -> anyhow::Result<()> {
     
     }
     
-    if let Some(matches) = matches.subcommand_matches("download") {
+    if let Some(matches) = main_matches.subcommand_matches("download") {
     
         let symbol = matches.get_one::<String>("symbol").unwrap().clone();
         let tf1 = matches.get_one::<String>("timeframe").ok_or(anyhow::anyhow!("Invalid tf1"))?.clone();
@@ -124,7 +126,7 @@ async fn async_main() -> anyhow::Result<()> {
             base_asset_precision: 1,
             quote_asset_precision: 2
         };
-        load_klines_from_archive(symbol, tf1).await;
+        load_klines_from_archive(symbol, tf1, -1).await;
     
     
         

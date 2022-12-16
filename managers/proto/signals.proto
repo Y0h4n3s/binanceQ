@@ -6,14 +6,35 @@ enum SignalSource {
     SIGNAL_SOURCE_CHANGE_POINT_DETECTOR = 1;
 }
 
+enum Side {
+    SIDE_UNSPECIFIED = 0;
+    SIDE_BUY = 1;
+    SIDE_SELL = 2;
+}
+
+enum ExchangeId {
+    EXCHANGE_ID_SIMULATED = 0;
+    EXCHANGE_ID_BINANCE = 1;
+}
+
 service SignalGenerator {
     rpc NotifySignal (Signal) returns (NotifySignalResponse);
 }
 
+
+message Symbol {
+    string symbol = 1;
+    ExchangeId exchange = 2;
+    uint32 base_asset_precision = 3;
+    uint32 quote_asset_precision = 4;
+}
 message Signal {
     SignalSource source = 1;
-    string name = 2;
-    float probability = 3;
+    Side side = 2;
+    Symbol symbol = 3;
+    float probability = 4;
+
+
 
 }
 

@@ -24,6 +24,7 @@ error-chain = "0.12.4"
 ndarray = "0.15.6"
 yata = {version = "0.6.1", features = ["serde"] }
 dyn-clone = "1.0.9"
+indicatif = "0.17.2"
 image = "0.24.5"
 kanal = "0.1.0-pre7"
 rand = "0.8.5"

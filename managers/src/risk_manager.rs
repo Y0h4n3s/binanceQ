@@ -6,8 +6,11 @@ use crate::Manager;
 use async_broadcast::{Receiver, Sender};
 use async_trait::async_trait;
 use binance_q_events::{EventEmitter, EventSink};
-use binance_q_executors::ExchangeAccountInfo;
-use binance_q_types::{ExecutionCommand, GlobalConfig, Order, OrderType, Side, TfTrades, Trade};
+use binance_q_executors::ExchangeAccount;
+use binance_q_types::{
+    ClosePolicy, ExecutionCommand, GlobalConfig, Order, OrderStatus, OrderType, Side, TfTrades,
+    Trade,
+};
 use rust_decimal::Decimal;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
@@ -21,7 +24,7 @@ pub struct RiskManagerConfig {
 pub struct RiskManager {
     pub global_config: Arc<GlobalConfig>,
     pub config: RiskManagerConfig,
-    pub account: Box<Arc<dyn ExchangeAccountInfo>>,
+    pub account: Box<Arc<dyn ExchangeAccount>>,
     tf_trades: Arc<RwLock<Receiver<TfTrades>>>,
     trades: Arc<RwLock<Receiver<Trade>>>,
     execution_commands: Arc<RwLock<Receiver<ExecutionCommand>>>,
@@ -30,6 +33,7 @@ pub struct RiskManager {
     execution_commands_working: Arc<std::sync::RwLock<bool>>,
     tf_trades_working: Arc<std::sync::RwLock<bool>>,
     trade_working: Arc<std::sync::RwLock<bool>>,
+    order_id_count: Arc<std::sync::RwLock<u64>>,
 }
 
 #[async_trait]
@@ -72,10 +76,7 @@ impl EventSink<Trade> for RiskManager {
     fn handle_event(&self, event: Trade) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
         let global_config = self.global_config.clone();
         let account = self.account.clone();
-        Ok(tokio::spawn(async move {
-            
-            Ok(())
-        }))
+        Ok(tokio::spawn(async move { Ok(()) }))
     }
 }
 
@@ -97,25 +98,27 @@ impl EventSink<ExecutionCommand> for RiskManager {
         let account = self.account.clone();
         let global_config = self.global_config.clone();
         let order_q = self.order_q.clone();
+        let order_id_count = self.order_id_count.clone();
         /// decide on size and price and order_type and send to order_q
         Ok(tokio::spawn(async move {
             let position = account.get_position(&global_config.symbol).await;
-            println!("position: {:?}", event_msg);
-            println!("position: {:?}", position);
             match event_msg {
                 // try different configs here
                 ExecutionCommand::OpenLongPosition(symbol, confidence) => {
                     let symbol_balance = account.get_symbol_account(&symbol).await;
                     let trade_history = account.get_past_trades(&symbol, None).await;
                     let position = account.get_position(&symbol).await;
-                    
+                    let spread = account.get_spread(&symbol).await;
                     // calculate size here
                     let size = symbol_balance.quote_asset_free;
                     // get the price based on confidence level
-                    let price = 0.0;
+                    let price = spread.spread;
+                    let id = order_id_count.read().unwrap().clone();
+
+                    // Entry order
                     let order = Order {
-                        id: 0,
-                        symbol,
+                        id: id + 1,
+                        symbol: symbol.clone(),
                         side: Side::Bid,
                         price: Default::default(),
                         quantity: Decimal::new(1000, 0),
@@ -124,26 +127,117 @@ impl EventSink<ExecutionCommand> for RiskManager {
                             .unwrap()
                             .as_millis() as u64,
                         order_type: OrderType::Market,
+                        lifetime: 30 * 60 * 1000,
+                        close_policy: ClosePolicy::ImmediateMarket,
                     };
+
+                    let pr = Decimal::new(5, 3);
+
+                    // target order
+                    let target_price = price + (price * pr);
+                    let target_order = Order {
+                        id: id + 2,
+                        symbol: symbol.clone(),
+                        side: Side::Ask,
+                        price: target_price,
+                        quantity: Decimal::new(1000, 0),
+                        time: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64,
+                        order_type: OrderType::TakeProfit(order.id),
+                        lifetime: 30 * 60 * 1000,
+                        close_policy: ClosePolicy::ImmediateMarket,
+                    };
+
+                    // stop loss order
+                    let stop_loss_price = price - (price * pr);
+                    let stop_loss_order = Order {
+                        id: id + 3,
+                        symbol: symbol.clone(),
+                        side: Side::Ask,
+                        price: stop_loss_price,
+                        quantity: Decimal::new(1000, 0),
+                        time: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64,
+                        order_type: OrderType::StopLoss(order.id),
+                        lifetime: 30 * 60 * 1000,
+                        close_policy: ClosePolicy::ImmediateMarket,
+                    };
+
                     let mut oq = order_q.write().await;
                     oq.push_back(order);
-                    
+                    oq.push_back(target_order);
+                    oq.push_back(stop_loss_order);
+
+                    let mut w = order_id_count.write().unwrap();
+                    *w += 3;
                 }
                 ExecutionCommand::OpenShortPosition(symbol, confidence) => {
+                    let spread = account.get_spread(&symbol).await;
+                    let price = spread.spread;
+                    let id = order_id_count.read().unwrap().clone();
+
                     let order = Order {
-                        id: 0,
-                        symbol,
+                        id: id + 1,
+                        symbol: symbol.clone(),
                         side: Side::Ask,
                         price: Default::default(),
                         quantity: Decimal::new(1000, 0),
                         time: SystemTime::now()
-                              .duration_since(UNIX_EPOCH)
-                              .unwrap()
-                              .as_millis() as u64,
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64,
                         order_type: OrderType::Market,
+                        lifetime: 30 * 60 * 1000,
+                        close_policy: ClosePolicy::ImmediateMarket,
                     };
+
+                    let pr = Decimal::new(5, 3);
+
+                    // target order
+                    let target_price = price - (price * pr);
+                    let target_order = Order {
+                        id: id + 2,
+                        symbol: symbol.clone(),
+                        side: Side::Bid,
+                        price: target_price,
+                        quantity: Decimal::new(1000, 0),
+                        time: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64,
+                        order_type: OrderType::TakeProfit(order.id),
+                        lifetime: 30 * 60 * 1000,
+                        close_policy: ClosePolicy::ImmediateMarket,
+                    };
+
+                    // stop loss order
+                    let stop_loss_price = price + (price * pr);
+                    let stop_loss_order = Order {
+                        id: id + 3,
+                        symbol: symbol.clone(),
+                        side: Side::Bid,
+                        price: stop_loss_price,
+                        quantity: Decimal::new(1000, 0),
+                        time: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64,
+                        order_type: OrderType::StopLoss(order.id),
+                        lifetime: 30 * 60 * 1000,
+                        close_policy: ClosePolicy::ImmediateMarket,
+                    };
+
                     let mut oq = order_q.write().await;
                     oq.push_back(order);
+                    oq.push_back(target_order);
+                    oq.push_back(stop_loss_order);
+
+                    let mut w = order_id_count.write().unwrap();
+                    *w += 3;
                 }
                 ExecutionCommand::CloseLongPosition(symbol, confidence) => {
                     let position = account.get_position(&symbol).await;
@@ -155,10 +249,12 @@ impl EventSink<ExecutionCommand> for RiskManager {
                             price: Default::default(),
                             quantity: Decimal::new(1000, 0),
                             time: SystemTime::now()
-                                  .duration_since(UNIX_EPOCH)
-                                  .unwrap()
-                                  .as_millis() as u64,
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis() as u64,
                             order_type: OrderType::Market,
+                            lifetime: 30 * 60 * 1000,
+                            close_policy: ClosePolicy::ImmediateMarket,
                         };
                         let mut oq = order_q.write().await;
                         oq.push_back(order);
@@ -166,19 +262,21 @@ impl EventSink<ExecutionCommand> for RiskManager {
                 }
                 ExecutionCommand::CloseShortPosition(symbol, confidence) => {
                     let position = account.get_position(&symbol).await;
-    
+
                     if position.is_short() && position.qty != Decimal::ZERO {
-                        let order = Order  {
+                        let order = Order {
                             id: 0,
                             symbol,
                             side: Side::Bid,
                             price: Default::default(),
                             quantity: Decimal::new(1000, 0),
                             time: SystemTime::now()
-                                  .duration_since(UNIX_EPOCH)
-                                  .unwrap()
-                                  .as_millis() as u64,
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis() as u64,
                             order_type: OrderType::Market,
+                            lifetime: 30 * 60 * 1000,
+                            close_policy: ClosePolicy::ImmediateMarket,
                         };
                         let mut oq = order_q.write().await;
                         oq.push_back(order);
@@ -202,14 +300,88 @@ impl EventSink<TfTrades> for RiskManager {
         Ok(())
     }
     // Act on trade events for risk manager
+    // deal with expired lifetime orders
     fn handle_event(&self, event: TfTrades) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
         let global_config = self.global_config.clone();
+        let account = self.account.clone();
+        let order_q = self.order_q.clone();
+        let order_id_count = self.order_id_count.clone();
         Ok(tokio::spawn(async move {
-            for trade in event {
-                match trade.tf {
-                    x if x == global_config.tf1 => {}
-                    x if x == global_config.tf2 => {}
-                    x if x == global_config.tf3 => {}
+            let open_orders = account.get_open_orders(&global_config.symbol).await;
+            for o in open_orders.iter() {
+                match o {
+                    // skip partially filled orders as they are mostly going to be limit orders
+                    OrderStatus::Pending(order) => {
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis() as u64;
+                        if order.lifetime > 0 && now - order.time > order.lifetime {
+                            println!("Order {:?} expired", order);
+                            match order.order_type {
+                                // handle case when market filled order's lifetime is expired
+                                OrderType::TakeProfit(for_id) | OrderType::StopLoss(for_id) => {
+                                    match order.close_policy {
+                                        ClosePolicy::ImmediateMarket => {
+                                            let mut oq = order_q.write().await;
+                                            // market close the order's position
+                                            oq.push_back(Order {
+                                                id: order_id_count.read().unwrap().clone() + 1,
+                                                symbol: order.symbol.clone(),
+                                                side: if order.side == Side::Bid {
+                                                    Side::Ask
+                                                } else {
+                                                    Side::Bid
+                                                },
+                                                price: Default::default(),
+                                                quantity: order.quantity,
+                                                time: SystemTime::now()
+                                                    .duration_since(UNIX_EPOCH)
+                                                    .unwrap()
+                                                    .as_millis()
+                                                    as u64,
+                                                order_type: OrderType::Market,
+                                                lifetime: 30 * 60 * 1000,
+                                                close_policy: ClosePolicy::ImmediateMarket,
+                                            });
+                                            // then cancel the take profit or stop loss order
+                                            oq.push_back(Order {
+                                                id: for_id,
+                                                symbol: order.symbol.clone(),
+                                                side: if order.side == Side::Bid {
+                                                    Side::Ask
+                                                } else {
+                                                    Side::Bid
+                                                },
+                                                price: Default::default(),
+                                                quantity: order.quantity,
+                                                time: SystemTime::now()
+                                                    .duration_since(UNIX_EPOCH)
+                                                    .unwrap()
+                                                    .as_millis()
+                                                    as u64,
+                                                order_type: OrderType::Cancel(order.id),
+                                                lifetime: 30 * 60 * 1000,
+                                                close_policy: ClosePolicy::ImmediateMarket,
+                                            });
+                                            
+                                            let mut w = order_id_count.write().unwrap();
+                                            *w += 1;
+                                        }
+                                        
+                                        _ => {
+                                            todo!()
+                                        }
+                                    }
+                                }
+                                
+                                _ => {
+                                    todo!()
+                                }
+                                
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -225,7 +397,7 @@ impl RiskManager {
         tf_trades: Receiver<TfTrades>,
         trades: Receiver<Trade>,
         execution_commands: Receiver<ExecutionCommand>,
-        account: Box<Arc<dyn ExchangeAccountInfo>>,
+        account: Box<Arc<dyn ExchangeAccount>>,
     ) -> Self {
         let key = &global_config.key;
 
@@ -241,7 +413,14 @@ impl RiskManager {
             execution_commands_working: Arc::new(std::sync::RwLock::new(false)),
             tf_trades_working: Arc::new(std::sync::RwLock::new(false)),
             trade_working: Arc::new(std::sync::RwLock::new(false)),
+            order_id_count: Arc::new(std::sync::RwLock::new(0)),
         }
+    }
+
+    pub fn increment_order_id(&self) -> u64 {
+        let mut order_id_count = self.order_id_count.write().unwrap();
+        *order_id_count += 1;
+        *order_id_count
     }
 }
 #[async_trait]
