@@ -537,6 +537,14 @@ impl TfTradeEmitter {
     pub async fn log_history(&self, symbol: Symbol) {
         let mut last_id = 1;
         let mongo_client = MongoClient::new().await;
+        mongo_client
+              .tf_trades
+              .delete_many(
+                  doc! {"symbol": bson::to_bson(&symbol.clone()).unwrap()},
+                  None,
+              )
+              .await
+              .unwrap();
         if let Ok(t) = mongo_client
             .trades
             .find(

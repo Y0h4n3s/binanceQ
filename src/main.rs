@@ -5,11 +5,14 @@ mod back_tester;
 
 use once_cell::sync::Lazy;
 use std::env;
+use std::sync::Mutex;
+use async_std::sync::Arc;
 use binance_q_mongodb::loader::load_klines_from_archive;
 use binance_q_types::{AccessKey, ExchangeId, GlobalConfig, Symbol};
-
+use std::fmt::Write;
 use clap::{arg, command, Command, value_parser};
 use clap::builder::TypedValueParser;
+use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use crate::back_tester::{BackTester, BackTesterConfig, BackTesterMulti};
 
 
@@ -108,7 +111,12 @@ async fn async_main() -> anyhow::Result<()> {
         let tf2 = *matches.get_one::<u64>("timeframe2").ok_or(anyhow::anyhow!("Invalid tf2"))?;
         let tf3 = *matches.get_one::<u64>("timeframe3").ok_or(anyhow::anyhow!("Invalid tf3"))?;
     
-        
+        let pb = ProgressBar::new(0);
+        pb.set_style(ProgressStyle::with_template("[?] {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}%}")
+              .unwrap()
+              .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
+              .progress_chars("#>-"));
+        let lpb = Arc::new(Mutex::new(pb));
         if mode == "single" {
             let symbol = Symbol {
                 symbol: symbols.next().unwrap().clone(),
@@ -133,7 +141,15 @@ async fn async_main() -> anyhow::Result<()> {
                 kline_tf: ktf.clone()
             };
             let back_tester = BackTester::new(global_config, back_tester_config, vec![symbol.clone()]);
-            back_tester.run().await?;
+
+            let start = std::time::SystemTime::now();
+    
+            back_tester.run(lpb.clone()).await?;
+            let mut pb = lpb.lock().unwrap();
+            pb.finish_with_message(format!(
+                "[+] back_tester > Back-test finished in {:?} seconds",
+                start.elapsed().unwrap()
+            ));
         } else if mode == "multi" {
             let mut b_configs = vec![];
             let mut symbols_i: Vec<Symbol> = vec![];
@@ -167,7 +183,14 @@ async fn async_main() -> anyhow::Result<()> {
             };
             
             let back_tester = BackTesterMulti::new(global_config, b_configs, symbols_i);
-            back_tester.run().await?;
+            let start = std::time::SystemTime::now();
+            back_tester.run(lpb.clone()).await?;
+    
+            let mut pb = lpb.lock().unwrap();
+            pb.finish_with_message(format!(
+                "[+] back_tester > Back-test finished in {:?} seconds",
+                start.elapsed().unwrap()
+            ));
         }
         
         

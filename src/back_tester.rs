@@ -1,4 +1,5 @@
 use std::fmt::Write;
+use std::sync::{Mutex, RwLock};
 use async_std::sync::Arc;
 use binance_q_events::{EventEmitter, EventSink};
 use binance_q_managers::risk_manager::RiskManager;
@@ -10,7 +11,7 @@ use binance_q_types::{
 };
 use futures::{StreamExt, TryStreamExt};
 use mongodb::bson::doc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use futures::stream::FuturesUnordered;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use binance_q_executors::{ExchangeAccount, ExchangeAccountInfo};
@@ -29,6 +30,8 @@ pub struct BackTesterConfig {
 pub struct BackTester {
     global_config: GlobalConfig,
     config: BackTesterConfig,
+    // possible to batch 2 or more symbols on the same back-tester instance
+    // when running on higher frequency cpus
     symbols: Vec<Symbol>,
     
 }
@@ -49,18 +52,19 @@ impl BackTesterMulti {
         }
     }
 
-    pub async fn run(&self) -> anyhow::Result<()> {
+    pub async fn run(&self, pb: Arc<Mutex<ProgressBar>>) -> anyhow::Result<()> {
         let mut workers = vec![];
         for config in self.config.iter() {
             let mut g_c = self.global_config.clone();
             g_c.symbol = config.symbol.clone();
            let back_tester = BackTester::new(g_c, config.clone(), self.symbols.clone());
+            let p = pb.clone();
             workers.push(std::thread::spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                       .enable_all()
                       .build()
                       .unwrap();
-                runtime.block_on(async move { back_tester.run().await.unwrap() });
+                runtime.block_on(async move { back_tester.run(p).await.unwrap() });
             }));
         }
         for worker in workers {
@@ -79,7 +83,7 @@ impl BackTester {
         }
     }
 
-    pub async fn run(&self) -> anyhow::Result<()> {
+    pub async fn run(&self, pb: Arc<Mutex<ProgressBar>>) -> anyhow::Result<()> {
         let mongo_client = MongoClient::new().await;
 
         if self.config.load_history {
@@ -115,9 +119,13 @@ impl BackTester {
         
         // Start the python signal generator for this symbol
         let config = self.config.clone();
+        let backtest_done = Arc::new(RwLock::new(false));
+        let bd = backtest_done.clone();
+
         std::thread::spawn( move || {
             println!("[?] back_tester> Launching Signal Generators for {}", config.symbol.symbol);
-            let _ = Exec::cmd("python3")
+            
+            let mut process = Exec::cmd("python3")
                   .arg("./python/signals/signal_generator.py")
                   .arg("--symbol")
                   .arg(&config.symbol.symbol)
@@ -127,7 +135,15 @@ impl BackTester {
                   .arg("Backtest")
                   .popen()
                   .unwrap();
+            loop {
+                if bd.read().unwrap().clone() {
+                    process.kill().unwrap();
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(1000));
+            }
         });
+        
         
         // wait for the signal generator to start to be safe
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -142,7 +158,7 @@ impl BackTester {
         let execution_commands_channel = async_broadcast::broadcast(100);
 
         println!("[?] back_tester> Initializing executor {}",  self.config.symbol.symbol);
-        // extract this out of single back tester, it should be shared accross all back testers on multi mode
+        // extract this out of single back tester, it should be shared across all back testers on multi mode
         let simulated_executor = binance_q_executors::simulated::SimulatedExecutor::new(
             orders_channel.1,
             tf_trades_channel.1,
@@ -227,27 +243,28 @@ impl BackTester {
             runtime.block_on(async move { s_e.emit().await.unwrap().await });
         }));
         // Todo: chunk these for longer backtests or just use the cursor
-        let start = std::time::SystemTime::now();
         let mut i = 0;
 
         
         
-        
+        let until = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() - (self.config.length * 1000) as u128;
         println!("[?] back_tester> {} Loading Data...",  self.config.symbol.symbol);
-        let count = mongo_client.tf_trades.count_documents(doc! {
-            "tf": mongodb::bson::to_bson(&self.global_config.tf1).unwrap()
+        let count = mongo_client.kline.count_documents(doc! {
+            "symbol": mongodb::bson::to_bson(&self.config.symbol).unwrap(),
+            "close_time": {
+                        "$gt": mongodb::bson::to_bson(&(until as u64)).unwrap(),
+            }
         }, None).await?;
-        let pb = ProgressBar::new(count);
-        pb.set_style(ProgressStyle::with_template("[?] {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}%}")
-              .unwrap()
-              .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
-              .progress_chars("#>-"));
+        let mut w = pb.lock().unwrap();
+        w.inc_length(count);
+        drop(w);
         let mut klines = mongo_client
             .kline
             .find(
                 doc! {
+                    "symbol": mongodb::bson::to_bson(&self.config.symbol).unwrap(),
                     "close_time": {
-                        "$gt": mongodb::bson::to_bson(&0).unwrap()
+                        "$gt": mongodb::bson::to_bson(&(until as u64)).unwrap(),
                     }
                 },
                 FindOptions::builder()
@@ -263,8 +280,9 @@ impl BackTester {
             .find(
                 doc! {
                     "tf": mongodb::bson::to_bson(&self.global_config.tf1).unwrap(),
+                    "symbol": mongodb::bson::to_bson(&self.config.symbol).unwrap(),
                     "timestamp": {
-                        "$gt": mongodb::bson::to_bson(&0).unwrap()
+                        "$gt": mongodb::bson::to_bson(&(until as u64)).unwrap(),
                     }
                 },
                 FindOptions::builder()
@@ -279,7 +297,7 @@ impl BackTester {
         // let event_sequence: Arc<RwLock<VecDeque<Order>>> = Arc::new(RwLock::new(VecDeque::new()));
         // let mut event_registers = vec![];
         let strategy_manager = strategy_manager.clone();
-        println!("[?] back_tester> Starting backtest for {} in {} {} second interval trades",  self.config.symbol.symbol, count, self.global_config.tf1);
+        println!("[?] back_tester> Starting backtest for {} on {}  Klines",  self.config.symbol.symbol, count);
         while let Some(Ok(kline)) = klines.next().await {
             'i: while let Some(Ok(trade)) = tf_trade_steps.next().await {
                 if trade.timestamp >= kline.close_time {
@@ -332,20 +350,22 @@ impl BackTester {
                     }
                 }
                 i += 1;
-                if !self.global_config.verbose {
-                    pb.inc(1);
-                }
+                
+            }
+            if !self.global_config.verbose {
+                let mut w = pb.lock().unwrap();
+                w.inc(1);
+                drop(w);
             }
         }
         
-        pb.finish_with_message(format!(
-            "[+] back_tester > {} Back-test finished in {:?} seconds",
-             self.config.symbol.symbol,
-            start.elapsed().unwrap()
-        ));
-
         
-
+        let mut w = backtest_done.write().unwrap();
+        *w = true;
+        drop(w);
+        println!("[+] back_tester> {} Backtest done",  self.config.symbol.symbol);
+        // wait for python process to be killed sleep for at least 2 times more
+        tokio::time::sleep(Duration::from_millis(3000)).await;
         Ok(())
     }
 }
