@@ -248,7 +248,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                         filled_order.price = filled_price;
                                         filled_order.time = trade.timestamp;
 
-                                        if let Some(trade) = w.apply_order(&filled_order) {
+                                        if let Some(trade) = w.apply_order(&filled_order, trade.timestamp) {
                                             let mut trade_q = trade_q.write().await;
                                             trade_q.push_back(trade);
                                         }
@@ -293,7 +293,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                         let position = all_positions.get(&symbol).unwrap();
                                         let mut w = position.write().await;
 
-                                        if let Some(trade) = w.apply_order(&order) {
+                                        if let Some(trade) = w.apply_order(&order, trade.timestamp) {
                                             let mut trade_q = trade_q.write().await;
                                             trade_q.push_back(trade);
                                         }
@@ -328,7 +328,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                         let position = all_positions.get(&symbol).unwrap();
                                         let mut w = position.write().await;
             
-                                        if let Some(trade) = w.apply_order(&order) {
+                                        if let Some(trade) = w.apply_order(&order, trade.timestamp) {
                                             let mut trade_q = trade_q.write().await;
                                             trade_q.push_back(trade);
                                         }
@@ -361,7 +361,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                 filled_order.price = filled_price;
                                 filled_order.time = trade.timestamp;
 
-                                if let Some(trade) = w.apply_order(&filled_order) {
+                                if let Some(trade) = w.apply_order(&filled_order, trade.timestamp) {
                                     let mut trade_q = trade_q.write().await;
                                     trade_q.push_back(trade);
                                 }
@@ -390,7 +390,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
 
                             filled_order.price = filled_price;
                             filled_order.time = trade.timestamp;
-                            if let Some(trade) = w.apply_order(&filled_order) {
+                            if let Some(trade) = w.apply_order(&filled_order, trade.timestamp) {
                                 let mut trade_q = trade_q.write().await;
                                 trade_q.push_back(trade);
                             }

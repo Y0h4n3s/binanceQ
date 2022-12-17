@@ -44,7 +44,7 @@ impl Position {
 		self.trade_id += 1;
 		self.trade_id
 	}
-	pub fn apply_order(&mut self, order: &Order) -> Option<Trade> {
+	pub fn apply_order(&mut self, order: &Order, time: u64) -> Option<Trade> {
 		// println!("apply_order: {:?}", order);
 		// println!("position: {:?}", self);
 		if !self.is_open() {
@@ -75,7 +75,7 @@ impl Position {
 							realized_pnl: order.quantity * order.price - (prev_avg_price * order.quantity),
 							qty: order.quantity,
 							quote_qty: order.quantity * order.price,
-							time: order.time,
+							time,
 							exit_order_type: order.order_type.clone(),
 						};
 						if self.qty >= order.quantity  {
@@ -107,7 +107,7 @@ impl Position {
 							realized_pnl: (prev_avg_price * order.quantity) - order.quantity * order.price,
 							qty: order.quantity,
 							quote_qty: order.quantity * order.price,
-							time: order.time,
+							time,
 							exit_order_type: order.order_type.clone(),
 						};
 						if self.qty > order.quantity {
