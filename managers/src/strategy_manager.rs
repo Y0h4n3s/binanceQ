@@ -184,9 +184,13 @@ impl EventSink<Kline> for StrategyManager {
 	}
 }
 
+pub struct StrategyManagerConfig {
+	pub symbol: Symbol
+}
+
 impl StrategyManager {
-	pub async fn new(global_config: GlobalConfig, klines: Receiver<Kline>) -> Self {
-		let addr = "[::1]:50051".parse().unwrap();
+	pub async fn new(config: StrategyManagerConfig, global_config: GlobalConfig, klines: Receiver<Kline>, grpc_server_port: String) -> Self {
+		let addr = format!("[::1]:{}", grpc_server_port).parse().unwrap();
 		let service = SignalGeneratorService {
 			signals_q: Arc::new(RwLock::new(VecDeque::new()))
 		};
@@ -207,7 +211,7 @@ impl StrategyManager {
 			signal_generators: Arc::new(RwLock::new(service)),
 			klines_working: Arc::new(std::sync::RwLock::new(false)),
 			command_q: Arc::new(RwLock::new(VecDeque::new())),
-			backtest_sock: Arc::new(RwLock::new(UnixStream::connect("/tmp/backtest.sock").await.unwrap()))
+			backtest_sock: Arc::new(RwLock::new(UnixStream::connect(format!("/tmp/backtest-{}.sock", config.symbol.symbol)).await.unwrap()))
 		}
 		
 		

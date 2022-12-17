@@ -323,7 +323,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                           .price
                                           .eq(&Decimal::from_f64(trade.price).unwrap())))
                                     {
-                                        println!("Filling order {:?} {}", order, trade.price);
+                                        // println!("Filling order {:?} {}", order, trade.price);
                                         let position = all_positions.get(&symbol).unwrap();
                                         let mut w = position.write().await;
             

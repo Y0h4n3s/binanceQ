@@ -22,7 +22,7 @@ use serde::Deserialize;
 use std::fs::{read, read_to_string, File};
 use std::io::{Read, Write};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::task::JoinHandle;
 
 pub fn to_tf_chunks(tf: u64, mut data: Vec<TradeEntry>) -> Vec<Vec<TradeEntry>> {
@@ -51,15 +51,15 @@ pub fn to_tf_chunks(tf: u64, mut data: Vec<TradeEntry>) -> Vec<Vec<TradeEntry>> 
 pub async fn insert_trade_entries(
     trades: &Vec<AggTrade>,
     symbol: Symbol,
-) -> mongodb::error::Result<InsertManyResult> {
-    let client = MongoClient::new().await;
+    client: Arc<Mutex<MongoClient>>
+) -> anyhow::Result<()> {
     let mut entries = vec![];
     for (i, t) in trades.iter().enumerate() {
         if i == 0 {
             continue;
         }
         let delta = ((trades[i].price - trades[i - 1].price) * 100.0) / trades[i - 1].price;
-
+    
         let entry = TradeEntry {
             id: t.agg_id,
             price: t.price,
@@ -70,7 +70,10 @@ pub async fn insert_trade_entries(
         };
         entries.push(entry);
     }
-    client.trades.insert_many(entries, None).await
+    let c = client.lock().await;
+    c.trades.insert_many(entries, None).await;
+    drop(c);
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -99,6 +102,7 @@ pub async fn load_klines_from_archive(symbol: Symbol, tf: String, fetch_history_
         )
         .await
         .unwrap();
+    let mongo_client = Arc::new(Mutex::new(client));
     let today = chrono::DateTime::<Utc>::from(SystemTime::now());
     let tf = Arc::new(tf);
     let symbol = Arc::new(symbol);
@@ -137,6 +141,7 @@ pub async fn load_klines_from_archive(symbol: Symbol, tf: String, fetch_history_
         let tf = tf.clone();
         let symbol = symbol.clone();
         let date = date.unwrap();
+        let mongo_client = mongo_client.clone();
         futures.push(tokio::spawn(async move {
             let mut dir = std::env::temp_dir();
             let date_str = date.format("%Y-%m-%d").to_string();
@@ -150,8 +155,9 @@ pub async fn load_klines_from_archive(symbol: Symbol, tf: String, fetch_history_
             );
             let client = Client::new();
             let exists = client.head(&url).send().await.unwrap();
+    
             if exists.status() != 200 {
-                println!("{} does not exist", url);
+                println!("[-] loader > {} trades for {} does not exist", symbol.symbol, url);
                 drop(permit);
                 return;
             }
@@ -211,9 +217,12 @@ pub async fn load_klines_from_archive(symbol: Symbol, tf: String, fetch_history_
                     };
                     trades.push(r);
                 }
-                let client = MongoClient::new().await;
-                client.kline.insert_many(&trades, None).await.unwrap();
+               
+                let c = mongo_client.lock().await;
+                c.kline.insert_many(&trades, None).await.unwrap();
                 drop(permit);
+                drop(c);
+    
             }
         }));
     }
@@ -225,6 +234,15 @@ pub async fn load_klines_from_archive(symbol: Symbol, tf: String, fetch_history_
 }
 
 pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: u64)  -> u64 {
+    let client = MongoClient::new().await;
+    client
+          .trades
+          .delete_many(
+              doc! {"symbol": bson::to_bson(&symbol.clone()).unwrap()},
+              None,
+          )
+          .await
+          .unwrap();
     let today = SystemTime::now();
     let farthest = today - Duration::from_millis(fetch_history_span);
     let farthest_date = DateTime::<Utc>::from(farthest);
@@ -246,6 +264,7 @@ pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: u64) 
         let date = today - chrono::Duration::days(i);
         dates.write().await.push(date);
     }
+    let mongo_client = Arc::new(Mutex::new(client));
     
     dates.write().await.reverse();
     let mut futures = vec![];
@@ -258,6 +277,7 @@ pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: u64) 
         }
         let symbol = symbol.clone();
         let date = date.unwrap();
+        let mongo_client = mongo_client.clone();
         futures.push(tokio::spawn(async move {
             let mut dir = std::env::temp_dir();
             let date_str = date.format("%Y-%m-%d").to_string();
@@ -270,7 +290,7 @@ pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: u64) 
             let client = Client::new();
             let exists = client.head(&url).send().await.unwrap();
             if exists.status() != 200 {
-                println!("{} does not exist", url);
+                println!("[-] loader > {} trades for {} does not exist", symbol.symbol, url);
                 drop(permit);
                 return;
             }
@@ -316,8 +336,8 @@ pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: u64) 
                     base_asset_precision: symbol.base_asset_precision,
                     quote_asset_precision: symbol.quote_asset_precision,
                 };
-                insert_trade_entries(&trades, symbol).await;
-    
+                
+                insert_trade_entries(&trades, symbol, mongo_client.clone()).await;
                 drop(permit);
             }
         }));
@@ -360,7 +380,7 @@ pub async fn load_history(key: AccessKey, symbol: Symbol, fetch_history_span: u6
     let market = FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
     let mut span = fetch_history_span;
     if fetch_history_span > 24 * 60 * 60 * 2 * 1000 {
-        println!("Using zip download for history longer than 48h");
+        println!("[?] loader > Using zip download for history longer than 48h {}", symbol.symbol);
         let last_time = load_history_from_archive(symbol.clone(), fetch_history_span).await;
         span = (SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -377,7 +397,10 @@ pub async fn load_history(key: AccessKey, symbol: Symbol, fetch_history_span: u6
         .unwrap()
         .as_millis();
     let mut start_time = starting_time as u64 - span;
+    let mongo_client = Arc::new(Mutex::new(MongoClient::new().await));
+    
     loop {
+        
         println!(
             "Fetching history from {} to {}",
             chrono::prelude::Local
@@ -409,7 +432,7 @@ pub async fn load_history(key: AccessKey, symbol: Symbol, fetch_history_span: u6
                     if trades.len() <= 2 {
                         continue;
                     }
-                    if let Ok(_) = insert_trade_entries(&trades, symbol.clone()).await {
+                    if let Ok(_) = insert_trade_entries(&trades, symbol.clone(), mongo_client.clone()).await {
                         start_time = trades.last().unwrap().time + 1;
                     }
                 }
@@ -430,6 +453,8 @@ pub async fn start_loader(key: AccessKey, symbol: Symbol, tf1: u64) -> JoinHandl
                 .as_millis() as u64
                 - tf1,
         );
+        let mongo_client = Arc::new(Mutex::new(MongoClient::new().await));
+    
         loop {
             let trades_result = market
                 .get_agg_trades(&symbol.symbol, last_id, start_time, None, Some(1000))
@@ -440,7 +465,7 @@ pub async fn start_loader(key: AccessKey, symbol: Symbol, tf1: u64) -> JoinHandl
                         if trades.len() <= 2 {
                             continue;
                         }
-                        if let Ok(_) = insert_trade_entries(&trades, symbol.clone()).await {
+                        if let Ok(_) = insert_trade_entries(&trades, symbol.clone(), mongo_client.clone()).await {
                             last_id = Some(trades.last().unwrap().agg_id + 1);
                             // println!("{}: {} {:?}", tf1, first_id.agg_id,  last_id.unwrap());
                         }
@@ -509,7 +534,7 @@ impl TfTradeEmitter {
         Ok(trades)
     }
 
-    pub async fn log_history(&self) {
+    pub async fn log_history(&self, symbol: Symbol) {
         let mut last_id = 1;
         let mongo_client = MongoClient::new().await;
         if let Ok(t) = mongo_client
@@ -517,8 +542,9 @@ impl TfTradeEmitter {
             .find(
                 doc! {
                     "timestamp": {
-                        "$gt": mongodb::bson::to_bson(&0).unwrap()
-                    }
+                        "$gt": mongodb::bson::to_bson(&0).unwrap(),
+                    },
+                    "symbol": bson::to_bson(&symbol.clone()).unwrap()
                 },
                 None,
             )
