@@ -211,6 +211,7 @@ pub enum ExchangeId {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum ExecutionCommand {
+    ExecuteOrder(Order),
     OpenLongPosition(Symbol, f64),
     OpenShortPosition(Symbol, f64),
     CloseLongPosition(Symbol, f64),
@@ -219,14 +220,37 @@ pub enum ExecutionCommand {
 
 #[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
 pub enum OrderType {
+    Unknown,
     Limit,
     Market,
-    Cancel(u64),
-    StopLoss(u64),
+    TakeProfit(uuid::Uuid),
+    StopLoss(uuid::Uuid),
+    Cancel(uuid::Uuid),
     StopLossLimit,
-    TakeProfit(u64),
     TakeProfitLimit,
     StopLossTrailing,
+}
+
+pub struct FromProtoOrderType {
+    pub uuid: uuid::Uuid,
+    pub my_type: i32,
+}
+
+impl From<FromProtoOrderType> for OrderType {
+    fn from(proto: FromProtoOrderType) -> Self {
+        match proto.my_type {
+            0 => OrderType::Unknown,
+            1 => OrderType::Limit,
+            2 => OrderType::Market,
+            3 => OrderType::TakeProfit(proto.uuid),
+            4 => OrderType::StopLoss(proto.uuid),
+            5 => OrderType::Cancel(proto.uuid),
+            6 => OrderType::StopLossLimit,
+            7 => OrderType::TakeProfitLimit,
+            8 => OrderType::StopLossTrailing,
+            _ => OrderType::Unknown,
+        }
+    }
 }
 
 
@@ -267,7 +291,7 @@ pub struct Kline {
 #[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Trade {
     pub id: u64,
-    pub order_id: u64,
+    pub order_id: uuid::Uuid,
     pub symbol: Symbol,
     pub maker: bool,
     pub price: Decimal,
@@ -283,14 +307,26 @@ pub struct Trade {
 
 #[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
 pub enum ClosePolicy {
+    None,
     BreakEven,
     BreakEvenOrMarketClose,
     ImmediateMarket,
 }
 
+impl From<i32> for ClosePolicy {
+    fn from(i: i32) -> Self {
+        match i {
+            1 => ClosePolicy::BreakEven,
+            2 => ClosePolicy::BreakEvenOrMarketClose,
+            3 => ClosePolicy::ImmediateMarket,
+            _ => ClosePolicy::BreakEven,
+        }
+    }
+}
+
 #[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Order {
-    pub id: u64,
+    pub id: uuid::Uuid,
     pub symbol: Symbol,
     pub side: Side,
     pub price: Decimal,

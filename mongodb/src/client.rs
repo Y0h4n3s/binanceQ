@@ -62,4 +62,7 @@ impl MongoClient {
     pub async fn reset_trades(&self) {
         self.past_trades.drop(None).await.unwrap();
     }
+    pub async fn reset_orders(&self) {
+        self.orders.drop(None).await.unwrap();
+    }
 }

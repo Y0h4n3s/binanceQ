@@ -65,6 +65,7 @@ impl BackTester {
         }
         mongo_client.reset_studies().await;
         mongo_client.reset_trades().await;
+        mongo_client.reset_orders().await;
 
         let tf_trades_channel = async_broadcast::broadcast(10000);
         let klines_channel = async_broadcast::broadcast(10000);
@@ -76,7 +77,7 @@ impl BackTester {
         // receive orders from risk manager and apply mutations on accounts
         let simulated_executor = binance_q_executors::simulated::SimulatedExecutor::new(
             orders_channel.1,
-            tf_trades_channel.1.clone(),
+            tf_trades_channel.1,
             vec![self.global_config.symbol.clone()],
             trades_channel.0,
         )
@@ -92,7 +93,7 @@ impl BackTester {
                 max_daily_losses: 100,
                 max_risk_per_trade: 0.01,
             },
-            tf_trades_channel.1,
+            klines_channel.1.clone(),
             trades_channel.1,
             execution_commands_channel.1,
             inner_account,
@@ -126,7 +127,7 @@ impl BackTester {
         }));
         let rc_1 = risk_manager.clone();
         r_threads.push(std::thread::spawn(move || {
-            EventSink::<TfTrades>::listen(&rc_1).unwrap();
+            EventSink::<Kline>::listen(&rc_1).unwrap();
         }));
         let s_e = simulated_executor.clone();
         r_threads.push(std::thread::spawn(move || {
@@ -217,7 +218,7 @@ impl BackTester {
                     match klines_channel.0.broadcast(kline.clone()).await {
                         Ok(_) => {
                             // wait for strategy manager to process the kline
-                            while strategy_manager.working() {
+                            while strategy_manager.working() || <RiskManager as EventSink<Kline>>::working(&risk_manager){
                                 if self.global_config.verbose {
                                     println!("[?] back_tester> Kline being processed {}, Remaining trades: {}", i,  count - i);
     
@@ -235,7 +236,7 @@ impl BackTester {
                 match tf_trades_channel.0.broadcast(vec![trade]).await {
                     Ok(_) => {
                         // only wait for all listeners to recv()
-                        while tf_trades_channel.0.len() > 0 {
+                        while tf_trades_channel.0.len() > 0  {
                             if self.global_config.verbose {
                                 println!("[?] back_tester> Trade event being processed {}", i);
         

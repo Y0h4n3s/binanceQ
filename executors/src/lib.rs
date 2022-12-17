@@ -45,6 +45,8 @@ impl Position {
 		self.trade_id
 	}
 	pub fn apply_order(&mut self, order: &Order) -> Option<Trade> {
+		// println!("apply_order: {:?}", order);
+		// println!("position: {:?}", self);
 		if !self.is_open() {
 			self.qty = order.quantity;
 			self.quote_qty = order.quantity * order.price;
@@ -102,7 +104,7 @@ impl Position {
 							commission: Decimal::ZERO,
 							position_side: Side::Ask,
 							side: Side::Bid,
-							realized_pnl: order.quantity * order.price - (prev_avg_price * order.quantity),
+							realized_pnl: (prev_avg_price * order.quantity) - order.quantity * order.price,
 							qty: order.quantity,
 							quote_qty: order.quantity * order.price,
 							time: order.time,
@@ -140,8 +142,9 @@ impl Spread {
 		}
 	}
 	
-	pub fn update(&mut self, price: Decimal) {
+	pub fn update(&mut self, price: Decimal, time: u64) {
 		self.spread = price;
+		self.time = time;
 	}
 }
 #[async_trait]

@@ -17,10 +17,48 @@ enum ExchangeId {
     EXCHANGE_ID_BINANCE = 1;
 }
 
-service SignalGenerator {
-    rpc NotifySignal (Signal) returns (NotifySignalResponse);
+enum OrderType {
+    ORDER_TYPE_UNSPECIFIED = 0;
+    ORDER_TYPE_LIMIT = 1;
+    ORDER_TYPE_MARKET = 2;
+    ORDER_TYPE_TAKE_PROFIT = 3;
+    ORDER_TYPE_STOP_LOSS = 4;
 }
 
+enum ClosePolicy {
+    CLOSE_POLICY_UNSPECIFIED = 0;
+    CLOSE_POLICY_BREAKEVEN = 1;
+    CLOSE_POLICY_BREAKEVEN_OR_MARKET_CLOSE = 2;
+    CLOSE_POLICY_IMMEDIATE_MARKET = 3;
+}
+
+service SignalGenerator {
+    rpc NotifySignal (Signal) returns (NotifySignalResponse);
+    rpc NotifyOrders (Orders) returns (NotifyResponse);
+}
+
+message NotifyResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+message Orders {
+    repeated Order orders = 1;
+}
+
+message Order {
+    string id = 1;
+    Symbol symbol = 2;
+    Side side = 3;
+    double price = 4;
+    double quantity = 5;
+    OrderType order_type = 6;
+    uint64 lifetime = 7;
+    uint64 timestamp = 8;
+    ClosePolicy close_policy = 9;
+    string for_id = 10;
+
+}
 
 message Symbol {
     string symbol = 1;

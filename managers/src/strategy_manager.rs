@@ -13,16 +13,16 @@ use futures::StreamExt;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use binance_q_events::{EventEmitter, EventSink};
-use binance_q_types::{ExchangeId, ExecutionCommand, GlobalConfig, Kline, StrategyEdge, Symbol, TfTrades};
+use binance_q_types::{ExchangeId, ClosePolicy, ExecutionCommand, FromProtoOrderType, GlobalConfig, Kline, Order, StrategyEdge, Symbol, TfTrades, OrderType};
 use tokio::net::{UnixStream, UnixListener};
 use tokio::select;
 use serde::{Serialize, Deserialize};
 use serde_pickle::{DeOptions, SerOptions};
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
-
+use rust_decimal::prelude::*;
 use tonic::{transport::Server, Request, Response, Status};
 use signals::signal_generator_server::{SignalGenerator, SignalGeneratorServer};
-use signals::{NotifySignalResponse, Signal, Side};
+use signals::{NotifySignalResponse, Signal, Side, NotifyResponse, Orders};
 
 pub mod signals {
 	tonic::include_proto!("signals");
@@ -57,6 +57,41 @@ impl SignalGenerator for SignalGeneratorService {
 		}
 		
 		Ok(Response::new(NotifySignalResponse { confirmed: true}))
+	}
+	
+	async fn notify_orders(&self, request: Request<Orders>) -> Result<Response<NotifyResponse>, Status> {
+		let msg = request.into_inner();
+		let orders = msg.orders;
+		let mut w = self.signals_q.write().await;
+		for o in orders {
+			if let Some(symbol) = o.symbol {
+				let proto_order_type = FromProtoOrderType {
+					uuid: uuid::Uuid::parse_str(&o.for_id).unwrap(),
+					my_type: o.order_type,
+				};
+				let symbol = Symbol {
+					symbol: symbol.symbol.clone(),
+					exchange: ExchangeId::Simulated,
+					base_asset_precision: symbol.base_asset_precision,
+					quote_asset_precision: symbol.quote_asset_precision,
+				};
+				let order = Order {
+					id: uuid::Uuid::parse_str(&o.id).unwrap(),
+					symbol:  symbol.clone(),
+					side: if o.side == 1 { binance_q_types::Side::Bid } else { binance_q_types::Side::Ask },
+					price: Decimal::from_f64(o.price).unwrap(),
+					quantity: Decimal::from_f64(o.quantity).unwrap(),
+					time: o.timestamp,
+					order_type: OrderType::from(proto_order_type),
+					lifetime: o.lifetime,
+					close_policy: ClosePolicy::from(o.close_policy),
+				};
+				w.push_back(ExecutionCommand::ExecuteOrder(order));
+				
+			}
+		}
+		
+		Ok(Response::new(NotifyResponse { success: true, message: "ok".to_string() }))
 	}
 }
 #[derive(Clone)]
