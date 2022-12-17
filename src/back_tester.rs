@@ -50,7 +50,7 @@ impl BackTester {
 
             binance_q_mongodb::loader::load_klines_from_archive(
                 self.config.symbol.clone(),
-                "5m".to_string(),
+                "15m".to_string(),
                 (self.config.length * 1000) as i64,
             )
             .await;
@@ -83,6 +83,8 @@ impl BackTester {
         )
         .await;
 
+        // different managers for different symbols
+        
         let inner_account: Box<Arc<dyn ExchangeAccount>> =
             Box::new(simulated_executor.account.clone());
         println!("[?] back_tester> Initializing Risk Manager");
@@ -207,8 +209,6 @@ impl BackTester {
             )
             .await?;
 
-        // let event_sequence: Arc<RwLock<VecDeque<Order>>> = Arc::new(RwLock::new(VecDeque::new()));
-        // let mut event_registers = vec![];
         let strategy_manager = strategy_manager.clone();
         println!("[?] back_tester> Starting backtest for {} {} second interval trades", count, self.global_config.tf1);
         while let Some(Ok(kline)) = klines.next().await {

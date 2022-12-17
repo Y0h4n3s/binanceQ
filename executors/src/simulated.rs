@@ -61,7 +61,6 @@ impl SimulatedAccount {
                 symbol: symbol.clone(),
                 base_asset_free: Default::default(),
                 base_asset_locked: Default::default(),
-                // TODO: extract this config
                 quote_asset_free: Decimal::new(100000, 0),
                 quote_asset_locked: Default::default(),
             };
@@ -289,7 +288,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                                     .price
                                                     .eq(&Decimal::from_f64(trade.price).unwrap())))
                                     {
-                                        println!("Filling order {:?} {}", order, trade.price);
+                                        // println!("Filling order {:?} {}", order, trade.price);
                                         let position = all_positions.get(&symbol).unwrap();
                                         let mut w = position.write().await;
 
