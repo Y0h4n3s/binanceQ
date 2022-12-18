@@ -11,6 +11,7 @@ use binance_q_types::{ClosePolicy, ExecutionCommand, GlobalConfig, Kline, Order,
 use rust_decimal::Decimal;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
+use std::time::Duration;
 #[derive(Clone)]
 pub struct RiskManagerConfig {
     pub max_daily_losses: usize,
@@ -357,6 +358,61 @@ impl RiskManager {
             execution_commands_working: Arc::new(std::sync::RwLock::new(false)),
             tf_trades_working: Arc::new(std::sync::RwLock::new(false)),
             trade_working: Arc::new(std::sync::RwLock::new(false)),
+        }
+    }
+    
+    pub async fn neutralize(&self) {
+        let position = self.account.get_position(&self.global_config.symbol).await;
+        let oq = self.order_q.clone();
+        if position.is_open() {
+            loop {
+                // wait for all orders to be sent for execution
+                if oq.read().await.len() > 0 {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                } else { break; }
+            }
+            // updated position
+            let position = self.account.get_position(&self.global_config.symbol).await;
+    
+            match position.side {
+                
+                Side::Bid => {
+                    let mut oq = self.order_q.write().await;
+                    oq.push_back(Order {
+                        id: uuid::Uuid::new_v4(),
+                        symbol: self.global_config.symbol.clone(),
+                        side: Side::Ask,
+                        price: Default::default(),
+                        quantity: position.qty,
+                        time: 0,
+                        order_type: OrderType::Market,
+                        lifetime: 30 * 60 * 1000,
+                        close_policy: ClosePolicy::ImmediateMarket,
+                    });
+                }
+                Side::Ask => {
+                    let mut oq = self.order_q.write().await;
+                    oq.push_back(Order {
+                        id: uuid::Uuid::new_v4(),
+                        symbol: self.global_config.symbol.clone(),
+                        side: Side::Bid,
+                        price: Default::default(),
+                        quantity: position.qty,
+                        time: 0,
+                        order_type: OrderType::Market,
+                        lifetime: 30 * 60 * 1000,
+                        close_policy: ClosePolicy::ImmediateMarket,
+                    });
+                }
+            }
+        }
+        loop {
+            // wait for all orders to be sent for execution
+            if oq.read().await.len() > 0 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            } else { break; }
         }
     }
 

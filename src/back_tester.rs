@@ -333,6 +333,8 @@ impl BackTester {
             }
         }
         
+        risk_manager.neutralize().await;
+        
         
         let mut w = backtest_done.write().unwrap();
         *w = true;

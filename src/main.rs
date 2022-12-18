@@ -260,7 +260,7 @@ async fn async_main() -> anyhow::Result<()> {
                 quote_asset_precision: 2
             };
             let ktf = tf1.clone();
-            let lpb = pb.clone()
+            let lpb = pb.clone();
             threads.push(tokio::spawn(async move {
                     if download_klines {
     

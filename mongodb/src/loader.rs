@@ -26,7 +26,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_std::prelude::FutureExt;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::task::JoinHandle;
-
+use indicatif::ProgressBar;
 pub fn to_tf_chunks(tf: u64, mut data: &Vec<TradeEntry>) -> Vec<Vec<TradeEntry>> {
     if data.len() <= 0 {
         return vec![];
@@ -148,7 +148,7 @@ pub async fn load_klines_from_archive(symbol: Symbol, tf: String, fetch_history_
         }
     }
 
-    pb.inc_length(dates.read().await.len())
+    pb.inc_length(dates.read().await.len() as u64);
     dates.write().await.reverse();
     let mut futures = vec![];
     'loader: loop {
@@ -161,7 +161,7 @@ pub async fn load_klines_from_archive(symbol: Symbol, tf: String, fetch_history_
         let symbol = symbol.clone();
         let date = date.unwrap();
         let mongo_client = mongo_client.clone();
-        pb = pb.clone();
+        let pb = pb.clone();
         futures.push(tokio::spawn(async move {
             let mut dir = std::env::temp_dir();
             let date_str = date.format("%Y-%m-%d").to_string();
@@ -303,7 +303,7 @@ pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: i64, 
         }
     }
     let mongo_client = Arc::new(Mutex::new(client));
-    pb.inc_length(dates.read().await.len())
+    pb.inc_length(dates.read().await.len() as u64);
     dates.write().await.reverse();
     let mut futures = vec![];
     
@@ -316,7 +316,7 @@ pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: i64, 
         let symbol = symbol.clone();
         let date = date.unwrap();
         let mongo_client = mongo_client.clone();
-        pb = pb.clone()
+        let pb = pb.clone();
         futures.push(tokio::spawn(async move {
             let mut dir = std::env::temp_dir();
             let date_str = date.format("%Y-%m-%d").to_string();
