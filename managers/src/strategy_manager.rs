@@ -19,6 +19,8 @@ use tokio::select;
 use serde::{Serialize, Deserialize};
 use serde_pickle::{DeOptions, SerOptions};
 use tokio::io::{AsyncWriteExt, AsyncReadExt};
+use binance_q_executors::ExchangeAccount;
+
 use rust_decimal::prelude::*;
 use tonic::{transport::Server, Request, Response, Status};
 use signals::signal_generator_server::{SignalGenerator, SignalGeneratorServer};
@@ -102,7 +104,9 @@ pub struct StrategyManager {
 	klines: Arc<RwLock<Receiver<Kline>>>,
 	klines_working: Arc<std::sync::RwLock<bool>>,
 	command_q: Arc<RwLock<VecDeque<ExecutionCommand>>>,
-	backtest_sock: Arc<RwLock<UnixStream>>
+	backtest_sock: Arc<RwLock<UnixStream>>,
+	pub account: Box<Arc<dyn ExchangeAccount>>,
+	
 }
 
 #[async_trait]
@@ -189,7 +193,7 @@ pub struct StrategyManagerConfig {
 }
 
 impl StrategyManager {
-	pub async fn new(config: StrategyManagerConfig, global_config: GlobalConfig, klines: Receiver<Kline>, grpc_server_port: String) -> Self {
+	pub async fn new(config: StrategyManagerConfig, global_config: GlobalConfig, klines: Receiver<Kline>, grpc_server_port: String, account: Box<Arc<dyn ExchangeAccount>>) -> Self {
 		let addr = format!("[::1]:{}", grpc_server_port).parse().unwrap();
 		let service = SignalGeneratorService {
 			signals_q: Arc::new(RwLock::new(VecDeque::new()))
@@ -206,6 +210,7 @@ impl StrategyManager {
 		
 		Self {
 			global_config,
+			account,
 			command_subscribers: Arc::new(RwLock::new(async_broadcast::broadcast(1).0)),
 			klines: Arc::new(RwLock::new(klines)),
 			signal_generators: Arc::new(RwLock::new(service)),

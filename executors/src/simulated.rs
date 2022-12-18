@@ -669,7 +669,6 @@ impl ExchangeAccount for SimulatedAccount {
 
 #[async_trait]
 impl TradeExecutor for SimulatedExecutor {
-    const ID: ExchangeId = ExchangeId::Simulated;
     type Account = SimulatedAccount;
     fn get_account(&self) -> Arc<Self::Account> {
         self.account.clone()

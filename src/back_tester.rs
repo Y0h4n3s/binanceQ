@@ -12,18 +12,20 @@ use binance_q_types::{
 use futures::{StreamExt, TryStreamExt};
 use mongodb::bson::doc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use async_broadcast::{Receiver, Sender};
 use futures::stream::FuturesUnordered;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
-use binance_q_executors::{ExchangeAccount, ExchangeAccountInfo};
+use binance_q_executors::{ExchangeAccount, ExchangeAccountInfo, TradeExecutor};
 use binance_q_managers::risk_manager::RiskManagerConfig;
 use mongodb::options::FindOptions;
 use subprocess::Exec;
+use binance_q_executors::simulated::{SimulatedAccount, SimulatedExecutor};
 
 #[derive(Debug, Clone)]
 pub struct BackTesterConfig {
     pub symbol: Symbol,
     pub length: u64,
-    pub load_history: bool,
+    pub log_history: bool,
     pub grpc_server_port: String,
     pub kline_tf: String,
 }
@@ -52,21 +54,27 @@ impl BackTesterMulti {
         }
     }
 
-    pub async fn run(&self, pb: Arc<Mutex<ProgressBar>>) -> anyhow::Result<()> {
+    pub async fn run(&self, pb: ProgressBar, trades_receiver: Receiver<Trade>, tf_trades_tx: Sender<TfTrades>, orders_tx: Sender<Order>, executor: Box<Arc<dyn TradeExecutor<Account = SimulatedAccount>>>) -> anyhow::Result<()> {
         let mut workers = vec![];
         for config in self.config.iter() {
             let mut g_c = self.global_config.clone();
             g_c.symbol = config.symbol.clone();
-           let back_tester = BackTester::new(g_c, config.clone(), self.symbols.clone());
+            let back_tester = BackTester::new(g_c, config.clone(), self.symbols.clone());
             let p = pb.clone();
+            let t_r = trades_receiver.clone();
+            let t_t = tf_trades_tx.clone();
+            let o_t = orders_tx.clone();
+            let e = executor.clone();
             workers.push(std::thread::spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                       .enable_all()
                       .build()
                       .unwrap();
-                runtime.block_on(async move { back_tester.run(p).await.unwrap() });
+                runtime.block_on(async move { back_tester.run(p, t_r, t_t, o_t, e).await.unwrap() });
             }));
         }
+        // drop the idle receiver
+        drop(trades_receiver);
         for worker in workers {
             worker.join().unwrap();
         }
@@ -83,33 +91,11 @@ impl BackTester {
         }
     }
 
-    pub async fn run(&self, pb: Arc<Mutex<ProgressBar>>) -> anyhow::Result<()> {
+    pub async fn run(&self, pb: ProgressBar, trades_receiver: Receiver<Trade>, tf_trades_tx: Sender<TfTrades>, orders_tx: Sender<Order>, executor: Box<Arc<dyn TradeExecutor<Account = SimulatedAccount>>>) -> anyhow::Result<()> {
         let mongo_client = MongoClient::new().await;
 
-        if self.config.load_history {
-            binance_q_mongodb::loader::load_history(
-                self.global_config.key.clone(),
-                self.config.symbol.clone(),
-                self.config.length * 1000,
-                true,
-            )
-            .await;
-            println!("[?] back_tester> Trades Loaded for {}", self.config.symbol.symbol);
-    
-            binance_q_mongodb::loader::load_klines_from_archive(
-                self.config.symbol.clone(),
-                self.config.kline_tf.clone(),
-                (self.config.length * 1000) as i64,
-            )
-            .await;
-    
-            println!("[?] back_tester> Klines Loaded for {}", self.config.symbol.symbol);
-    
-            // for tf in vec![
-            //     self.global_config.tf1,
-            //     self.global_config.tf2,
-            //     self.global_config.tf3,
-            // ] {
+        if self.config.log_history {
+            
                 let tf_trade = TfTradeEmitter::new(self.global_config.tf1, self.global_config.clone());
                 tf_trade.log_history(self.config.symbol.clone()).await;
             println!("[?] back_tester> Tftrades Loaded for {}", self.config.symbol.symbol);
@@ -151,26 +137,14 @@ impl BackTester {
         mongo_client.reset_trades(&self.config.symbol).await;
         mongo_client.reset_orders(&self.config.symbol).await;
 
-        let tf_trades_channel = async_broadcast::broadcast(10000);
         let klines_channel = async_broadcast::broadcast(10000);
-        let trades_channel = async_broadcast::broadcast(1000);
-        let orders_channel = async_broadcast::broadcast(1000);
         let execution_commands_channel = async_broadcast::broadcast(100);
 
-        println!("[?] back_tester> Initializing executor {}",  self.config.symbol.symbol);
-        // extract this out of single back tester, it should be shared across all back testers on multi mode
-        let simulated_executor = binance_q_executors::simulated::SimulatedExecutor::new(
-            orders_channel.1,
-            tf_trades_channel.1,
-            self.symbols.clone(),
-            trades_channel.0,
-        )
-        .await;
 
         
         let inner_account: Box<Arc<dyn ExchangeAccount>> =
-            Box::new(simulated_executor.account.clone());
-        println!("[?] back_tester> Initializing Risk Manager {}",  self.config.symbol.symbol);
+            Box::new(executor.get_account().clone());
+        println!("[?] back_tester> Initializing Risk Manager for {}",  self.config.symbol.symbol);
         // calculate position size based on risk tolerance and send orders to executors
         let mut risk_manager = RiskManager::new(
             self.global_config.clone(),
@@ -179,18 +153,22 @@ impl BackTester {
                 max_risk_per_trade: 0.01,
             },
             klines_channel.1.clone(),
-            trades_channel.1,
+            trades_receiver,
             execution_commands_channel.1,
             inner_account,
         );
     
+    
+        let inner_account: Box<Arc<dyn ExchangeAccount>> =
+              Box::new(executor.get_account().clone());
+    
         // receive strategy edges from multiple strategies and forward them to risk manager
-        println!("[?] back_tester> Initializing Strategy Manager {}",  self.config.symbol.symbol);
+        println!("[?] back_tester> Initializing Strategy Manager for {}",  self.config.symbol.symbol);
         let mut strategy_manager =
-            StrategyManager::new(StrategyManagerConfig{ symbol: self.global_config.symbol.clone() }, self.global_config.clone(), klines_channel.1, self.config.grpc_server_port.clone()).await;
+            StrategyManager::new(StrategyManagerConfig{ symbol: self.global_config.symbol.clone() }, self.global_config.clone(), klines_channel.1, self.config.grpc_server_port.clone(), inner_account).await;
 
-        // sends orders to executors
-        risk_manager.subscribe(orders_channel.0).await;
+        // sends orders to executor
+        risk_manager.subscribe(orders_tx).await;
 
         //sends edges to risk manager
         println!("[?] back_tester> Starting Listeners {}",  self.config.symbol.symbol);
@@ -214,9 +192,9 @@ impl BackTester {
         r_threads.push(std::thread::spawn(move || {
             EventSink::<Kline>::listen(&rc_1).unwrap();
         }));
-        let s_e = simulated_executor.clone();
+        let s_e = executor.clone();
         r_threads.push(std::thread::spawn(move || {
-            EventSink::<Order>::listen(&s_e).unwrap();
+            s_e.listen().unwrap();
         }));
         let sm = strategy_manager.clone();
         r_threads.push(std::thread::spawn(move || {
@@ -234,7 +212,7 @@ impl BackTester {
                 .unwrap();
             runtime.block_on(async move { rc.emit().await.unwrap().await });
         }));
-        let s_e = simulated_executor.clone();
+        let s_e = executor.clone();
         r_threads.push(std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -255,9 +233,7 @@ impl BackTester {
                         "$gt": mongodb::bson::to_bson(&(until as u64)).unwrap(),
             }
         }, None).await?;
-        let mut w = pb.lock().unwrap();
-        w.inc_length(count);
-        drop(w);
+        pb.inc_length(count);
         let mut klines = mongo_client
             .kline
             .find(
@@ -320,10 +296,10 @@ impl BackTester {
                     }
                     break 'i;
                 }
-                match tf_trades_channel.0.broadcast(vec![trade]).await {
+                match tf_trades_tx.broadcast(vec![trade]).await {
                     Ok(_) => {
                         // only wait for all listeners to recv()
-                        while tf_trades_channel.0.len() > 0  {
+                        while tf_trades_tx.len() > 0  {
                             if self.global_config.verbose {
                                 println!("[?] back_tester> {} Trade event being processed {}",  self.config.symbol.symbol, i);
         
@@ -353,9 +329,7 @@ impl BackTester {
                 
             }
             if !self.global_config.verbose {
-                let mut w = pb.lock().unwrap();
-                w.inc(1);
-                drop(w);
+                pb.inc(1);
             }
         }
         
