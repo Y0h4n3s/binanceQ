@@ -1,8 +1,9 @@
 use std::fmt::Write;
+use std::sync::{Mutex, RwLock};
 use async_std::sync::Arc;
 use binance_q_events::{EventEmitter, EventSink};
 use binance_q_managers::risk_manager::RiskManager;
-use binance_q_managers::strategy_manager::StrategyManager;
+use binance_q_managers::strategy_manager::{StrategyManager, StrategyManagerConfig};
 use binance_q_mongodb::client::MongoClient;
 use binance_q_mongodb::loader::TfTradeEmitter;
 use binance_q_types::{
@@ -10,84 +11,140 @@ use binance_q_types::{
 };
 use futures::{StreamExt, TryStreamExt};
 use mongodb::bson::doc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use async_broadcast::{Receiver, Sender};
+use futures::stream::FuturesUnordered;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
-use binance_q_executors::{ExchangeAccount, ExchangeAccountInfo};
+use binance_q_executors::{ExchangeAccount, ExchangeAccountInfo, TradeExecutor};
 use binance_q_managers::risk_manager::RiskManagerConfig;
 use mongodb::options::FindOptions;
+use subprocess::Exec;
+use binance_q_executors::simulated::{SimulatedAccount, SimulatedExecutor};
 
 #[derive(Debug, Clone)]
 pub struct BackTesterConfig {
     pub symbol: Symbol,
     pub length: u64,
-    pub load_history: bool,
+    pub log_history: bool,
+    pub grpc_server_port: String,
+    pub kline_tf: String,
 }
 pub struct BackTester {
     global_config: GlobalConfig,
     config: BackTesterConfig,
+    // possible to batch 2 or more symbols on the same back-tester instance
+    // when running on higher frequency cpus
+    symbols: Vec<Symbol>,
+    
 }
 
-impl BackTester {
-    pub fn new(global_config: GlobalConfig, config: BackTesterConfig) -> Self {
+#[derive(Debug, Clone)]
+pub struct BackTesterMulti {
+    global_config: GlobalConfig,
+    config: Vec<BackTesterConfig>,
+    symbols: Vec<Symbol>,
+}
+
+impl BackTesterMulti {
+    pub fn new(global_config: GlobalConfig, config: Vec<BackTesterConfig>, symbols: Vec<Symbol>) -> Self {
         Self {
             global_config,
             config,
+            symbols
         }
     }
 
-    pub async fn run(&self) -> anyhow::Result<()> {
+    pub async fn run(&self, pb: ProgressBar, trades_receiver: Receiver<Trade>, tf_trades_tx: Sender<TfTrades>, orders_tx: Sender<Order>, executor: Box<Arc<dyn TradeExecutor<Account = SimulatedAccount>>>) -> anyhow::Result<()> {
+        let mut workers = vec![];
+        for config in self.config.iter() {
+            let mut g_c = self.global_config.clone();
+            g_c.symbol = config.symbol.clone();
+            let back_tester = BackTester::new(g_c, config.clone(), self.symbols.clone());
+            let p = pb.clone();
+            let t_r = trades_receiver.clone();
+            let t_t = tf_trades_tx.clone();
+            let o_t = orders_tx.clone();
+            let e = executor.clone();
+            workers.push(std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                      .enable_all()
+                      .build()
+                      .unwrap();
+                runtime.block_on(async move { back_tester.run(p, t_r, t_t, o_t, e).await.unwrap() });
+            }));
+        }
+        // drop the idle receiver
+        drop(trades_receiver);
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        Ok(())
+    }
+}
+
+impl BackTester {
+    pub fn new(global_config: GlobalConfig, config: BackTesterConfig, symbols: Vec<Symbol>) -> Self {
+        Self {
+            global_config,
+            config,
+            symbols
+        }
+    }
+
+    pub async fn run(&self, pb: ProgressBar, trades_receiver: Receiver<Trade>, tf_trades_tx: Sender<TfTrades>, orders_tx: Sender<Order>, executor: Box<Arc<dyn TradeExecutor<Account = SimulatedAccount>>>) -> anyhow::Result<()> {
         let mongo_client = MongoClient::new().await;
 
-        if self.config.load_history {
-            mongo_client.reset_db().await;
-            binance_q_mongodb::loader::load_history(
-                self.global_config.key.clone(),
-                self.config.symbol.clone(),
-                self.config.length * 1000,
-                true,
-            )
-            .await;
-
-            binance_q_mongodb::loader::load_klines_from_archive(
-                self.config.symbol.clone(),
-                "15m".to_string(),
-                (self.config.length * 1000) as i64,
-            )
-            .await;
-            for tf in vec![
-                self.global_config.tf1,
-                self.global_config.tf2,
-                self.global_config.tf3,
-            ] {
-                let tf_trade = TfTradeEmitter::new(tf, self.global_config.clone());
-                tf_trade.log_history().await;
-            }
+        if self.config.log_history {
+            
+                let tf_trade = TfTradeEmitter::new(self.global_config.tf1, self.global_config.clone());
+                tf_trade.log_history(self.config.symbol.clone()).await;
+            println!("[?] back_tester> Tftrades Loaded for {}", self.config.symbol.symbol);
+    
+            // }
         }
-        mongo_client.reset_studies().await;
-        mongo_client.reset_trades().await;
-        mongo_client.reset_orders().await;
+        
+        // Start the python signal generator for this symbol
+        let config = self.config.clone();
+        let backtest_done = Arc::new(RwLock::new(false));
+        let bd = backtest_done.clone();
 
-        let tf_trades_channel = async_broadcast::broadcast(10000);
+        std::thread::spawn( move || {
+            println!("[?] back_tester> Launching Signal Generators for {}", config.symbol.symbol);
+            
+            let mut process = Exec::cmd("python3")
+                  .arg("./python/signals/signal_generator.py")
+                  .arg("--symbol")
+                  .arg(&config.symbol.symbol)
+                  .arg("--grpc-port")
+                  .arg(&config.grpc_server_port)
+                  .arg("--mode")
+                  .arg("Backtest")
+                  .popen()
+                  .unwrap();
+            loop {
+                if bd.read().unwrap().clone() {
+                    process.kill().unwrap();
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(1000));
+            }
+        });
+        
+        
+        // wait for the signal generator to start to be safe
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    
+        mongo_client.reset_trades(&self.config.symbol).await;
+        mongo_client.reset_orders(&self.config.symbol).await;
+
         let klines_channel = async_broadcast::broadcast(10000);
-        let trades_channel = async_broadcast::broadcast(1000);
-        let orders_channel = async_broadcast::broadcast(1000);
         let execution_commands_channel = async_broadcast::broadcast(100);
 
-        println!("[?] back_tester> Initializing executor");
-        // receive orders from risk manager and apply mutations on accounts
-        let simulated_executor = binance_q_executors::simulated::SimulatedExecutor::new(
-            orders_channel.1,
-            tf_trades_channel.1,
-            vec![self.global_config.symbol.clone()],
-            trades_channel.0,
-        )
-        .await;
 
-        // different managers for different symbols
         
         let inner_account: Box<Arc<dyn ExchangeAccount>> =
-            Box::new(simulated_executor.account.clone());
-        println!("[?] back_tester> Initializing Risk Manager");
+            Box::new(executor.get_account().clone());
+        println!("[?] back_tester> Initializing Risk Manager for {}",  self.config.symbol.symbol);
         // calculate position size based on risk tolerance and send orders to executors
         let mut risk_manager = RiskManager::new(
             self.global_config.clone(),
@@ -96,21 +153,25 @@ impl BackTester {
                 max_risk_per_trade: 0.01,
             },
             klines_channel.1.clone(),
-            trades_channel.1,
+            trades_receiver,
             execution_commands_channel.1,
             inner_account,
         );
     
+    
+        let inner_account: Box<Arc<dyn ExchangeAccount>> =
+              Box::new(executor.get_account().clone());
+    
         // receive strategy edges from multiple strategies and forward them to risk manager
-        println!("[?] back_tester> Initializing Strategy Manager");
+        println!("[?] back_tester> Initializing Strategy Manager for {}",  self.config.symbol.symbol);
         let mut strategy_manager =
-            StrategyManager::new(self.global_config.clone(), klines_channel.1).await;
+            StrategyManager::new(StrategyManagerConfig{ symbol: self.global_config.symbol.clone() }, self.global_config.clone(), klines_channel.1, self.config.grpc_server_port.clone(), inner_account).await;
 
-        // sends orders to executors
-        risk_manager.subscribe(orders_channel.0).await;
+        // sends orders to executor
+        risk_manager.subscribe(orders_tx).await;
 
         //sends edges to risk manager
-        println!("[?] back_tester> Starting Listeners");
+        println!("[?] back_tester> Starting Listeners {}",  self.config.symbol.symbol);
         strategy_manager
             .subscribe(execution_commands_channel.0)
             .await;
@@ -131,9 +192,9 @@ impl BackTester {
         r_threads.push(std::thread::spawn(move || {
             EventSink::<Kline>::listen(&rc_1).unwrap();
         }));
-        let s_e = simulated_executor.clone();
+        let s_e = executor.clone();
         r_threads.push(std::thread::spawn(move || {
-            EventSink::<Order>::listen(&s_e).unwrap();
+            s_e.listen().unwrap();
         }));
         let sm = strategy_manager.clone();
         r_threads.push(std::thread::spawn(move || {
@@ -151,7 +212,7 @@ impl BackTester {
                 .unwrap();
             runtime.block_on(async move { rc.emit().await.unwrap().await });
         }));
-        let s_e = simulated_executor.clone();
+        let s_e = executor.clone();
         r_threads.push(std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -160,27 +221,26 @@ impl BackTester {
             runtime.block_on(async move { s_e.emit().await.unwrap().await });
         }));
         // Todo: chunk these for longer backtests or just use the cursor
-        let start = std::time::SystemTime::now();
         let mut i = 0;
 
         
         
-        
-        println!("[?] back_tester> Loading Data...");
-        let count = mongo_client.tf_trades.count_documents(doc! {
-            "tf": mongodb::bson::to_bson(&self.global_config.tf1).unwrap()
+        let until = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() - (self.config.length * 1000) as u128;
+        println!("[?] back_tester> {} Loading Data...",  self.config.symbol.symbol);
+        let count = mongo_client.kline.count_documents(doc! {
+            "symbol": mongodb::bson::to_bson(&self.config.symbol).unwrap(),
+            "close_time": {
+                        "$gt": mongodb::bson::to_bson(&(until as u64)).unwrap(),
+            }
         }, None).await?;
-        let pb = ProgressBar::new(count);
-        pb.set_style(ProgressStyle::with_template("[?] {spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}%}")
-              .unwrap()
-              .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
-              .progress_chars("#>-"));
+        pb.inc_length(count);
         let mut klines = mongo_client
             .kline
             .find(
                 doc! {
+                    "symbol": mongodb::bson::to_bson(&self.config.symbol).unwrap(),
                     "close_time": {
-                        "$gt": mongodb::bson::to_bson(&0).unwrap()
+                        "$gt": mongodb::bson::to_bson(&(until as u64)).unwrap(),
                     }
                 },
                 FindOptions::builder()
@@ -196,8 +256,9 @@ impl BackTester {
             .find(
                 doc! {
                     "tf": mongodb::bson::to_bson(&self.global_config.tf1).unwrap(),
+                    "symbol": mongodb::bson::to_bson(&self.config.symbol).unwrap(),
                     "timestamp": {
-                        "$gt": mongodb::bson::to_bson(&0).unwrap()
+                        "$gt": mongodb::bson::to_bson(&(until as u64)).unwrap(),
                     }
                 },
                 FindOptions::builder()
@@ -209,8 +270,10 @@ impl BackTester {
             )
             .await?;
 
+        // let event_sequence: Arc<RwLock<VecDeque<Order>>> = Arc::new(RwLock::new(VecDeque::new()));
+        // let mut event_registers = vec![];
         let strategy_manager = strategy_manager.clone();
-        println!("[?] back_tester> Starting backtest for {} {} second interval trades", count, self.global_config.tf1);
+        println!("[?] back_tester> Starting backtest for {} on {}  Klines",  self.config.symbol.symbol, count);
         while let Some(Ok(kline)) = klines.next().await {
             'i: while let Some(Ok(trade)) = tf_trade_steps.next().await {
                 if trade.timestamp >= kline.close_time {
@@ -220,25 +283,25 @@ impl BackTester {
                             // wait for strategy manager to process the kline
                             while strategy_manager.working() || <RiskManager as EventSink<Kline>>::working(&risk_manager){
                                 if self.global_config.verbose {
-                                    println!("[?] back_tester> Kline being processed {}, Remaining trades: {}", i,  count - i);
+                                    println!("[?] back_tester> {} Kline being processed {}, Remaining trades: {}",  self.config.symbol.symbol,  i,  count - i);
     
                                 }
                                 tokio::time::sleep(Duration::from_millis(20)).await;
                             }
                         }
                         Err(e) => {
-                            eprintln!("Error sending kline to strategy manager {}", e);
+                            eprintln!("[-] {} Error sending kline to strategy manager {}",  self.config.symbol.symbol, e);
                         }
 
                     }
                     break 'i;
                 }
-                match tf_trades_channel.0.broadcast(vec![trade]).await {
+                match tf_trades_tx.broadcast(vec![trade]).await {
                     Ok(_) => {
                         // only wait for all listeners to recv()
-                        while tf_trades_channel.0.len() > 0  {
+                        while tf_trades_tx.len() > 0  {
                             if self.global_config.verbose {
-                                println!("[?] back_tester> Trade event being processed {}", i);
+                                println!("[?] back_tester> {} Trade event being processed {}",  self.config.symbol.symbol, i);
         
                             }
                             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -259,23 +322,24 @@ impl BackTester {
                     // continue 'step
                     Err(e) => {
                         // don't do anything, print and continue
-                        println!("Error: {}", e);
+                        println!("[-] {} Error: {}", self.config.symbol.symbol, e);
                     }
                 }
                 i += 1;
-                if !self.global_config.verbose {
-                    pb.inc(1);
-                }
+                
+            }
+            if !self.global_config.verbose {
+                pb.inc(1);
             }
         }
         
-        pb.finish_with_message(format!(
-            "Back-test finished in {:?} seconds",
-            start.elapsed().unwrap()
-        ));
-
         
-
+        let mut w = backtest_done.write().unwrap();
+        *w = true;
+        drop(w);
+        println!("[+] back_tester> {} Backtest done",  self.config.symbol.symbol);
+        // wait for python process to be killed sleep for at least 2 times more
+        tokio::time::sleep(Duration::from_millis(3000)).await;
         Ok(())
     }
 }

@@ -168,11 +168,7 @@ pub trait ExchangeAccount: ExchangeAccountInfo {
 
 
 pub trait TradeExecutor: EventSink<Order> + EventEmitter<OrderStatus> {
-	const ID: ExchangeId;
 	type Account: ExchangeAccount + 'static;
-	fn get_id(&self) -> ExchangeId {
-		Self::ID
-	}
 	fn get_account(&self) -> Arc<Self::Account>;
 	
 	fn process_order(&self, order: Order) -> anyhow::Result<OrderStatus> {

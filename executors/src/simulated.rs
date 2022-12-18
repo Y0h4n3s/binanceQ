@@ -323,7 +323,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                           .price
                                           .eq(&Decimal::from_f64(trade.price).unwrap())))
                                     {
-                                        println!("Filling order {:?} {}", order, trade.price);
+                                        // println!("Filling order {:?} {}", order, trade.price);
                                         let position = all_positions.get(&symbol).unwrap();
                                         let mut w = position.write().await;
             
@@ -669,7 +669,6 @@ impl ExchangeAccount for SimulatedAccount {
 
 #[async_trait]
 impl TradeExecutor for SimulatedExecutor {
-    const ID: ExchangeId = ExchangeId::Simulated;
     type Account = SimulatedAccount;
     fn get_account(&self) -> Arc<Self::Account> {
         self.account.clone()
