@@ -13,7 +13,7 @@ use futures::StreamExt;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use binance_q_events::{EventEmitter, EventSink};
-use binance_q_types::{ExchangeId, ClosePolicy, ExecutionCommand, FromProtoOrderType, GlobalConfig, Kline, Order, StrategyEdge, Symbol, TfTrades, OrderType};
+use binance_q_types::{ExchangeId, ClosePolicy, ExecutionCommand, FromProtoOrderType, GlobalConfig, Kline, Order, StrategyEdge, Symbol, TfTrades, OrderType, OrderStatus};
 use tokio::net::{UnixStream, UnixListener};
 use tokio::select;
 use serde::{Serialize, Deserialize};
@@ -24,15 +24,17 @@ use binance_q_executors::ExchangeAccount;
 use rust_decimal::prelude::*;
 use tonic::{transport::Server, Request, Response, Status};
 use signals::signal_generator_server::{SignalGenerator, SignalGeneratorServer};
-use signals::{NotifySignalResponse, Signal, Side, NotifyResponse, Orders};
+use signals::{NotifySignalResponse, Signal, Position as PPosition, Symbol  as PSymbol, Spread as PSpread, Side, NotifyResponse, Orders as POrders, Order as POrder};
 
 pub mod signals {
 	tonic::include_proto!("signals");
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SignalGeneratorService {
-	pub signals_q: Arc<RwLock<VecDeque<ExecutionCommand>>>
+	pub signals_q: Arc<RwLock<VecDeque<ExecutionCommand>>>,
+	pub account: Box<Arc<dyn ExchangeAccount>>,
+	
 }
 
 #[tonic::async_trait]
@@ -57,19 +59,25 @@ impl SignalGenerator for SignalGeneratorService {
 			}
 			_ => {}
 		}
-		
+
 		Ok(Response::new(NotifySignalResponse { confirmed: true}))
 	}
 	
-	async fn notify_orders(&self, request: Request<Orders>) -> Result<Response<NotifyResponse>, Status> {
+	async fn notify_orders(&self, request: Request<POrders>) -> Result<Response<NotifyResponse>, Status> {
 		let msg = request.into_inner();
 		let orders = msg.orders;
 		let mut w = self.signals_q.write().await;
 		for o in orders {
 			if let Some(symbol) = o.symbol {
+				let trailing = if o.order_type == 5 {
+					Decimal::from_str_exact(&o.extra).unwrap()
+				} else {
+					Default::default()
+				};
 				let proto_order_type = FromProtoOrderType {
 					uuid: uuid::Uuid::parse_str(&o.for_id).unwrap(),
 					my_type: o.order_type,
+					trailing
 				};
 				let symbol = Symbol {
 					symbol: symbol.symbol.clone(),
@@ -92,8 +100,100 @@ impl SignalGenerator for SignalGeneratorService {
 				
 			}
 		}
-		
 		Ok(Response::new(NotifyResponse { success: true, message: "ok".to_string() }))
+	}
+	
+	async fn get_position(&self, request: Request<PSymbol>)-> Result<Response<PPosition>, Status> {
+		let msg = request.into_inner();
+			let sym = Symbol {
+				symbol: msg.symbol.clone(),
+				exchange: ExchangeId::Simulated,
+				base_asset_precision: msg.base_asset_precision,
+				quote_asset_precision: msg.quote_asset_precision,
+			};
+			
+			let account = self.account.clone();
+			let position = account.get_position(&sym).await;
+			
+			let p_position = PPosition {
+				id: position.trade_id,
+				symbol: Some(msg),
+				side: if position.side == binance_q_types::Side::Bid { 1 } else { 2 },
+				qty: position.qty.to_f64().unwrap(),
+				quote_qty: position.quote_qty.to_f64().unwrap(),
+				avg_price: position.avg_price.to_f64().unwrap(),
+				extra: "".to_string(),
+			};
+			Ok(Response::new(p_position))
+		
+	}
+	
+	async fn get_spread(&self, request: Request<PSymbol>)-> Result<Response<PSpread>, Status> {
+		let msg = request.into_inner();
+		let sym = Symbol {
+			symbol: msg.symbol.clone(),
+			exchange: ExchangeId::Simulated,
+			base_asset_precision: msg.base_asset_precision,
+			quote_asset_precision: msg.quote_asset_precision,
+		};
+		
+		let account = self.account.clone();
+		let spread = account.get_spread(&sym).await;
+		
+		let p_spread = PSpread {
+			symbol: Some(msg),
+			spread: spread.spread.to_f64().unwrap(),
+			time: spread.time
+		};
+		Ok(Response::new(p_spread))
+	}
+	
+	async fn get_open_orders(&self, request: Request<PSymbol>)-> Result<Response<POrders>, Status> {
+		let msg = request.into_inner();
+		let sym = Symbol {
+			symbol: msg.symbol.clone(),
+			exchange: ExchangeId::Simulated,
+			base_asset_precision: msg.base_asset_precision,
+			quote_asset_precision: msg.quote_asset_precision,
+		};
+		
+		let account = self.account.clone();
+		let orders = account.get_open_orders(&sym).await;
+		
+		let mut p_orders = vec![];
+		for order in orders.iter() {
+			match order {
+				OrderStatus::Pending(order) => {
+					let mut for_id = "".to_string();
+					match order.order_type {
+						OrderType::StopLoss(id) | OrderType::TakeProfit(id) | OrderType::CancelFor(id) |OrderType::StopLossTrailing(id, _) =>{
+							for_id = id.to_string();
+							
+						}
+						
+						_ => {}
+					}
+					let p_order = POrder {
+						id: order.id.to_string(),
+						for_id: for_id,
+						symbol: Some(msg.clone()),
+						side: if order.side == binance_q_types::Side::Bid { 1 } else { 2 },
+						price: order.price.to_f64().unwrap(),
+						quantity: order.quantity.to_f64().unwrap(),
+						timestamp: order.time,
+						order_type: 1,
+						lifetime: order.lifetime,
+						close_policy: 1,
+						extra: "".to_string(),
+					};
+					p_orders.push(p_order);
+				}
+				_ => {}
+			}
+		}
+		Ok(Response::new(POrders {
+			orders: p_orders
+		}))
 	}
 }
 #[derive(Clone)]
@@ -105,7 +205,6 @@ pub struct StrategyManager {
 	klines_working: Arc<std::sync::RwLock<bool>>,
 	command_q: Arc<RwLock<VecDeque<ExecutionCommand>>>,
 	backtest_sock: Arc<RwLock<UnixStream>>,
-	pub account: Box<Arc<dyn ExchangeAccount>>,
 	
 }
 
@@ -196,7 +295,8 @@ impl StrategyManager {
 	pub async fn new(config: StrategyManagerConfig, global_config: GlobalConfig, klines: Receiver<Kline>, grpc_server_port: String, account: Box<Arc<dyn ExchangeAccount>>) -> Self {
 		let addr = format!("[::1]:{}", grpc_server_port).parse().unwrap();
 		let service = SignalGeneratorService {
-			signals_q: Arc::new(RwLock::new(VecDeque::new()))
+			signals_q: Arc::new(RwLock::new(VecDeque::new())),
+			account
 		};
 		let signal_server = SignalGeneratorServer::new(service.clone());
 		
@@ -210,7 +310,6 @@ impl StrategyManager {
 		
 		Self {
 			global_config,
-			account,
 			command_subscribers: Arc::new(RwLock::new(async_broadcast::broadcast(1).0)),
 			klines: Arc::new(RwLock::new(klines)),
 			signal_generators: Arc::new(RwLock::new(service)),

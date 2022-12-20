@@ -13,6 +13,7 @@ use chrono::prelude::*;
 use csv::{Reader, ReaderBuilder, StringRecord};
 use futures::TryStreamExt;
 use mongodb::bson;
+use std::cmp::max;
 use mongodb::bson::doc;
 use mongodb::options::{AggregateOptions, FindOneOptions, FindOptions};
 use mongodb::results::InsertManyResult;
@@ -26,7 +27,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_std::prelude::FutureExt;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::task::JoinHandle;
-
+use indicatif::ProgressBar;
 pub fn to_tf_chunks(tf: u64, mut data: &Vec<TradeEntry>) -> Vec<Vec<TradeEntry>> {
     if data.len() <= 0 {
         return vec![];
@@ -110,7 +111,56 @@ struct ArchiveKline {
     pub ignore: u64,
 }
 
-pub async fn load_klines_from_archive(symbol: Symbol, tf: String, fetch_history_span: i64, pb: ProgressBar) {
+fn is_leap_year(y: u32) -> bool
+{
+    y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)
+}
+
+/// Return the number of days in the month `m` in year `y` in the Gregorian calendar. Note that
+/// The month number is zero based, i.e. `m=0` corresponds to January, `m=1` to February, etc.
+fn days_per_month(y: u32, m: u32) -> u32
+{
+    const DAYS_PER_MONTH: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let nd = DAYS_PER_MONTH[m as usize];
+    nd + (m == 1 && is_leap_year(y)) as u32
+}
+fn datediff<T>(date0: T, date1: T) -> (u32, u32, u32, bool)
+    where T: chrono::Datelike + PartialOrd
+{
+    
+    if date1 < date0
+    {
+        let (ny, nm, nd, _) = datediff(date1, date0);
+        (ny, nm, nd, true)
+    }
+    else
+    {
+        let (y0, m0, mut d0) = (date0.year() as u32, date0.month0(), date0.day0());
+        let (mut y1, mut m1, mut d1) = (date1.year() as u32, date1.month0(), date1.day0());
+        
+        if d0 > d1
+        {
+            let (py1, pm1) = if m1 == 0 { (y1-1, 11) } else { (y1, m1-1) };
+            let pnd = days_per_month(py1, pm1);
+            d0 = d0.min(pnd-1);
+            if d0 > d1
+            {
+                y1 = py1;
+                m1 = pm1;
+                d1 += pnd;
+            }
+        }
+        if m0 > m1
+        {
+            y1 -= 1;
+            m1 += 12;
+        }
+        
+        (y1 - y0, m1 - m0, d1 - d0, false)
+    }
+}
+
+pub async fn load_klines_from_archive(symbol: Symbol, tf: String, fetch_history_span: i64, pb: ProgressBar, verbose: bool) {
     let client = MongoClient::new().await;
     client
         .kline
@@ -125,55 +175,63 @@ pub async fn load_klines_from_archive(symbol: Symbol, tf: String, fetch_history_
     let tf = Arc::new(tf);
     let symbol = Arc::new(symbol);
     let permits = Arc::new(Semaphore::new(10));
-    let dates = Arc::new(RwLock::new(vec![]));
-    let inserts = Arc::new(RwLock::new(0));
+    let months = Arc::new(RwLock::new(vec![]));
     // initialize dates with 20 years of days if span is -1
     if fetch_history_span == -1 {
-        let mut dates = dates.write().await;
-        for i in 0..365 * 20 {
-            let date = today - chrono::Duration::days(i);
-            dates.push(date);
+        let mut months = months.write().await;
+        for i in 0..12 * 20 {
+            let month = today - chrono::Duration::weeks(4 * i);
+            months.push(month);
         }
     } else {
-        let mut dates = dates.write().await;
+        let mut months = months.write().await;
         let today = SystemTime::now();
         let farthest = today - Duration::from_millis(fetch_history_span as u64 * 1000);
         let farthest_date = DateTime::<Utc>::from(farthest);
         let todays_date = DateTime::<Utc>::from(today);
-        let span = todays_date - farthest_date;
+        
+        let diff = datediff(todays_date, farthest_date);
+        // add 1 to be safe
+        let span = diff.1 as i64 + 1;
         let today = chrono::DateTime::<Utc>::from(SystemTime::now());
-        for i in 0..span.num_days() {
-            let date = today - chrono::Duration::days(i);
-            dates.push(date);
+        for i in 0..span {
+            let month = today - chrono::Duration::weeks(i * 4);
+            months.push(month);
         }
     }
 
-    pb.inc_length(dates.read().await.len())
-    dates.write().await.reverse();
+    if !verbose {
+    
+        pb.inc_length(months.read().await.len() as u64);
+    }
+    months.write().await.reverse();
     let mut futures = vec![];
     'loader: loop {
         let permit = permits.clone().acquire_owned().await.unwrap();
-        let date = dates.write().await.pop();
-        if date.is_none() {
+        let month = months.write().await.pop();
+        if month.is_none() {
             break 'loader;
         }
         let tf = tf.clone();
         let symbol = symbol.clone();
-        let date = date.unwrap();
+        let month = month.unwrap();
         let mongo_client = mongo_client.clone();
-        pb = pb.clone();
+        let pb = pb.clone();
         futures.push(tokio::spawn(async move {
             let mut dir = std::env::temp_dir();
-            let date_str = date.format("%Y-%m-%d").to_string();
+            let month_str = month.format("%Y-%m").to_string();
             let url = format!(
-                "https://data.binance.vision/data/futures/um/daily/klines/{}/{}/{}-{}-{}.zip",
+                "https://data.binance.vision/data/futures/um/monthly/klines/{}/{}/{}-{}-{}.zip",
                 symbol.symbol.clone(),
                 tf,
                 symbol.symbol.clone(),
                 tf,
-                date_str.clone()
+                month_str.clone()
             );
-            println!("[+] fetching {}", url);
+            if verbose {
+    
+                println!("[+] fetching {}", url);
+            }
             let res = reqwest::get(&url);
             if let Ok(res) = res.await {
                 if !res.status().is_success() {
@@ -235,13 +293,19 @@ pub async fn load_klines_from_archive(symbol: Symbol, tf: String, fetch_history_
                     c.kline.insert_many(&trades, None).await.unwrap();
                     drop(c);
                 } else {
-                    println!("[-] failed to deserialize {}", url);
+                    if verbose {
+                        println!("[-] failed to deserialize {}", url);
+                    }
     
                 }
             } else {
-                println!("[-] failed to fetch {}", url);
+                if verbose {
+                    println!("[-] failed to fetch {}", url);
+                }
             }
-            pb.inc(1);
+            if !verbose {
+                pb.inc(1);
+            }
             drop(permit);
     
         }));
@@ -253,7 +317,7 @@ pub async fn load_klines_from_archive(symbol: Symbol, tf: String, fetch_history_
     futures::future::join_all(futures).await;
 }
 
-pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: i64, tf: u64, pb: ProgressBar)  -> u64 {
+pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: i64, tf: u64, pb: ProgressBar, verbose: bool)  -> u64 {
     let client = MongoClient::new().await;
     client
           .trades
@@ -282,51 +346,64 @@ pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: i64, 
     let today = chrono::DateTime::<Utc>::from(SystemTime::now());
     let symbol = Arc::new(symbol);
     let permits = Arc::new(Semaphore::new(10));
-    let dates = Arc::new(RwLock::new(vec![]));
+    let months = Arc::new(RwLock::new(vec![]));
+    // initialize dates with 20 years of days if span is -1
     if fetch_history_span == -1 {
-        let mut dates = dates.write().await;
-        for i in 0..365 * 20 {
-            let date = today - chrono::Duration::days(i);
-            dates.push(date);
+        let mut months = months.write().await;
+        for i in 0..12 * 20 {
+            let month = today - chrono::Duration::weeks(4 * i);
+            months.push(month);
         }
     } else {
-        let mut dates = dates.write().await;
+        let mut months = months.write().await;
         let today = SystemTime::now();
         let farthest = today - Duration::from_millis(fetch_history_span as u64 * 1000);
         let farthest_date = DateTime::<Utc>::from(farthest);
         let todays_date = DateTime::<Utc>::from(today);
-        let span = todays_date - farthest_date;
+        
+        let diff = datediff(todays_date, farthest_date);
+        // add 1 to be safe
+        let span = diff.1 as i64 + 1;
         let today = chrono::DateTime::<Utc>::from(SystemTime::now());
-        for i in 0..span.num_days() {
-            let date = today - chrono::Duration::days(i);
-            dates.push(date);
+        for i in 0..span {
+            let month = today - chrono::Duration::weeks(i * 4);
+            months.push(month);
         }
     }
+    
+    if !verbose {
+        
+        pb.inc_length(months.read().await.len() as u64);
+    }
+    months.write().await.reverse();
     let mongo_client = Arc::new(Mutex::new(client));
-    pb.inc_length(dates.read().await.len())
-    dates.write().await.reverse();
+    
     let mut futures = vec![];
     
     'loader: loop {
         let permit = permits.clone().acquire_owned().await.unwrap();
-        let date = dates.write().await.pop();
-        if date.is_none() {
+        let month = months.write().await.pop();
+        if month.is_none() {
             break 'loader;
         }
         let symbol = symbol.clone();
-        let date = date.unwrap();
+        let month = month.unwrap();
         let mongo_client = mongo_client.clone();
-        pb = pb.clone()
+        let pb = pb.clone();
         futures.push(tokio::spawn(async move {
             let mut dir = std::env::temp_dir();
-            let date_str = date.format("%Y-%m-%d").to_string();
+            let month_str = month.format("%Y-%m").to_string();
             let url = format!(
-                "https://data.binance.vision/data/futures/um/daily/aggTrades/{}/{}-aggTrades-{}.zip",
+                "https://data.binance.vision/data/futures/um/monthly/aggTrades/{}/{}-aggTrades-{}.zip",
                 symbol.symbol.clone(),
                 symbol.symbol.clone(),
-                date_str.clone()
+                month_str.clone()
             );
-            println!("[+] fetching {}", url);
+            
+            if verbose {
+    
+                println!("[+] fetching {}", url);
+            }
     
             let res = reqwest::get(&url);
             if let Ok(mut res) = res.await {
@@ -375,13 +452,21 @@ pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: i64, 
     
                     insert_trade_entries(&trades, symbol, mongo_client.clone(), tf).await;
                 } else {
-                    println!("[-] failed to deserialize {}", url);
+                    if verbose {
+    
+                        println!("[-] failed to deserialize {}", url);
+                    }
     
                 }
             } else {
-                println!("[-] failed to fetch {}", url);
+                if verbose {
+    
+                    println!("[-] failed to fetch {}", url);
+                }
+                }
+            if !verbose {
+                pb.inc(1);
             }
-            pb.inc(1);
             drop(permit);
     
         }));

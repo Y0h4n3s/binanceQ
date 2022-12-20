@@ -233,7 +233,6 @@ impl BackTester {
                         "$gt": mongodb::bson::to_bson(&(until as u64)).unwrap(),
             }
         }, None).await?;
-        pb.inc_length(count);
         let mut klines = mongo_client
             .kline
             .find(
@@ -269,11 +268,12 @@ impl BackTester {
                     .build(),
             )
             .await?;
-
+    
         // let event_sequence: Arc<RwLock<VecDeque<Order>>> = Arc::new(RwLock::new(VecDeque::new()));
         // let mut event_registers = vec![];
         let strategy_manager = strategy_manager.clone();
         println!("[?] back_tester> Starting backtest for {} on {}  Klines",  self.config.symbol.symbol, count);
+        pb.inc_length(count);
         while let Some(Ok(kline)) = klines.next().await {
             'i: while let Some(Ok(trade)) = tf_trade_steps.next().await {
                 if trade.timestamp >= kline.close_time {
@@ -332,6 +332,8 @@ impl BackTester {
                 pb.inc(1);
             }
         }
+        
+        risk_manager.neutralize().await;
         
         
         let mut w = backtest_done.write().unwrap();
