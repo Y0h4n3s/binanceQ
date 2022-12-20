@@ -1,6 +1,6 @@
 pub mod simulated;
-
-
+pub mod live;
+pub mod notification;
 use std::collections::HashSet;
 use std::ops::Mul;
 use async_std::sync::Arc;
@@ -45,8 +45,8 @@ impl Position {
 		self.trade_id
 	}
 	pub fn apply_order(&mut self, order: &Order, time: u64) -> Option<Trade> {
-		// println!("apply_order: {:?}", order);
-		// println!("position: {:?}", self);
+		println!("[?] Delta Order: {} {:?} {:?}", order.symbol.symbol, order.order_type, order.side);
+		println!("[?] Pre-position: {:?}", self);
 		if !self.is_open() {
 			self.qty = order.quantity;
 			self.quote_qty = order.quantity * order.price;
@@ -155,6 +155,7 @@ pub trait ExchangeAccountInfo: Send + Sync {
 	async fn get_past_trades(&self, symbol: &Symbol, length: Option<usize>) -> Arc<HashSet<Trade>>;
 	async fn get_position(&self, symbol: &Symbol) -> Arc<Position>;
 	async fn get_spread(&self, symbol: &Symbol) -> Arc<Spread>;
+	async fn get_order(&self,  symbol: &Symbol, id: &uuid::Uuid) -> Vec<Order>;
 }
 
 #[async_trait]
@@ -172,61 +173,38 @@ pub trait TradeExecutor: EventSink<Order> + EventEmitter<OrderStatus> {
 	fn get_account(&self) -> Arc<Self::Account>;
 	
 	fn process_order(&self, order: Order) -> anyhow::Result<OrderStatus> {
-		let handle = tokio::runtime::Handle::try_current()?;
-		match order.order_type {
-			OrderType::Limit | OrderType::TakeProfit(_) | OrderType::StopLoss(_) => {
-				match order.side {
-					Side::Bid => {
-						let account = self.get_account();
-						let res = std::thread::spawn(move || {
-							let rt = tokio::runtime::Runtime::new().unwrap();
-							rt.block_on(account.limit_long(order))
-						});
-						res.join().unwrap()
-					},
-					Side::Ask => {
-						let account = self.get_account();
-						let res = std::thread::spawn(move || {
-							let rt = tokio::runtime::Runtime::new().unwrap();
-							rt.block_on(account.limit_short(order))
-						});
-						res.join().unwrap()
-						
+		let account = self.get_account();
+		std::thread::spawn(move || {
+			let rt = tokio::runtime::Runtime::new().unwrap();
+			match order.order_type {
+				OrderType::Limit | OrderType::TakeProfit(_) | OrderType::StopLoss(_) | OrderType::StopLossTrailing(_, _) => {
+					match order.side {
+						Side::Bid => {
+								rt.block_on(account.limit_long(order))
+						},
+						Side::Ask => {
+								rt.block_on(account.limit_short(order))
+						}
 					}
-				}
-			},
-			OrderType::Cancel(_) => {
-				let account = self.get_account();
-				let res = std::thread::spawn(move || {
-					let rt = tokio::runtime::Runtime::new().unwrap();
-					rt.block_on(account.cancel_order(order))
-				});
-				res.join().unwrap()
-				
-			},
-			OrderType::Market => {
-				match order.side {
-					Side::Bid => {
-						let account: Arc<<Self as TradeExecutor>::Account> = self.get_account();
-						let res = std::thread::spawn(move || {
-							let rt = tokio::runtime::Runtime::new().unwrap();
-							rt.block_on(account.market_long(order))
-						});
-						res.join().unwrap()
-					},
-					Side::Ask => {
-						let account = self.get_account();
-						let res = std::thread::spawn(move || {
-							let rt = tokio::runtime::Runtime::new().unwrap();
-							rt.block_on(account.market_short(order))
-						});
-						res.join().unwrap()
+				},
+				OrderType::Cancel(_) | OrderType::CancelFor(_) => {
+						rt.block_on(account.cancel_order(order))
+				},
+				OrderType::Market => {
+					match order.side {
+						Side::Bid => {
+								rt.block_on(account.market_long(order))
+						},
+						Side::Ask => {
+								rt.block_on(account.market_short(order))
+						}
 					}
+				},
+				_ => {
+					todo!()
 				}
-			},
-			_ => {
-				todo!()
 			}
-		}
+		}).join().unwrap()
+		
 	}
 }

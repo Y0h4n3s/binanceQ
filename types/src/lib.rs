@@ -1,5 +1,6 @@
 use yata::core::{OHLCV, ValueType};
 use rust_decimal::Decimal;
+use std::hash::{Hasher, Hash};
 use serde::{Serialize, Deserialize};
 pub type TfTrades = Vec<TfTrade>;
 
@@ -206,7 +207,8 @@ pub enum Sentiment {
 #[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Serialize, Deserialize, Debug, Default)]
 pub enum ExchangeId {
     #[default]
-    Simulated
+    Simulated,
+    Binance
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -226,14 +228,16 @@ pub enum OrderType {
     TakeProfit(uuid::Uuid),
     StopLoss(uuid::Uuid),
     Cancel(uuid::Uuid),
+    CancelFor(uuid::Uuid),
     StopLossLimit,
     TakeProfitLimit,
-    StopLossTrailing,
+    StopLossTrailing(uuid::Uuid, Decimal),
 }
 
 pub struct FromProtoOrderType {
     pub uuid: uuid::Uuid,
     pub my_type: i32,
+    pub trailing: Decimal
 }
 
 impl From<FromProtoOrderType> for OrderType {
@@ -244,10 +248,11 @@ impl From<FromProtoOrderType> for OrderType {
             2 => OrderType::Market,
             3 => OrderType::TakeProfit(proto.uuid),
             4 => OrderType::StopLoss(proto.uuid),
-            5 => OrderType::Cancel(proto.uuid),
+            5 => OrderType::StopLossTrailing(proto.uuid, proto.trailing),
             6 => OrderType::StopLossLimit,
             7 => OrderType::TakeProfitLimit,
-            8 => OrderType::StopLossTrailing,
+            8 => OrderType::Cancel(proto.uuid),
+            9 => OrderType::CancelFor(proto.uuid),
             _ => OrderType::Unknown,
         }
     }
@@ -271,6 +276,21 @@ pub enum OrderStatus {
     PartiallyFilled(Order, Decimal),
     Canceled(Order, String),
 }
+
+impl PartialEq for Order {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id && self.order_type == other.order_type && self.side == other.side
+    }
+}
+
+impl Hash for Order {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+        self.order_type.hash(state);
+        self.side.hash(state);
+    }
+}
+
 #[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Kline {
     pub symbol: Symbol,
@@ -324,7 +344,7 @@ impl From<i32> for ClosePolicy {
     }
 }
 
-#[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Eq,Ord, PartialOrd, Debug, Serialize, Deserialize)]
 pub struct Order {
     pub id: uuid::Uuid,
     pub symbol: Symbol,

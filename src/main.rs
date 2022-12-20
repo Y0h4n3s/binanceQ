@@ -132,7 +132,6 @@ async fn async_main() -> anyhow::Result<()> {
         let tf1 = *matches.get_one::<u64>("timeframe1").ok_or(anyhow::anyhow!("Invalid tf1"))?;
         let tf2 = *matches.get_one::<u64>("timeframe2").ok_or(anyhow::anyhow!("Invalid tf2"))?;
         let tf3 = *matches.get_one::<u64>("timeframe3").ok_or(anyhow::anyhow!("Invalid tf3"))?;
-    
         let pb = ProgressBar::new(0);
         pb.set_style(ProgressStyle::with_template("[?] [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}%}")
               .unwrap()
@@ -247,7 +246,9 @@ async fn async_main() -> anyhow::Result<()> {
         let download_trades = !matches.get_flag("noaggtrades");
         let mut threads = vec![];
         let pb = ProgressBar::new(0);
-        pb.set_style(ProgressStyle::with_template("[?] [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}%}")
+        let verbose = main_matches.get_flag("verbose");
+    
+        pb.set_style(ProgressStyle::with_template("[?] Progress [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}%}")
               .unwrap()
               .with_key("eta", |state: &ProgressState, w: &mut dyn Write| write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap())
               .progress_chars("#>-"));
@@ -264,11 +265,11 @@ async fn async_main() -> anyhow::Result<()> {
             threads.push(tokio::spawn(async move {
                     if download_klines {
     
-                        load_klines_from_archive(symbol.clone(), ktf, l, lpb.clone()).await;
+                        load_klines_from_archive(symbol.clone(), ktf, l, lpb.clone(), verbose).await;
                     }
                 if download_trades {
     
-                    load_history_from_archive(symbol.clone(),l, tf, lpb.clone()).await;
+                    load_history_from_archive(symbol.clone(),l, tf, lpb.clone(), verbose).await;
                 }
                     println!("[+] download > {} data downloaded", symbol.symbol.clone());
             }))

@@ -23,6 +23,7 @@ enum OrderType {
     ORDER_TYPE_MARKET = 2;
     ORDER_TYPE_TAKE_PROFIT = 3;
     ORDER_TYPE_STOP_LOSS = 4;
+    ORDER_TYPE_TRAILING_STOP_LOSS = 5;
 }
 
 enum ClosePolicy {
@@ -35,6 +36,9 @@ enum ClosePolicy {
 service SignalGenerator {
     rpc NotifySignal (Signal) returns (NotifySignalResponse);
     rpc NotifyOrders (Orders) returns (NotifyResponse);
+    rpc GetPosition (Symbol) returns (Position);
+    rpc GetSpread (Symbol) returns (Spread);
+    rpc GetOpenOrders(Symbol) returns (Orders);
 }
 
 message NotifyResponse {
@@ -57,7 +61,24 @@ message Order {
     uint64 timestamp = 8;
     ClosePolicy close_policy = 9;
     string for_id = 10;
+    string extra = 11;
 
+}
+
+message Position {
+    uint64 id = 1;
+    Symbol symbol = 2;
+    Side side = 3;
+    double qty = 4;
+    double quote_qty = 5;
+    double avg_price = 6;
+    string extra = 7;
+}
+
+message Spread {
+    Symbol symbol = 1;
+    double spread = 2;
+    uint64 time = 3;
 }
 
 message Symbol {
