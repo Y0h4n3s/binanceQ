@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 console = "0.15.0"
-binance = { path = "../opensource/binance-rs" }
+binance = { git = "https://github.com/Y0h4n3s/binance-async-rs" }
 clap = {version = "4.0.29", features = ["cargo"]}
 rust_decimal = "1.27.0"
 flurry = "0.4.0"
