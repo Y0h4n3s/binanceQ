@@ -72,6 +72,12 @@ pub struct AccessKey {
     pub api_key: String,
     pub secret_key: String,
 }
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub enum Mode {
+    Live,
+    #[default]
+    Backtest
+}
 #[derive(Debug, Clone, Default)]
 pub struct GlobalConfig {
     pub tf1: u64,
@@ -79,7 +85,8 @@ pub struct GlobalConfig {
     pub tf3: u64,
     pub key: AccessKey,
     pub verbose: bool,
-    pub symbol: Symbol
+    pub symbol: Symbol,
+    pub mode: Mode
 }
 
 #[derive(Clone,Hash, Eq,Ord, PartialOrd, PartialEq, Serialize, Deserialize, Debug, Default)]

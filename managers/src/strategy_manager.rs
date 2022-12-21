@@ -13,7 +13,7 @@ use futures::StreamExt;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use binance_q_events::{EventEmitter, EventSink};
-use binance_q_types::{ExchangeId, ClosePolicy, ExecutionCommand, FromProtoOrderType, GlobalConfig, Kline, Order, StrategyEdge, Symbol, TfTrades, OrderType, OrderStatus};
+use binance_q_types::{ExchangeId, ClosePolicy, ExecutionCommand, FromProtoOrderType, GlobalConfig, Kline, Order, StrategyEdge, Symbol, TfTrades, OrderType, OrderStatus, Mode};
 use tokio::net::{UnixStream, UnixListener};
 use tokio::select;
 use serde::{Serialize, Deserialize};
@@ -308,6 +308,12 @@ impl StrategyManager {
 				  .await
 				  .unwrap();
 		});
+		let sock_addr = if global_config.mode == Mode::Backtest {
+			format!("/tmp/backtest-{}.sock", config.symbol.symbol.clone())
+		} else {
+			format!("/tmp/live-{}.sock", config.symbol.symbol.clone())
+		};
+		
 		
 		Self {
 			global_config,
@@ -316,7 +322,7 @@ impl StrategyManager {
 			signal_generators: Arc::new(RwLock::new(service)),
 			klines_working: Arc::new(std::sync::RwLock::new(false)),
 			command_q: Arc::new(RwLock::new(VecDeque::new())),
-			backtest_sock: Arc::new(RwLock::new(UnixStream::connect(format!("/tmp/backtest-{}.sock", config.symbol.symbol)).await.unwrap()))
+			backtest_sock: Arc::new(RwLock::new(UnixStream::connect(sock_addr).await.unwrap()))
 		}
 		
 		

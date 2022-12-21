@@ -2,21 +2,23 @@
 #![feature(async_closure)]
 
 mod back_tester;
-
+use futures::StreamExt;
 use once_cell::sync::Lazy;
 use std::env;
 use std::sync::Mutex;
 use async_std::sync::Arc;
-use binance_q_mongodb::loader::{load_history_from_archive, load_klines_from_archive};
-use binance_q_types::{AccessKey, ExchangeId, GlobalConfig, Order, Symbol, TfTrades, Trade};
+use binance_q_mongodb::loader::{KlineEmitter, load_history_from_archive, load_klines_from_archive, TfTradeEmitter};
+use binance_q_types::{AccessKey, ExchangeId, Mode, ExecutionCommand, GlobalConfig, Kline, Order, Symbol, TfTrades, Trade};
 use std::fmt::Write;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use async_broadcast::{Receiver, Sender};
 use clap::{arg, command, Command, value_parser};
 use clap::builder::TypedValueParser;
+use futures::stream::FuturesUnordered;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use subprocess::Exec;
 use tokio::sync::RwLock;
+use binance_q_events::{EventEmitter, EventSink};
 use binance_q_executors::live::BinanceLiveAccount;
 use binance_q_executors::simulated::SimulatedAccount;
 use binance_q_executors::{ExchangeAccount, TradeExecutor};
@@ -188,7 +190,8 @@ async fn async_main() -> anyhow::Result<()> {
                 tf2,
                 tf3,
                 key: KEY.clone(),
-                verbose: main_matches.get_flag("verbose")
+                verbose: main_matches.get_flag("verbose"),
+                mode: Mode::Backtest,
             };
             
             let back_tester_config = BackTesterConfig {
@@ -231,7 +234,8 @@ async fn async_main() -> anyhow::Result<()> {
                     length: backtest_span,
                     log_history: matches.get_flag("loghistory"),
                     grpc_server_port: grpc_server.to_string(),
-                    kline_tf: ktf.clone()
+                    kline_tf: ktf.clone(),
+                    
                 };
                 grpc_server += 1;
                 b_configs.push(back_tester_config);
@@ -243,6 +247,7 @@ async fn async_main() -> anyhow::Result<()> {
                 tf2,
                 tf3,
                 key: KEY.clone(),
+                mode: Mode::Backtest,
                 verbose: main_matches.get_flag("verbose")
             };
             
@@ -316,14 +321,14 @@ async fn async_main() -> anyhow::Result<()> {
     
     if let Some(matches) = main_matches.subcommand_matches("live") {
         let mut symbols = matches.get_many::<String>("symbols").unwrap().clone();
-        let ktf = matches.get_one::<String>("ktf").unwrap();
-    
+        let ktf = matches.get_one::<String>("ktf").unwrap().clone();
+        let length = matches.get_one::<u64>("length").unwrap().clone();
         let tf1 = *matches.get_one::<u64>("timeframe1").ok_or(anyhow::anyhow!("Invalid tf1"))?;
-    
+        
         let orders_channel: (Sender<Order>, Receiver<Order>) = async_broadcast::broadcast(1000);
         let tf_trades_channel: (Sender<TfTrades>, Receiver<TfTrades>) = async_broadcast::broadcast(10000);
         let trades_channel: (Sender<Trade>, Receiver<Trade>) = async_broadcast::broadcast(1000);
-        
+        let from_time = SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 - length;
         let mut syms = vec![];
         for s in symbols.clone() {
             syms.push(Symbol {
@@ -344,21 +349,22 @@ async fn async_main() -> anyhow::Result<()> {
         
         let mut grpc_server = 50011;
         let mut workers = vec![];
-    
+        let verbose = main_matches.get_flag("verbose");
         for symbol in syms {
     
             let t_r = trades_channel.1.clone();
             let t_t = tf_trades_channel.0.clone();
             let o_t = orders_channel.0.clone();
             let e = executor.clone();
-         
+            let ktf = ktf.clone();
             let global_config = GlobalConfig {
                 symbol: symbol.clone(),
                 tf1,
                 tf2: tf1,
                 tf3: tf1,
                 key: KEY.clone(),
-                verbose: main_matches.get_flag("verbose")
+                verbose,
+                mode: Mode::Live
             };
             workers.push(std::thread::spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
@@ -420,23 +426,74 @@ async fn async_main() -> anyhow::Result<()> {
                           Box::new(e.get_account().clone());
     
                     // receive strategy edges from multiple strategies and forward them to risk manager
-                    println!("[?] back_tester> Initializing Strategy Manager for {}",  symbol.symbol);
+                    println!("[?] live > Initializing Strategy Manager for {}",  symbol.symbol);
                     let mut strategy_manager =
                           StrategyManager::new(
-                              StrategyManagerConfig{ symbol: global_config.symbol.clone() }, global_config.clone(), klines_channel.1, grpc_server.to_string(), inner_account).await;
+                              StrategyManagerConfig{ symbol: global_config.symbol.clone() },
+                              global_config.clone(),
+                              klines_channel.1,
+                              grpc_server.to_string(),
+                              inner_account
+                          ).await;
     
+                    
+                    let mut trade_emitter = TfTradeEmitter::new(tf1, global_config.clone());
+                    
+                    let mut kline_emitter = KlineEmitter::new(ktf.clone(), global_config.clone());
+                    
+                    trade_emitter.subscribe(t_t).await;
+                    kline_emitter.subscribe(klines_channel.0).await;
+                    
+                    risk_manager.subscribe(o_t).await;
+    
+                    println!("[?] live > Starting Listeners {}",  symbol.symbol);
+                    strategy_manager
+                          .subscribe(execution_commands_channel.0)
+                          .await;
+                    let mut r_threads = vec![];
+                    let rc = risk_manager.clone();
+                    r_threads.push(std::thread::spawn(move || {
+                        EventSink::<ExecutionCommand>::listen(&rc).unwrap();
+                    }));
+                    let rc = risk_manager.clone();
+                    r_threads.push(std::thread::spawn(move || {
+                        EventSink::<Trade>::listen(&rc).unwrap();
+                    }));
+                    let sm = strategy_manager.clone();
+                    r_threads.push(std::thread::spawn(move || {
+                        EventSink::<Kline>::listen(&sm).unwrap();
+                    }));
+                    let rc_1 = risk_manager.clone();
+                    r_threads.push(std::thread::spawn(move || {
+                        EventSink::<Kline>::listen(&rc_1).unwrap();
+                    }));
+                    let s_e = e.clone();
+                    r_threads.push(std::thread::spawn(move || {
+                        s_e.listen().unwrap();
+                    }));
+                    
+                    let mut futures = FuturesUnordered::new();
+                    futures.push(strategy_manager.emit().await.unwrap());
+                    futures.push(risk_manager.emit().await.unwrap());
+                    futures.push(e.emit().await.unwrap());
+                    futures.push(trade_emitter.emit().await.unwrap());
+                    futures.push(kline_emitter.emit().await.unwrap());
+
+                    while let Some(done) = futures.next().await {
+                        continue
+                    }
+                    for t in r_threads {
+                        t.join().unwrap();
+                    }
                 });
             }));
             
+            grpc_server += 1;
             
-            
-           
-    
-            
-    
-    
-    
-    
+        }
+        drop(trades_channel.1);
+        for worker in workers {
+            worker.join().unwrap();
         }
     }
     
