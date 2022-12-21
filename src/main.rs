@@ -7,17 +7,20 @@ use once_cell::sync::Lazy;
 use std::env;
 use std::sync::Mutex;
 use async_std::sync::Arc;
-use binance_q_mongodb::loader::{KlineEmitter, load_history_from_archive, load_klines_from_archive, TfTradeEmitter};
+use binance_q_mongodb::loader::{KlineEmitter, load_history_from_archive, load_klines_from_archive, start_kline_loader, start_loader, TfTradeEmitter};
 use binance_q_types::{AccessKey, ExchangeId, Mode, ExecutionCommand, GlobalConfig, Kline, Order, Symbol, TfTrades, Trade};
 use std::fmt::Write;
 use std::time::{Duration, SystemTime};
 use async_broadcast::{Receiver, Sender};
+use binance::futures::general::FuturesGeneral;
+use binance::futures::market::FuturesMarket;
 use clap::{arg, command, Command, value_parser};
 use clap::builder::TypedValueParser;
 use futures::stream::FuturesUnordered;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use subprocess::Exec;
 use tokio::sync::RwLock;
+use binance::api::Binance;
 use binance_q_events::{EventEmitter, EventSink};
 use binance_q_executors::live::BinanceLiveAccount;
 use binance_q_executors::simulated::SimulatedAccount;
@@ -212,6 +215,10 @@ async fn async_main() -> anyhow::Result<()> {
                 trades_channel.0,
             )
                   .await));
+            let s_e = executor.clone();
+            std::thread::spawn(move || {
+                s_e.listen().unwrap();
+            });
             back_tester.run(pb.clone(), trades_channel.1, tf_trades_channel.0, orders_channel.0, executor).await?;
             pb.finish_with_message(format!(
                 "[+] back_tester > Back-test finished in {:?} seconds",
@@ -259,6 +266,10 @@ async fn async_main() -> anyhow::Result<()> {
                 trades_channel.0,
             )
                   .await));
+            let s_e = executor.clone();
+            std::thread::spawn(move || {
+                s_e.listen().unwrap();
+            });
             
             let back_tester = BackTesterMulti::new(global_config, b_configs, symbols_i);
             let start = std::time::SystemTime::now();
@@ -330,12 +341,14 @@ async fn async_main() -> anyhow::Result<()> {
         let trades_channel: (Sender<Trade>, Receiver<Trade>) = async_broadcast::broadcast(1000);
         let from_time = SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 - length;
         let mut syms = vec![];
+        let general = FuturesGeneral::new(None, None);
         for s in symbols.clone() {
+            let asset = general.get_symbol_info(s.clone()).await.unwrap();
             syms.push(Symbol {
                 symbol: s.clone(),
                 exchange: ExchangeId::Binance,
-                base_asset_precision: 1,
-                quote_asset_precision: 2
+                base_asset_precision: asset.quantity_precision as u32,
+                quote_asset_precision: asset.price_precision as u32
             });
         };
         let executor: Box<Arc<dyn TradeExecutor<Account=BinanceLiveAccount>>> = Box::new(Arc::new(binance_q_executors::live::BinanceLiveExecutor::new(
@@ -346,7 +359,11 @@ async fn async_main() -> anyhow::Result<()> {
             trades_channel.0,
         )
               .await));
-        
+        let s_e = executor.clone();
+        std::thread::spawn(move || {
+            s_e.listen().unwrap();
+        });
+    
         let mut grpc_server = 50011;
         let mut workers = vec![];
         let verbose = main_matches.get_flag("verbose");
@@ -367,7 +384,7 @@ async fn async_main() -> anyhow::Result<()> {
                 mode: Mode::Live
             };
             workers.push(std::thread::spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
+                let runtime = tokio::runtime::Builder::new_multi_thread()
                       .enable_all()
                       .build()
                       .unwrap();
@@ -467,12 +484,11 @@ async fn async_main() -> anyhow::Result<()> {
                     r_threads.push(std::thread::spawn(move || {
                         EventSink::<Kline>::listen(&rc_1).unwrap();
                     }));
-                    let s_e = e.clone();
-                    r_threads.push(std::thread::spawn(move || {
-                        s_e.listen().unwrap();
-                    }));
+
                     
                     let mut futures = FuturesUnordered::new();
+                    futures.push(start_loader(symbol.clone(), tf1).await);
+                    futures.push(start_kline_loader(symbol.clone(), ktf.clone(),from_time).await);
                     futures.push(strategy_manager.emit().await.unwrap());
                     futures.push(risk_manager.emit().await.unwrap());
                     futures.push(e.emit().await.unwrap());

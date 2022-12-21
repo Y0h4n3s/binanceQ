@@ -561,8 +561,8 @@ pub async fn load_history(key: AccessKey, symbol: Symbol, fetch_history_span: u6
 }
 
 // TODO: use websockets for this
-pub async fn start_loader(key: AccessKey, symbol: Symbol, tf1: u64) -> JoinHandle<()> {
-    let market = FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
+pub async fn start_loader( symbol: Symbol, tf1: u64) -> JoinHandle<()> {
+    let market = FuturesMarket::new(None, None);
     tokio::spawn(async move {
         let mut last_id = None;
         let mut start_time = Some(
@@ -603,11 +603,11 @@ pub async fn start_kline_loader(symbol: Symbol, tf: String, from: u64) -> JoinHa
     let market = FuturesMarket::new(None, None);
     tokio::spawn(async move {
         let mongo_client = MongoClient::new().await;
-        let mut start_time = Some(from);
+        let mut last = 0;
         
         loop {
             let trades_result = market
-                .get_klines(&symbol.symbol.clone(), tf.clone(), Some(1000), from, None)
+                .get_klines(&symbol.symbol.clone(), tf.clone(), Some(1), None, None)
                 .await;
             if let Ok(t) = trades_result {
                 match t {
@@ -615,10 +615,9 @@ pub async fn start_kline_loader(symbol: Symbol, tf: String, from: u64) -> JoinHa
                         if klines.len() == 0 {
                             continue;
                         }
-                        klines.sort_by(|a, b| a.open_time.cmp(&b.open_time));
-                        
+
                         for kline in klines {
-                            if kline.close_time  as u64 > start_time.unwrap() {
+                            if kline.close_time  as u64 > last {
                                 let k = Kline {
                                     symbol: symbol.clone(),
                                     open_time: kline.open_time as u64,
@@ -634,7 +633,8 @@ pub async fn start_kline_loader(symbol: Symbol, tf: String, from: u64) -> JoinHa
                                     taker_buy_quote_volume: Decimal::from_str(&kline.taker_buy_quote_asset_volume).unwrap(),
                                     ignore: 0
                                 };
-                                start_time = Some(k.close_time as u64);
+    
+                                last = k.close_time;
     
                                 mongo_client.kline.insert_one(k, None).await.unwrap();
                             }

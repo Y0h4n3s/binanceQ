@@ -184,10 +184,7 @@ impl BackTester {
         r_threads.push(std::thread::spawn(move || {
             EventSink::<Kline>::listen(&rc_1).unwrap();
         }));
-        let s_e = executor.clone();
-        r_threads.push(std::thread::spawn(move || {
-            s_e.listen().unwrap();
-        }));
+
         let sm = strategy_manager.clone();
         r_threads.push(std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()

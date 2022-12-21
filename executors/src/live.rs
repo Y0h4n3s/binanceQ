@@ -17,6 +17,7 @@ use tokio::task::JoinHandle;
 use binance::api::Binance;
 
 use binance::futures::account::{CustomOrderRequest, FuturesAccount, TimeInForce};
+use binance::futures::market::FuturesMarket;
 use uuid::Uuid;
 use crate::notification::TelegramNotifier;
 
@@ -26,6 +27,7 @@ type ArcSet<T> = Arc<RwLock<HashSet<T>>>;
 #[derive(Clone)]
 pub struct BinanceLiveAccount {
 	pub account: Arc<RwLock<FuturesAccount>>,
+	pub market: Arc<RwLock<FuturesMarket>>,
 	pub notifier: Arc<RwLock<TelegramNotifier>>,
 	pub symbol_accounts: ArcMap<Symbol, SymbolAccount>,
 	pub open_orders: ArcMap<Symbol, ArcSet<OrderStatus>>,
@@ -93,6 +95,7 @@ impl BinanceLiveAccount {
 		let positions = Arc::new(RwLock::new(HashMap::new()));
 		
 		let account = FuturesAccount::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
+		let market = FuturesMarket::new(None, None);
 		for symbol in symbols {
 			let symbol_account = SymbolAccount {
 				symbol: symbol.clone(),
@@ -130,6 +133,7 @@ impl BinanceLiveAccount {
 			order_history,
 			trade_history,
 			positions,
+			market: Arc::new(RwLock::new(market)),
 			notifier: Arc::new(RwLock::new(TelegramNotifier::new())),
 			tf_trades: Arc::new(RwLock::new(tf_trades)),
 			account: Arc::new(RwLock::new(account)),
@@ -192,14 +196,37 @@ impl ExchangeAccountInfo for BinanceLiveAccount {
 	}
 	
 	async fn get_position(&self, symbol: &Symbol) -> Arc<Position> {
-		let positions = self.positions.read().await;
-		let position_lock = positions.get(symbol).unwrap();
-		let position = position_lock.read().await.clone();
-		Arc::new(position)
+		let account = self.account.read().await;
+		if let Ok(position_info) = account.position_information(symbol.symbol.clone()).await {
+			if position_info.len() <= 0 {
+				return Arc::new(Position::new(Side::Ask, symbol.clone(), Decimal::ZERO, Decimal::ZERO));
+			} else {
+				let pos = position_info.first().unwrap();
+				let position = Position::new(
+					if pos.position_amount > 0.0 {
+						Side::Bid
+					} else {
+						Side::Ask
+					},
+					symbol.clone(),
+					Decimal::from_f64(pos.position_amount.abs()).unwrap(),
+					Decimal::from_f64(pos.entry_price).unwrap(),
+				);
+				return Arc::new(position);
+			}
+		} else {
+			return Arc::new(Position::new(Side::Ask, symbol.clone(), Decimal::ZERO, Decimal::ZERO));
+		}
+		
+
 	}
 	
 	async fn get_spread(&self, symbol: &Symbol) -> Arc<Spread> {
-		Default::default()
+		let market = self.market.read().await;
+		let price = market.get_price(symbol.symbol.clone()).await.unwrap();
+		let mut spread = Spread::new( symbol.clone());
+		spread.spread = Decimal::from_f64(price.price).unwrap();
+		Arc::new(spread)
 	}
 	async fn get_order(&self, symbol: &Symbol, id: &Uuid) -> Vec<Order> {
 		vec![]
@@ -212,16 +239,42 @@ impl ExchangeAccount for BinanceLiveAccount {
 		let account = self.account.read().await;
 		let symbol = order.symbol.clone();
 		match order.order_type {
-			OrderType::Limit | OrderType::TakeProfit(_)=> {
+			OrderType::Limit => {
 				if let Ok(transaction) = account.limit_buy(symbol.symbol.clone(), order.quantity.to_f64().unwrap(), order.price.to_f64().unwrap(), TimeInForce::GTC).await {
 					Ok(OrderStatus::Pending(order))
 				} else {
 					Ok(OrderStatus::Canceled(order, "Failed to place order".to_string()))
 				}
 			}
+			OrderType::TakeProfit(_)=> {
+				let or = CustomOrderRequest {
+					symbol: symbol.symbol.clone(),
+					side: binance::account::OrderSide::Buy,
+					position_side: None,
+					order_type: binance::futures::account::OrderType::TakeProfitMarket,
+					time_in_force: Some(TimeInForce::GTC),
+					qty: Some(order.quantity.to_f64().unwrap()),
+					reduce_only: Some(true),
+					price: None,
+					stop_price: Some(order.price.to_f64().unwrap()),
+					close_position: None,
+					activation_price: None,
+					callback_rate: None,
+					working_type: None,
+					price_protect: None
+				};
+				let res = account.custom_order(or).await;
+				if let Ok(transaction) = res {
+					Ok(OrderStatus::Pending(order))
+				} else {
+					Ok(OrderStatus::Canceled(order, "Failed to place order".to_string()))
+				}
+			}
+			
 			
 			OrderType::StopLoss(id) => {
-				if let Ok(transaction) = account.stop_market_close_buy(symbol.symbol.clone(), order.price.to_f64().unwrap()).await {
+				let res = account.stop_market_close_buy(symbol.symbol.clone(), order.price.to_f64().unwrap()).await;
+				if let Ok(transaction) = res {
 					Ok(OrderStatus::Pending(order))
 				} else {
 					Ok(OrderStatus::Canceled(order, "Failed to place order".to_string()))
@@ -263,8 +316,33 @@ impl ExchangeAccount for BinanceLiveAccount {
 		let account = self.account.read().await;
 		let symbol = order.symbol.clone();
 		match order.order_type {
-			OrderType::Limit | OrderType::TakeProfit(_) => {
+			OrderType::Limit  => {
 				if let Ok(transaction) = account.limit_sell(symbol.symbol.clone(), order.quantity.to_f64().unwrap(), order.price.to_f64().unwrap(), TimeInForce::GTC).await {
+					Ok(OrderStatus::Pending(order))
+				} else {
+					Ok(OrderStatus::Canceled(order, "Failed to place order".to_string()))
+				}
+			}
+			
+			OrderType::TakeProfit(_)=> {
+				let or = CustomOrderRequest {
+					symbol: symbol.symbol.clone(),
+					side: binance::account::OrderSide::Sell,
+					position_side: None,
+					order_type: binance::futures::account::OrderType::TakeProfitMarket,
+					time_in_force: Some(TimeInForce::GTC),
+					qty: Some(order.quantity.to_f64().unwrap()),
+					reduce_only: Some(true),
+					price: None,
+					stop_price: Some(order.price.to_f64().unwrap()),
+					close_position: None,
+					activation_price: None,
+					callback_rate: None,
+					working_type: None,
+					price_protect: None
+				};
+				let res = account.custom_order(or).await;
+				if let Ok(transaction) = res {
 					Ok(OrderStatus::Pending(order))
 				} else {
 					Ok(OrderStatus::Canceled(order, "Failed to place order".to_string()))
