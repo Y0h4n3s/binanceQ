@@ -10,12 +10,18 @@ use async_std::sync::Arc;
 use binance_q_mongodb::loader::{load_history_from_archive, load_klines_from_archive};
 use binance_q_types::{AccessKey, ExchangeId, GlobalConfig, Order, Symbol, TfTrades, Trade};
 use std::fmt::Write;
+use std::time::Duration;
 use async_broadcast::{Receiver, Sender};
 use clap::{arg, command, Command, value_parser};
 use clap::builder::TypedValueParser;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use subprocess::Exec;
+use tokio::sync::RwLock;
+use binance_q_executors::live::BinanceLiveAccount;
 use binance_q_executors::simulated::SimulatedAccount;
-use binance_q_executors::TradeExecutor;
+use binance_q_executors::{ExchangeAccount, TradeExecutor};
+use binance_q_managers::risk_manager::{RiskManager, RiskManagerConfig};
+use binance_q_managers::strategy_manager::{StrategyManager, StrategyManagerConfig};
 use crate::back_tester::{BackTester, BackTesterConfig, BackTesterMulti};
 
 
@@ -90,8 +96,8 @@ async fn async_main() -> anyhow::Result<()> {
                         arg!(--loghistory "Log tftrades history from agg trades")
                             .required(false)
                             
-                    
-          )).subcommand(Command::new("download")
+                    )
+          ).subcommand(Command::new("download")
           .arg(
               arg!(--ktf <KLINE_TF> "Kline timeframe")
                     .required(false)
@@ -121,6 +127,33 @@ async fn async_main() -> anyhow::Result<()> {
     ).arg(arg!(--noaggtrades "Don't download aggtrades")
           .required(false))
           .about("download candles"))
+          .subcommand(
+              Command::new("live")
+                    .about("Live mode")
+                    .arg(
+                        arg!(-l --length <SECONDS> "The span of the backtest in seconds")
+                              .required(true)
+                              .value_parser(value_parser!(u64)),
+                    )
+                    .arg(
+                        arg!(--timeframe1 <SECONDS> "The first timeframe to use")
+                              .required(true)
+                              .value_parser(value_parser!(u64)),
+                
+                    )
+                    .arg(
+                        arg!(-s --symbols <SYMBOLS> "The instruments to backtest")
+                              .required(false)
+                              .num_args(1..)
+                              .default_value("BTCUSDT")
+                
+                    )
+                    .arg(
+                        arg!(--ktf <KLINE_TF> "Kline timeframe")
+                              .required(false)
+                              .default_value("15m")
+                
+                    ))
           .get_matches();
     
     if let Some(matches) = main_matches.subcommand_matches("backtest") {
@@ -281,6 +314,133 @@ async fn async_main() -> anyhow::Result<()> {
         
     }
     
-
+    if let Some(matches) = main_matches.subcommand_matches("live") {
+        let mut symbols = matches.get_many::<String>("symbols").unwrap().clone();
+        let ktf = matches.get_one::<String>("ktf").unwrap();
+    
+        let tf1 = *matches.get_one::<u64>("timeframe1").ok_or(anyhow::anyhow!("Invalid tf1"))?;
+    
+        let orders_channel: (Sender<Order>, Receiver<Order>) = async_broadcast::broadcast(1000);
+        let tf_trades_channel: (Sender<TfTrades>, Receiver<TfTrades>) = async_broadcast::broadcast(10000);
+        let trades_channel: (Sender<Trade>, Receiver<Trade>) = async_broadcast::broadcast(1000);
+        
+        let mut syms = vec![];
+        for s in symbols.clone() {
+            syms.push(Symbol {
+                symbol: s.clone(),
+                exchange: ExchangeId::Binance,
+                base_asset_precision: 1,
+                quote_asset_precision: 2
+            });
+        };
+        let executor: Box<Arc<dyn TradeExecutor<Account=BinanceLiveAccount>>> = Box::new(Arc::new(binance_q_executors::live::BinanceLiveExecutor::new(
+            KEY.clone(),
+            orders_channel.1,
+            tf_trades_channel.1,
+            syms.clone(),
+            trades_channel.0,
+        )
+              .await));
+        
+        let mut grpc_server = 50011;
+        let mut workers = vec![];
+    
+        for symbol in syms {
+    
+            let t_r = trades_channel.1.clone();
+            let t_t = tf_trades_channel.0.clone();
+            let o_t = orders_channel.0.clone();
+            let e = executor.clone();
+         
+            let global_config = GlobalConfig {
+                symbol: symbol.clone(),
+                tf1,
+                tf2: tf1,
+                tf3: tf1,
+                key: KEY.clone(),
+                verbose: main_matches.get_flag("verbose")
+            };
+            workers.push(std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                      .enable_all()
+                      .build()
+                      .unwrap();
+                runtime.block_on(async move {
+    
+                    let done = Arc::new(std::sync::RwLock::new(false));
+                    let bd = done.clone();
+                    let s = symbol.symbol.clone();
+                    std::thread::spawn( move || {
+                        println!("[?] live > Launching Signal Generators for {}", s);
+        
+                        let mut process = Exec::cmd("python3")
+                              .arg("./python/signals/signal_generator.py")
+                              .arg("--symbol")
+                              .arg(&s)
+                              .arg("--grpc-port")
+                              .arg(&grpc_server.to_string())
+                              .arg("--mode")
+                              .arg("Live")
+                              .popen()
+                              .unwrap();
+                        loop {
+                            if bd.read().unwrap().clone() {
+                                process.kill().unwrap();
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(2000));
+                        }
+                    });
+    
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+    
+                    let klines_channel = async_broadcast::broadcast(10000);
+                    let execution_commands_channel = async_broadcast::broadcast(100);
+    
+    
+    
+                    let inner_account: Box<Arc<dyn ExchangeAccount>> =
+                          Box::new(e.get_account().clone());
+                    println!("[?] live > Initializing Risk Manager for {}",  symbol.symbol);
+                    // calculate position size based on risk tolerance and send orders to executors
+                    let mut risk_manager = RiskManager::new(
+                        global_config.clone(),
+                        RiskManagerConfig {
+                            max_daily_losses: 100,
+                            max_risk_per_trade: 0.01,
+                        },
+                        klines_channel.1.clone(),
+                        t_r,
+                        execution_commands_channel.1,
+                        inner_account,
+                    );
+    
+    
+                    let inner_account: Box<Arc<dyn ExchangeAccount>> =
+                          Box::new(e.get_account().clone());
+    
+                    // receive strategy edges from multiple strategies and forward them to risk manager
+                    println!("[?] back_tester> Initializing Strategy Manager for {}",  symbol.symbol);
+                    let mut strategy_manager =
+                          StrategyManager::new(
+                              StrategyManagerConfig{ symbol: global_config.symbol.clone() }, global_config.clone(), klines_channel.1, grpc_server.to_string(), inner_account).await;
+    
+                });
+            }));
+            
+            
+            
+           
+    
+            
+    
+    
+    
+    
+        }
+    }
+    
+    
+    
     Ok(())
 }

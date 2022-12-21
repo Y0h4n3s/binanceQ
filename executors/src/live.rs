@@ -23,6 +23,7 @@ use crate::notification::TelegramNotifier;
 type ArcMap<K, V> = Arc<RwLock<HashMap<K, V>>>;
 type ArcSet<T> = Arc<RwLock<HashSet<T>>>;
 
+#[derive(Clone)]
 pub struct BinanceLiveAccount {
 	pub account: Arc<RwLock<FuturesAccount>>,
 	pub notifier: Arc<RwLock<TelegramNotifier>>,
@@ -46,6 +47,36 @@ pub struct BinanceLiveExecutor {
 	order_status_q: Arc<RwLock<VecDeque<OrderStatus>>>,
 	pub order_status_subscribers: Arc<RwLock<Sender<OrderStatus>>>,
 	order_working: Arc<std::sync::RwLock<bool>>,
+}
+
+impl BinanceLiveExecutor {
+	pub async fn new(
+		key: AccessKey,
+		orders_rx: Receiver<Order>,
+		trades_rx: Receiver<TfTrades>,
+		symbols: Vec<Symbol>,
+		trades: Sender<Trade>,
+	) -> Self {
+		let order_statuses_channel = async_broadcast::broadcast(100);
+		let mut account = BinanceLiveAccount::new(key, trades_rx, order_statuses_channel.1, symbols).await;
+		// account.subscribe(trades).await;
+		// account.emit().await;
+		let ac = account.clone();
+		std::thread::spawn(move || {
+			EventSink::<TfTrades>::listen(&ac).unwrap();
+		});
+		let ac = account.clone();
+		std::thread::spawn(move || {
+			EventSink::<OrderStatus>::listen(&ac).unwrap();
+		});
+		Self {
+			account: Arc::new(account),
+			orders: Arc::new(RwLock::new(orders_rx)),
+			order_status_q: Arc::new(RwLock::new(VecDeque::new())),
+			order_status_subscribers: Arc::new(RwLock::new(order_statuses_channel.0)),
+			order_working: Arc::new(std::sync::RwLock::new(false)),
+		}
+	}
 }
 
 impl BinanceLiveAccount {
