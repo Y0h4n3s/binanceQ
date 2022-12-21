@@ -174,7 +174,7 @@ pub async fn load_klines_from_archive(symbol: Symbol, tf: String, fetch_history_
     let today = chrono::DateTime::<Utc>::from(SystemTime::now());
     let tf = Arc::new(tf);
     let symbol = Arc::new(symbol);
-    let permits = Arc::new(Semaphore::new(10));
+    let permits = Arc::new(Semaphore::new(1));
     let months = Arc::new(RwLock::new(vec![]));
     // initialize dates with 20 years of days if span is -1
     if fetch_history_span == -1 {
@@ -345,7 +345,7 @@ pub async fn load_history_from_archive(symbol: Symbol, fetch_history_span: i64, 
     
     let today = chrono::DateTime::<Utc>::from(SystemTime::now());
     let symbol = Arc::new(symbol);
-    let permits = Arc::new(Semaphore::new(10));
+    let permits = Arc::new(Semaphore::new(1));
     let months = Arc::new(RwLock::new(vec![]));
     // initialize dates with 20 years of days if span is -1
     if fetch_history_span == -1 {

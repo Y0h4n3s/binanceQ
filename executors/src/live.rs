@@ -18,12 +18,14 @@ use binance::api::Binance;
 
 use binance::futures::account::{CustomOrderRequest, FuturesAccount, TimeInForce};
 use uuid::Uuid;
+use crate::notification::TelegramNotifier;
 
 type ArcMap<K, V> = Arc<RwLock<HashMap<K, V>>>;
 type ArcSet<T> = Arc<RwLock<HashSet<T>>>;
 
 pub struct BinanceLiveAccount {
 	pub account: Arc<RwLock<FuturesAccount>>,
+	pub notifier: Arc<RwLock<TelegramNotifier>>,
 	pub symbol_accounts: ArcMap<Symbol, SymbolAccount>,
 	pub open_orders: ArcMap<Symbol, ArcSet<OrderStatus>>,
 	pub order_history: ArcMap<Symbol, ArcSet<OrderStatus>>,
@@ -97,6 +99,7 @@ impl BinanceLiveAccount {
 			order_history,
 			trade_history,
 			positions,
+			notifier: Arc::new(RwLock::new(TelegramNotifier::new())),
 			tf_trades: Arc::new(RwLock::new(tf_trades)),
 			account: Arc::new(RwLock::new(account)),
 			trade_q: Arc::new(RwLock::new(VecDeque::new())),

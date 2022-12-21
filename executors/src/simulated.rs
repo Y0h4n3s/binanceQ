@@ -378,7 +378,6 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                             let position = all_positions.get(&symbol).unwrap();
                                             let mut w = position.write().await;
                                             let mut or = order.clone();
-                                            or.quantity = w.qty;
                                             or.price = Decimal::from_f64(trade.price).unwrap();
                                             if let Some(trade) = w.apply_order(&or, trade.timestamp) {
                                                 let mut trade_q = trade_q.write().await;
@@ -493,13 +492,38 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                 // if position is neutral, remove all stop and take profit orders
                                 if !w.is_open() {
                                     let open_orders = open_orders.read().await;
+                                    let to_keep_ids: Vec<Uuid> = open_orders
+                                        .iter()
+                                        .filter_map(|o| {
+                                            match o {
+                                                OrderStatus::Filled(or) | OrderStatus::Pending(or) => {
+                                                    match or.order_type {
+                                                        OrderType::Market | OrderType::Limit => {
+                                                            if order.id != or.id {
+                                                                Some(or.id)
+                                                            } else {
+                                                                None
+                                                            }
+    
+                                                            
+                                                        }
+                                                        _ => None,
+                                                    }
+                                                }
+                                                _ => None,
+                                            }
+                                        })
+                                        .collect();
                                     open_orders.iter().for_each(|o| {
+                                        println!("to keep {:?} {:?}", to_keep_ids, open_orders);
                                         match o {
                                             OrderStatus::Pending(or) | OrderStatus::PartiallyFilled(or, _) => {
                                                 match or.order_type {
-                                                    OrderType::TakeProfit(for_id) | OrderType::StopLoss(for_id) => {
-                                                        remove_ids.push(or.id);
-                                                        remove_for_ids.push(for_id);
+                                                    OrderType::TakeProfit(for_id) | OrderType::StopLoss(for_id) | OrderType::StopLossTrailing(for_id, _) => {
+                                                        if to_keep_ids.iter().find(|id| **id == for_id).is_none() {
+                                                            remove_for_ids.push(for_id);
+                                                            remove_ids.push(or.id);
+                                                        }
                                                     }
                                                     _ => {}
                                                 }

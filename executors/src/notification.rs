@@ -3,12 +3,25 @@ use tokio::sync::RwLock;
 use teloxide::prelude::*;
 use async_trait::async_trait;
 use teloxide::types::{MessageId, Recipient};
+use once_cell::sync::Lazy;
+
+static CHAT_ID: Lazy<Recipient> = Lazy::new(|| {
+	Recipient::Id(ChatId(5173199735))
+});
 
 pub struct TelegramNotifier {
 	pub bot: Arc<RwLock<Bot>>,
-	pub chat_id: Recipient,
-	pub message: String,
-	pub message_sent: bool,
+
+}
+
+impl TelegramNotifier {
+	pub fn new() -> Self {
+		let bot  = Arc::new(RwLock::new(Bot::from_env()));
+		
+		Self {
+			bot,
+		}
+	}
 }
 
 pub struct Notification {
@@ -31,18 +44,12 @@ impl Notifier for TelegramNotifier {
 		let attachment = notification.attachment;
 		let message_id = notification.message_id;
 		let message_sent = notification.message_sent;
-		if message_sent {
-			bot.edit_message_text(self.chat_id.clone(), message_id, message)
+		
+			bot.send_message(CHAT_ID.clone(), message)
 				.parse_mode(teloxide::types::ParseMode::Markdown)
 				.send()
 				.await
 				.unwrap();
-		} else {
-			bot.send_message(self.chat_id.clone(), message)
-				.parse_mode(teloxide::types::ParseMode::Markdown)
-				.send()
-				.await
-				.unwrap();
-		}
+		
 	}
 }

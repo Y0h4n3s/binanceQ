@@ -100,6 +100,7 @@ impl SignalGenerator for SignalGeneratorService {
 				
 			}
 		}
+		tokio::time::sleep(Duration::from_millis(100)).await;
 		Ok(Response::new(NotifyResponse { success: true, message: "ok".to_string() }))
 	}
 	
