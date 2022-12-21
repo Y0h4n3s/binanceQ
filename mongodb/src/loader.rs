@@ -25,6 +25,7 @@ use std::io::{Read, Write};
 use futures::StreamExt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use async_std::prelude::FutureExt;
+use binance::model::KlineSummaries::AllKlineSummaries;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::task::JoinHandle;
 use indicatif::ProgressBar;
@@ -583,10 +584,10 @@ pub async fn start_loader(key: AccessKey, symbol: Symbol, tf1: u64) -> JoinHandl
                         if trades.len() <= 2 {
                             continue;
                         }
-                        // if let Ok(_) = insert_trade_entries(&trades, symbol.clone(), mongo_client.clone()).await {
-                        //     last_id = Some(trades.last().unwrap().agg_id + 1);
-                        //     // println!("{}: {} {:?}", tf1, first_id.agg_id,  last_id.unwrap());
-                        // }
+                        if let Ok(_) = insert_trade_entries(&trades, symbol.clone(), mongo_client.clone(), tf1).await {
+                            last_id = Some(trades.last().unwrap().agg_id + 1);
+                            // println!("{}: {} {:?}", tf1, first_id.agg_id,  last_id.unwrap());
+                        }
                     }
                 }
             }
@@ -594,6 +595,55 @@ pub async fn start_loader(key: AccessKey, symbol: Symbol, tf1: u64) -> JoinHandl
                 start_time = None;
             }
             tokio::time::sleep(Duration::from_secs(tf1)).await;
+        }
+    })
+}
+
+pub async fn start_kline_loader(symbol: Symbol, tf: String, from: u64) -> JoinHandle<()> {
+    let market = FuturesMarket::new(None, None);
+    tokio::spawn(async move {
+        let mongo_client = MongoClient::new().await;
+        let mut start_time = Some(from);
+        
+        loop {
+            let trades_result = market
+                .get_klines(&symbol.symbol.clone(), tf.clone(), Some(1000), from, None)
+                .await;
+            if let Ok(t) = trades_result {
+                match t {
+                    AllKlineSummaries(mut klines) => {
+                        if klines.len() == 0 {
+                            continue;
+                        }
+                        klines.sort_by(|a, b| a.open_time.cmp(&b.open_time));
+                        
+                        for kline in klines {
+                            if kline.close_time  as u64 > start_time.unwrap() {
+                                let k = Kline {
+                                    symbol: symbol.clone(),
+                                    open_time: kline.open_time as u64,
+                                    open: Decimal::from_str(&kline.open).unwrap(),
+                                    high: Decimal::from_str(&kline.high).unwrap(),
+                                    low: Decimal::from_str(&kline.low).unwrap(),
+                                    close: Decimal::from_str(&kline.close).unwrap(),
+                                    volume: Decimal::from_str(&kline.volume).unwrap(),
+                                    close_time: kline.close_time as u64,
+                                    quote_volume: Decimal::from_str(&kline.quote_asset_volume).unwrap(),
+                                    count: kline.number_of_trades as u64,
+                                    taker_buy_volume: Decimal::from_str(&kline.taker_buy_base_asset_volume).unwrap(),
+                                    taker_buy_quote_volume: Decimal::from_str(&kline.taker_buy_quote_asset_volume).unwrap(),
+                                    ignore: 0
+                                };
+                                start_time = Some(k.close_time as u64);
+    
+                                mongo_client.kline.insert_one(k, None).await.unwrap();
+                            }
+                        }
+                    }
+                }
+            }
+            
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     })
 }
@@ -607,7 +657,7 @@ pub struct TfTradeEmitter {
 }
 
 pub struct KlineEmitter {
-    subscribers: Arc<RwLock<Sender<TfTrades>>>,
+    subscribers: Arc<RwLock<Sender<Kline>>>,
     pub tf: String,
     global_config: GlobalConfig,
 }
@@ -652,95 +702,62 @@ impl TfTradeEmitter {
         Ok(trades)
     }
 
-    pub async fn log_history(&self, symbol: Symbol) {
-        let mut last_id = 1;
-        let mongo_client = MongoClient::new().await;
-        let first_trade = mongo_client.trades.find(doc! {
-            "symbol": bson::to_bson(&symbol.clone()).unwrap()
-        },
-       FindOptions::builder()
-             .sort(doc! {
-                "timestamp": 1
-                })
-             .limit(1)
-             .allow_disk_use(true)
-             .build()
-        ).await.unwrap().try_collect().await.unwrap_or_else(|_| vec![]).first().unwrap().clone();
-        
-        let all_trades = mongo_client.trades.find(doc! {
-            "symbol": bson::to_bson(&symbol.clone()).unwrap()
-        },
-                                                  FindOptions::builder()
- 
-                                                        .allow_disk_use(true)
-                                                        .build()
-        ).await.unwrap().try_collect().await.unwrap_or_else(|_| vec![]).first().unwrap().clone();
-        println!("{:?} {:?}", first_trade.timestamp, first_trade);
-        let last_trade = mongo_client.trades.find(doc! {
-            "symbol": bson::to_bson(&symbol.clone()).unwrap()
-        },
-                                                       FindOptions::builder()
-                                                             .sort(doc! {
-                "timestamp": -1
-                })
-                                                             .limit(1)
-                                                             .allow_disk_use(true)
-                                                             .build()
-        ).await.unwrap().try_collect().await.unwrap_or_else(|_| vec![]).first().unwrap().clone();
-        println!("{:?} {:?}", last_trade.timestamp, last_trade);
-        println!("{}", ((last_trade.timestamp - first_trade.timestamp) / (self.tf * 1000)));
-        let mut boundaries = vec![];
-        for i in 0..((last_trade.timestamp - first_trade.timestamp) / (self.tf * 1000)) {
-            boundaries.push(first_trade.timestamp + i * (self.tf * 1000));
-        }
-        boundaries.push(last_trade.timestamp + 1);
-        
-        for i in (0..boundaries.len()).step_by(100) {
-            println!("{} {}", i, boundaries.len());
-            if i == 0 {
-                continue;
-            }
-            let my_boundaries = boundaries[i - 100..i].to_vec();
-            let pipeline = vec![
-                doc! {
-                "$match": doc! {
-                                "symbol": bson::to_bson(&symbol.clone()).unwrap()
-
-                }
-            },
-                doc! {
-                "$bucket": doc! {
-                    "groupBy": "$timestamp",
-                    "boundaries": bson::to_bson(&boundaries).unwrap(),
-                    "default": "other",
-                    "output": doc! {
-                        "trades": doc! {
-                            "$push": doc! {
-                                "timestamp": "$timestamp",
-                            }
-                        }
-                    }
-                    
-                }
-            },
-            ];
-    
-            let mut buckets = mongo_client.trades.aggregate(pipeline, AggregateOptions::builder().allow_disk_use(true).build()).await.unwrap();
-            while let Some(Ok(res)) = buckets.next().await {
-                println!("{:?}", res);
-            }
-        }
-        
-        
-
-      
-        }
     
 }
 
 
 
 
+
+#[async_trait]
+impl EventEmitter<Kline> for KlineEmitter {
+    fn get_subscribers(&self) -> Arc<RwLock<Sender<Kline>>> {
+        self.subscribers.clone()
+    }
+    
+    async fn emit(&self) -> anyhow::Result<JoinHandle<()>> {
+        let mongo_client = MongoClient::new().await;
+        let config = self.global_config.clone();
+
+        let last_entry = mongo_client
+              .kline
+              .find_one(
+                  doc! {"symbol.symbol": bson::to_bson(&config.symbol.symbol)?},
+                  FindOneOptions::builder().sort(doc! {"close_time": -1}).build(),
+              )
+              .await?;
+        let mut last_timestamp = 0_u64;
+        if let Some(t) = last_entry {
+            last_timestamp = t.close_time;
+        }
+        let tf = self.tf.clone();
+        let subscribers = self.subscribers.clone();
+        Ok(tokio::spawn(async move {
+            loop {
+                let last_entry = mongo_client
+                      .kline
+                      .find_one(
+                          doc! {"symbol.symbol": bson::to_bson(&config.symbol.symbol).unwrap()},
+                          FindOneOptions::builder().sort(doc! {"close_time": -1}).build()
+                      )
+                      .await;
+                
+                if let Ok(Some(t)) = last_entry {
+                    if t.close_time > last_timestamp {
+                        last_timestamp = t.close_time;
+                        subscribers.read().await.broadcast(t).await.unwrap();
+                    }
+                    
+                }
+    
+                tokio::time::sleep(Duration::from_secs(1)).await;
+    
+    
+            }
+            
+        }))
+    }
+}
 
 #[async_trait]
 impl EventEmitter<TfTrades> for TfTradeEmitter {

@@ -94,15 +94,7 @@ impl BackTester {
     pub async fn run(&self, pb: ProgressBar, trades_receiver: Receiver<Trade>, tf_trades_tx: Sender<TfTrades>, orders_tx: Sender<Order>, executor: Box<Arc<dyn TradeExecutor<Account = SimulatedAccount>>>) -> anyhow::Result<()> {
         let mongo_client = MongoClient::new().await;
 
-        if self.config.log_history {
-            
-                let tf_trade = TfTradeEmitter::new(self.global_config.tf1, self.global_config.clone());
-                tf_trade.log_history(self.config.symbol.clone()).await;
-            println!("[?] back_tester> Tftrades Loaded for {}", self.config.symbol.symbol);
-    
-            // }
-        }
-        
+
         // Start the python signal generator for this symbol
         let config = self.config.clone();
         let backtest_done = Arc::new(RwLock::new(false));
