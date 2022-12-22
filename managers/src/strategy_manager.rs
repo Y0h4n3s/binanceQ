@@ -294,7 +294,7 @@ pub struct StrategyManagerConfig {
 
 impl StrategyManager {
 	pub async fn new(config: StrategyManagerConfig, global_config: GlobalConfig, klines: Receiver<Kline>, grpc_server_port: String, account: Box<Arc<dyn ExchangeAccount>>) -> Self {
-		let addr = format!("[::1]:{}", grpc_server_port).parse().unwrap();
+		let addr = format!("0.0.0.0:{}", grpc_server_port).parse().unwrap();
 		let service = SignalGeneratorService {
 			signals_q: Arc::new(RwLock::new(VecDeque::new())),
 			account

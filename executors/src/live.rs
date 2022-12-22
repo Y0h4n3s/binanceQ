@@ -15,11 +15,12 @@ use binance::account::OrderSide;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use binance::api::Binance;
+use headless_chrome::{Browser, protocol::page::ScreenshotFormat};
 
 use binance::futures::account::{CustomOrderRequest, FuturesAccount, TimeInForce};
 use binance::futures::market::FuturesMarket;
 use uuid::Uuid;
-use crate::notification::TelegramNotifier;
+use crate::notification::{Notification, Notifier, TelegramNotifier};
 
 type ArcMap<K, V> = Arc<RwLock<HashMap<K, V>>>;
 type ArcSet<T> = Arc<RwLock<HashSet<T>>>;
@@ -240,10 +241,11 @@ impl ExchangeAccount for BinanceLiveAccount {
 		let symbol = order.symbol.clone();
 		match order.order_type {
 			OrderType::Limit => {
-				if let Ok(transaction) = account.limit_buy(symbol.symbol.clone(), order.quantity.to_f64().unwrap(), order.price.to_f64().unwrap(), TimeInForce::GTC).await {
+				let res = account.limit_buy(symbol.symbol.clone(), order.quantity.to_f64().unwrap(), order.price.to_f64().unwrap(), TimeInForce::GTC).await;
+				if let Ok(transaction) = res {
 					Ok(OrderStatus::Pending(order))
 				} else {
-					Ok(OrderStatus::Canceled(order, "Failed to place order".to_string()))
+					Ok(OrderStatus::Canceled(order, res.unwrap_err().to_string()))
 				}
 			}
 			OrderType::TakeProfit(_)=> {
@@ -267,7 +269,7 @@ impl ExchangeAccount for BinanceLiveAccount {
 				if let Ok(transaction) = res {
 					Ok(OrderStatus::Pending(order))
 				} else {
-					Ok(OrderStatus::Canceled(order, "Failed to place order".to_string()))
+					Ok(OrderStatus::Canceled(order, res.unwrap_err().to_string()))
 				}
 			}
 			
@@ -277,7 +279,7 @@ impl ExchangeAccount for BinanceLiveAccount {
 				if let Ok(transaction) = res {
 					Ok(OrderStatus::Pending(order))
 				} else {
-					Ok(OrderStatus::Canceled(order, "Failed to place order".to_string()))
+					Ok(OrderStatus::Canceled(order, res.unwrap_err().to_string()))
 				}
 			}
 			
@@ -300,10 +302,11 @@ impl ExchangeAccount for BinanceLiveAccount {
 					working_type: None,
 					price_protect: None
 				};
-				if let Ok(transaction) = account.custom_order(or).await {
+				let res = account.custom_order(or).await;
+				if let Ok(transaction) =  res {
 					Ok(OrderStatus::Pending(order))
 				} else {
-					Ok(OrderStatus::Canceled(order, "Failed to place order".to_string()))
+					Ok(OrderStatus::Canceled(order, res.unwrap_err().to_string()))
 				}
 			},
 			_ => {todo!()}
@@ -317,10 +320,11 @@ impl ExchangeAccount for BinanceLiveAccount {
 		let symbol = order.symbol.clone();
 		match order.order_type {
 			OrderType::Limit  => {
-				if let Ok(transaction) = account.limit_sell(symbol.symbol.clone(), order.quantity.to_f64().unwrap(), order.price.to_f64().unwrap(), TimeInForce::GTC).await {
+				let res = account.limit_sell(symbol.symbol.clone(), order.quantity.to_f64().unwrap(), order.price.to_f64().unwrap(), TimeInForce::GTC).await;
+				if let Ok(transaction) = res {
 					Ok(OrderStatus::Pending(order))
 				} else {
-					Ok(OrderStatus::Canceled(order, "Failed to place order".to_string()))
+					Ok(OrderStatus::Canceled(order, res.unwrap_err().to_string()))
 				}
 			}
 			
@@ -345,15 +349,16 @@ impl ExchangeAccount for BinanceLiveAccount {
 				if let Ok(transaction) = res {
 					Ok(OrderStatus::Pending(order))
 				} else {
-					Ok(OrderStatus::Canceled(order, "Failed to place order".to_string()))
+					Ok(OrderStatus::Canceled(order, res.unwrap_err().to_string()))
 				}
 			}
 			
 			OrderType::StopLoss(id) => {
-				if let Ok(transaction) = account.stop_market_close_sell(symbol.symbol.clone(), order.price.to_f64().unwrap()).await {
+				let res = account.stop_market_close_sell(symbol.symbol.clone(), order.price.to_f64().unwrap()).await;
+				if let Ok(transaction) =  res {
 					Ok(OrderStatus::Pending(order))
 				} else {
-					Ok(OrderStatus::Canceled(order, "Failed to place order".to_string()))
+					Ok(OrderStatus::Canceled(order, res.unwrap_err().to_string()))
 				}
 			}
 			
@@ -376,10 +381,11 @@ impl ExchangeAccount for BinanceLiveAccount {
 					working_type: None,
 					price_protect: None
 				};
-				if let Ok(transaction) = account.custom_order(or).await {
+				let res = account.custom_order(or).await;
+				if let Ok(transaction) =  res {
 					Ok(OrderStatus::Pending(order))
 				} else {
-					Ok(OrderStatus::Canceled(order, "Failed to place order".to_string()))
+					Ok(OrderStatus::Canceled(order, res.unwrap_err().to_string()))
 				}
 			},
 			_ => {todo!()}
@@ -390,24 +396,26 @@ impl ExchangeAccount for BinanceLiveAccount {
 	async fn market_long(&self, order: Order) -> anyhow::Result<OrderStatus> {
 		let account = self.account.read().await;
 		let symbol = order.symbol.clone();
-		if let Ok(transaction) = account.market_buy(symbol.symbol.clone(), order.quantity.to_f64().unwrap()).await {
+		let res = account.market_buy(symbol.symbol.clone(), order.quantity.to_f64().unwrap()).await;
+		if let Ok(transaction) = res {
 			let mut or = order.clone();
 			or.price = Decimal::from_f64(transaction.avg_price.into()).unwrap();
 			Ok(OrderStatus::Filled(order))
 		} else {
-			Ok(OrderStatus::Canceled(order, "Failed to place order".to_string()))
+			Ok(OrderStatus::Canceled(order, res.unwrap_err().to_string()))
 		}
 	}
 	
 	async fn market_short(&self, order: Order) -> anyhow::Result<OrderStatus> {
 		let account = self.account.read().await;
 		let symbol = order.symbol.clone();
-		if let Ok(transaction) = account.market_sell(symbol.symbol.clone(), order.quantity.to_f64().unwrap()).await {
+		let res = account.market_sell(symbol.symbol.clone(), order.quantity.to_f64().unwrap()).await;
+		if let Ok(transaction) =  res {
 			let mut or = order.clone();
 			or.price = Decimal::from_f64(transaction.avg_price.into()).unwrap();
 			Ok(OrderStatus::Filled(order))
 		} else {
-			Ok(OrderStatus::Canceled(order, "Failed to place order".to_string()))
+			Ok(OrderStatus::Canceled(order, res.unwrap_err().to_string()))
 		}
 	}
 	
@@ -481,28 +489,58 @@ impl EventSink<OrderStatus> for BinanceLiveAccount {
 		let order_history = self.order_history.clone();
 		let trade_q = self.trade_q.clone();
 		let all_positions = self.positions.clone();
+		let notifier = self.notifier.clone();
 		Ok(tokio::spawn(async move {
 			match &event_msg {
-				OrderStatus::Pending(order)
-				| OrderStatus::PartiallyFilled(order, _)
-				| OrderStatus::Filled(order)
-				| OrderStatus::Canceled(order, _) => {
-					if open_orders.read().await.get(&order.symbol).is_none() {
-						open_orders
-							  .write()
-							  .await
-							  .insert(order.symbol.clone(), Arc::new(RwLock::new(HashSet::new())));
-					}
-					
-					open_orders
-						  .read()
-						  .await
-						  .get(&order.symbol)
-						  .unwrap()
-						  .write()
-						  .await
-						  .insert(event_msg);
+				OrderStatus::Pending(order) => {
+				
 				}
+				OrderStatus::Filled(order) => {
+					match order.order_type {
+						OrderType::Market => {
+							// let browser = Browser::default().unwrap();
+							// let tab = browser.wait_for_initial_tab().unwrap();
+							// tab.navigate_to(&format!("https://www.binance.com/en/futures/{}", order.symbol.symbol)).unwrap();
+							// tab.wait_until_navigated().unwrap();
+							// tokio::time::sleep(Duration::from_secs(10));
+							//
+							// let png_data = tab.capture_screenshot(
+							// 	ScreenshotFormat::PNG,
+							// 	None,
+							// 	true).unwrap();
+							// let file = format!("{}-screenshot.png", order.id);
+							//
+							// std::fs::write(&file, png_data)?;
+							//
+							
+							let notification = Notification {
+								message: order.to_markdown_message(),
+								message_sent: false,
+								attachment: None
+							};
+							
+							let n = notifier.read().await;
+							n.notify(notification).await;
+							
+							
+						}
+						
+						_ => {}
+					}
+				}
+				OrderStatus::Canceled(order, reason) => {
+					let notification = Notification {
+						message: order.to_markdown_message() + "\n*Canceled*: " + reason,
+						message_sent: false ,
+						attachment: None
+					};
+					let n = notifier.read().await;
+					n.notify(notification).await;
+					
+					
+				}
+				
+				_ => {}
 			}
 			Ok(())
 		}))

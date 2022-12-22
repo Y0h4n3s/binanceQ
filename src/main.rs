@@ -32,9 +32,9 @@ use crate::back_tester::{BackTester, BackTesterConfig, BackTesterMulti};
 
 static KEY: Lazy<AccessKey> = Lazy::new(|| {
     let api_key = env::var("API_KEY")
-        .unwrap_or("ftcpi3OSjk26htxak54hqkZ6e9vdHq2Vd7oN83VZN39UcYmw1VwVkibug52oGIs4".to_string());
+        .unwrap_or("bk5UAaA4AuSTWD0myql8ZaXjOJJWaYcP3TY67lB6ptSRUNUdPHFnkE6R98OxMCEP".to_string());
     let secret_key = env::var("SECRET_KEY")
-        .unwrap_or("iXArQEDFfmFanIfz7RfJj6G034b76nDuNetqxdqSLiUwPqDtLGIaNYK4TgDxR9H4".to_string());
+        .unwrap_or("qyZ0VfigHXfGshXysehAZN2iJhVw9L2Bq5pu8WkmMHob8A9hhwCZLtYoHVp73Bvt".to_string());
     AccessKey {
         api_key,
         secret_key,
@@ -487,7 +487,7 @@ async fn async_main() -> anyhow::Result<()> {
 
                     
                     let mut futures = FuturesUnordered::new();
-                    futures.push(start_loader(symbol.clone(), tf1).await);
+                    // futures.push(start_loader(symbol.clone(), tf1).await);
                     futures.push(start_kline_loader(symbol.clone(), ktf.clone(),from_time).await);
                     futures.push(strategy_manager.emit().await.unwrap());
                     futures.push(risk_manager.emit().await.unwrap());

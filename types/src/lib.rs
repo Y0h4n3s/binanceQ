@@ -364,6 +364,24 @@ pub struct Order {
     pub close_policy: ClosePolicy,
 }
 
+impl Order {
+    pub fn to_markdown_message(&self) -> String {
+        let order_type = match self.order_type {
+            OrderType::Market => "M",
+            OrderType::TakeProfit(_) => "TP",
+            OrderType::StopLoss(_) => "SL",
+            OrderType::Limit => "L",
+            OrderType::Cancel(_) => "C",
+            OrderType::StopLossTrailing(_, _) => "SLT",
+            OrderType::TakeProfitLimit => "TPL",
+            OrderType::StopLossLimit => "SLL",
+            OrderType::CancelFor(_) => "CF",
+            OrderType::Unknown => "U"
+        };
+        format!("*Symbol*: {}\nSide: {:?}\nPrice: {}\\.{}\nQty: {}\\.{}\nOrderType: {}", self.symbol.symbol, self.side, self.price.to_string().split(".").collect::<Vec<&str>>().get(0).unwrap(),self.price.to_string().split(".").collect::<Vec<&str>>().get(1).unwrap_or(&"0"), self.quantity.to_string().split(".").collect::<Vec<&str>>().get(0).unwrap(),self.quantity.to_string().split(".").collect::<Vec<&str>>().get(1).unwrap_or(&"0"), order_type)
+    }
+}
+
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 pub struct SymbolAccount {
     pub symbol: Symbol,

@@ -1,8 +1,9 @@
+use std::path::Path;
 use async_std::sync::Arc;
 use tokio::sync::RwLock;
 use teloxide::prelude::*;
 use async_trait::async_trait;
-use teloxide::types::{MessageId, Recipient};
+use teloxide::types::{InputFile, MessageId, Recipient};
 use once_cell::sync::Lazy;
 
 static CHAT_ID: Lazy<Recipient> = Lazy::new(|| {
@@ -26,7 +27,6 @@ impl TelegramNotifier {
 
 pub struct Notification {
 	pub message: String,
-	pub message_id: MessageId,
 	pub message_sent: bool,
 	pub attachment: Option<String>,
 }
@@ -41,15 +41,17 @@ impl Notifier for TelegramNotifier {
 	async fn notify(&self, notification: Notification) {
 		let bot = self.bot.read().await;
 		let message = notification.message;
-		let attachment = notification.attachment;
-		let message_id = notification.message_id;
 		let message_sent = notification.message_sent;
-		
-			bot.send_message(CHAT_ID.clone(), message)
-				.parse_mode(teloxide::types::ParseMode::Markdown)
+		println!("Message: {}", message);
+		bot.send_message(CHAT_ID.clone(), message)
+				.parse_mode(teloxide::types::ParseMode::MarkdownV2)
 				.send()
 				.await
-				.unwrap();
-		
+			    .unwrap();
+		if let Some(attachment) = notification.attachment {
+			let inp_file = InputFile::file(Path::new(&attachment));
+			
+			bot.send_photo(CHAT_ID.clone(), inp_file).send().await.unwrap();
+		}
 	}
 }

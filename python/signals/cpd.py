@@ -330,7 +330,7 @@ class ChangePointDetector:
         # TODO: Send cancel order if recent open order is not going as expected
 
         print(f"[?] CPD > {symbol} Average Probability: {average} Current: {probs[-1]}")
-        if probs[-1] > average * 10 and len(pqpl) > 0:
+        if  len(pqpl) > 0:
             with grpc.insecure_channel(self.grpc_server) as channel:
                 stub = signals_pb2_grpc.SignalGeneratorStub(channel)
                 s["exchange"] = signals_pb2.ExchangeId.EXCHANGE_ID_BINANCE
