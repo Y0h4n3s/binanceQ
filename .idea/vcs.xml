@@ -2,8 +2,5 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="$PROJECT_DIR$" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/python/IIC" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/python/QF-portfolio-investment-system" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/python/deep-belief-network" vcs="Git" />
   </component>
 </project>

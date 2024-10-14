@@ -1,33 +1,40 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <module type="WEB_MODULE" version="4">
+  <component name="FacetManager">
+    <facet type="Python" name="Python facet">
+      <configuration sdkName="Python 3.12 (binanceQ)" />
+    </facet>
+  </component>
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
       <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/tests" isTestSource="true" />
-      <sourceFolder url="file://$MODULE_DIR$/events/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/events/tests" isTestSource="true" />
-      <sourceFolder url="file://$MODULE_DIR$/executors/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/executors/tests" isTestSource="true" />
-      <sourceFolder url="file://$MODULE_DIR$/managers/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/mongodb/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/strategies/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/studies/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/types/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/util/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/src/events/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/src/events/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/src/executors/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/src/executors/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/src/managers/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/src/mongodb/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/src/types/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/src/utils/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/temp" />
       <excludeFolder url="file://$MODULE_DIR$/.tmp" />
       <excludeFolder url="file://$MODULE_DIR$/tmp" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
-      <excludeFolder url="file://$MODULE_DIR$/events/target" />
-      <excludeFolder url="file://$MODULE_DIR$/executors/target" />
-      <excludeFolder url="file://$MODULE_DIR$/mongodb/target" />
       <excludeFolder url="file://$MODULE_DIR$/strategies/target" />
       <excludeFolder url="file://$MODULE_DIR$/studies/target" />
-      <excludeFolder url="file://$MODULE_DIR$/managers/target" />
-      <excludeFolder url="file://$MODULE_DIR$/types/target" />
-      <excludeFolder url="file://$MODULE_DIR$/util/target" />
+      <excludeFolder url="file://$MODULE_DIR$/src/events/target" />
+      <excludeFolder url="file://$MODULE_DIR$/src/executors/target" />
+      <excludeFolder url="file://$MODULE_DIR$/src/managers/target" />
+      <excludeFolder url="file://$MODULE_DIR$/src/mongodb/target" />
+      <excludeFolder url="file://$MODULE_DIR$/src/types/target" />
+      <excludeFolder url="file://$MODULE_DIR$/src/utils/target" />
+      <excludeFolder url="file://$MODULE_DIR$/venv" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
+    <orderEntry type="library" name="Python 3.12 (binanceQ) interpreter library" level="application" />
   </component>
 </module>
