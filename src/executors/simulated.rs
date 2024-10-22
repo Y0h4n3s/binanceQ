@@ -12,6 +12,7 @@ use rust_decimal::Decimal;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::sync::Arc;
+use rust_decimal_macros::dec;
 use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::task::JoinHandle;
 use tracing::trace;
@@ -48,7 +49,6 @@ impl SimulatedAccount {
         order_statuses: InactiveReceiver<(OrderStatus, Option<Arc<Notify>>)>,
         symbols: Vec<Symbol>,
         order_status_subscribers: Arc<RwLock<Sender<(OrderStatus, Option<Arc<Notify>>)>>>,
-        
     ) -> Self {
         let symbol_accounts = Arc::new(DashMap::new());
         let open_orders = Arc::new(DashMap::new());
@@ -85,7 +85,7 @@ impl SimulatedAccount {
             trade_q: Arc::new(Mutex::new((VecDeque::new(), Arc::new(Notify::new())))),
             trade_subscribers: Arc::new(RwLock::new(async_broadcast::broadcast(1).0)),
             order_statuses,
-            order_status_subscribers
+            order_status_subscribers,
         }
     }
 }
@@ -98,9 +98,14 @@ impl SimulatedExecutor {
         trades: Sender<(Trade, Option<Arc<Notify>>)>,
     ) -> Self {
         let order_statuses_channel = async_broadcast::broadcast(100);
-        
-        let mut account =
-            SimulatedAccount::new(trades_rx, order_statuses_channel.1.deactivate(), symbols, Arc::new(RwLock::new(order_statuses_channel.0.clone()))).await;
+
+        let mut account = SimulatedAccount::new(
+            trades_rx,
+            order_statuses_channel.1.deactivate(),
+            symbols,
+            Arc::new(RwLock::new(order_statuses_channel.0.clone())),
+        )
+        .await;
         account.subscribe(trades).await;
         account.emit().await.expect("failed to emit trades");
         let ac = Arc::new(account.clone());
@@ -158,7 +163,10 @@ impl EventEmitter<Trade> for SimulatedAccount {
     }
 }
 
-async fn broadcast_and_wait<T: Clone + Debug>(channel: &Arc<RwLock<Sender<(T, Option<Arc<Notify>>)>>>, value: T) {
+async fn broadcast_and_wait<T: Clone + Debug>(
+    channel: &Arc<RwLock<Sender<(T, Option<Arc<Notify>>)>>>,
+    value: T,
+) {
     let notifier = Arc::new(Notify::new());
     let notified = notifier.notified();
     let channel = channel.read().await;
@@ -166,6 +174,16 @@ async fn broadcast_and_wait<T: Clone + Debug>(channel: &Arc<RwLock<Sender<(T, Op
         trace!("Failed to broadcast notification: {}", e);
     }
     notified.await;
+}
+
+async fn broadcast<T: Clone + Debug>(
+    channel: &Arc<RwLock<Sender<(T, Option<Arc<Notify>>)>>>,
+    value: T,
+) {
+    let channel = channel.read().await;
+    if let Err(e) = channel.broadcast((value, None)).await {
+        trace!("Failed to broadcast notification: {}", e);
+    }
 }
 
 #[async_trait]
@@ -199,6 +217,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
             }
         }
 
+        // TODO: remove used orders to avoid trade reuse inconsistencies
         // if any open orders are fillable move them to filled orders and update position and push a trade event to trade queue if it is a order opposite to position
         for tf_trade in event_msg {
             let symbol = tf_trade.symbol.clone();
@@ -207,634 +226,256 @@ impl EventSink<TfTrades> for SimulatedAccount {
                 continue;
             }
             let order_search = open_orders.iter().map(|o| (o.id, o.clone())).collect::<HashMap<Uuid, Order>>();
-            for trade in tf_trade.trades {
                 // let mut remove_orders: Vec<OrderStatus> = vec![];
                 // let mut remove_for_orders = vec![];
                 // let mut re_add = vec![];
 
 
-                let mut filled = false;
                 for last in open_orders.iter() {
-                    if filled {
-                        break;
-                    }
                     let order = &*last;
+
+                    for trade in &tf_trade.trades {
+
                     match order.order_type {
-                        // check if order is in pending openorders list and send a 
+                        // check if order is in pending openorders list and send a
                         // cancelled order status if it exists and a filled orderstatus
                         // for this order
                          OrderType::Cancel(order_id)=> {
                              if let Some(order1) = order_search.get(&order_id) {
-                                 broadcast_and_wait(
+                                 broadcast(
                                      &self.order_status_subscribers, 
                                      OrderStatus::Canceled(order.clone(), "Cancel Order".to_string())
                                  ).await;
-                                 broadcast_and_wait(
+                                 broadcast(
                                      &self.order_status_subscribers, 
                                      OrderStatus::Filled(order1.clone())
                                  ).await;
+                                 break
                              }
                          }
-                        OrderType::Market | OrderType::Limit => {
-                            if (order.side == Side::Bid
-                                && (Decimal::from_f64(trade.price)
-                                .unwrap()
-                                .lt(&order.price)
-                                || order
-                                .price
-                                .eq(&Decimal::from_f64(trade.price).unwrap())))
-                                || (order.side == Side::Ask
-                                && (order
-                                .price
-                                .lt(&Decimal::from_f64(trade.price).unwrap())
-                                || order
-                                .price
-                                .eq(&Decimal::from_f64(trade.price).unwrap())))
-                            {
-                                // filled = true;
-                                // remove_orders.push(last.clone());   
-                                // 
-                                // let mut position = positions.get_mut(&symbol).unwrap();
-                                // let filled_qty = Decimal::from_f64(trade.qty).unwrap();
-                                // let filled_price = Decimal::from_f64(trade.price).unwrap();
-                                // let mut filled_order = order.clone();
-                                // filled_order.quantity = filled_qty.max(order.quantity);
-                                // filled_order.price = filled_price;
-                                // filled_order.time = trade.timestamp;
-                                // 
-                                // if let Some(trade) =
-                                //     position.apply_order(&filled_order, trade.timestamp)
-                                // {
-                                //     let mut trade_q = trade_q.lock().await;
-                                //     trade_q.0.push_back(trade);
-                                //     trade_q.1.notify_one();
-                                // }
-                                // if filled_qty < order.quantity {
-                                //     re_add.push(OrderStatus::PartiallyFilled(
-                                //         order.clone(),
-                                //         Decimal::from_f64(trade.qty).unwrap(),
-                                //     ));
-                                // } else {
-                                //     let filled_orders =
-                                //         filled_orders.get_mut(&symbol).unwrap();
-                                // 
-                                //     filled_orders
-                                //         .insert(OrderStatus::Filled(order.clone()));
-                                // }
+                        OrderType::Market => {
+                            // maybe should mutate position in order statuses sink?
+                            let mut position = positions.get_mut(&symbol).unwrap();
+                            if let Some(trade) =
+                                    position.apply_order(order, trade.timestamp)
+                                {
+                                    let mut trade_q = trade_q.lock().await;
+                                    trade_q.0.push_back(trade);
+                                    trade_q.1.notify_one();
+                                }
+                            if Decimal::from_f64(trade.qty).unwrap().lt(&order.quantity) {
+                                broadcast(
+                                    &self.order_status_subscribers,
+                                    OrderStatus::PartiallyFilled(
+                                        order.clone(),
+                                        Decimal::from_f64(trade.qty).unwrap(),
+                                    )).await;
+                            } else {
+                                broadcast(
+                                    &self.order_status_subscribers,
+                                    OrderStatus::Filled(order.clone()),
+                                ).await;
                             }
+                            break
                         }
-                        //     let trade_price = Decimal::from_f64(trade.price).unwrap();
-                        //     if (order.side == Side::Bid
-                        //         && (trade_price.gt(&order.price)
-                        //         || order.price.eq(&trade_price)))
-                        //         || (order.side == Side::Ask
-                        //         && (order.price.gt(&trade_price)
-                        //         || order.price.eq(&trade_price)))
-                        //     {
-                        //         remove_orders.push(last.clone());
-                        // 
-                        //         filled = true;
-                        //         // println!("Filling order {:?} {}", order, trade.price);
-                        //         let mut position = positions.get_mut(&symbol).unwrap();
-                        //         let mut or = order.clone();
-                        //         or.quantity = position.qty;
-                        //         or.price = Decimal::from_f64(trade.price).unwrap();
-                        //         println!("[?] SLT removing {:?} {:?}", or, trade);
-                        //         if let Some(trade) =
-                        //             position.apply_order(&or, trade.timestamp)
-                        //         {
-                        //             let mut trade_q = trade_q.lock().await;
-                        //             trade_q.0.push_back(trade);
-                        //             trade_q.1.notify_one();
-                        //         }
-                        // 
-                        //         remove_for_orders.push(for_id);
-                        // 
-                        //         let filled_orders = filled_orders.get_mut(&symbol).unwrap();
-                        // 
-                        //         filled_orders.insert(OrderStatus::Filled(or.clone()));
-                        //     } else {
-                        //         match order.side {
-                        //             Side::Bid => {
-                        //                 if trade_price + delta < order.price {
-                        //                     remove_orders.push(last.clone());
-                        // 
-                        //                     let mut or = order.clone();
-                        //                     or.price = trade_price + delta;
-                        //                     // println!("[?] executor > Adjusting price from {} to {} on side BID due to {}", order.price, or.price, trade_price);
-                        //                     re_add.push(OrderStatus::Pending(or));
-                        //                 }
-                        //             }
-                        //             Side::Ask => {
-                        //                 if trade_price - delta > order.price {
-                        //                     remove_orders.push(last.clone());
-                        // 
-                        //                     let mut or = order.clone();
-                        //                     or.price = trade_price - delta;
-                        //                     // println!("[?] executor > Adjusting price from {} to {} on side ASK due to {}", order.price, or.price, trade_price);
-                        // 
-                        //                     re_add.push(OrderStatus::Pending(or));
-                        //                 }
-                        //             }
-                        //         }
-                        //     }
-                        // }
-                        // OrderType::Market | OrderType::Limit => {
-                        //     if (order.side == Side::Bid
-                        //         && (Decimal::from_f64(trade.price)
-                        //         .unwrap()
-                        //         .lt(&order.price)
-                        //         || order
-                        //         .price
-                        //         .eq(&Decimal::from_f64(trade.price).unwrap())))
-                        //         || (order.side == Side::Ask
-                        //         && (order
-                        //         .price
-                        //         .lt(&Decimal::from_f64(trade.price).unwrap())
-                        //         || order
-                        //         .price
-                        //         .eq(&Decimal::from_f64(trade.price).unwrap())))
-                        //     {
-                        //         filled = true;
-                        //         remove_orders.push(last.clone());
-                        // 
-                        //         let mut position = positions.get_mut(&symbol).unwrap();
-                        //         let filled_qty = Decimal::from_f64(trade.qty).unwrap();
-                        //         let filled_price = Decimal::from_f64(trade.price).unwrap();
-                        //         let mut filled_order = order.clone();
-                        //         filled_order.quantity = filled_qty.max(order.quantity);
-                        //         filled_order.price = filled_price;
-                        //         filled_order.time = trade.timestamp;
-                        // 
-                        //         if let Some(trade) =
-                        //             position.apply_order(&filled_order, trade.timestamp)
-                        //         {
-                        //             let mut trade_q = trade_q.lock().await;
-                        //             trade_q.0.push_back(trade);
-                        //             trade_q.1.notify_one();
-                        //         }
-                        //         if filled_qty < order.quantity {
-                        //             re_add.push(OrderStatus::PartiallyFilled(
-                        //                 order.clone(),
-                        //                 Decimal::from_f64(trade.qty).unwrap(),
-                        //             ));
-                        //         } else {
-                        //             let filled_orders =
-                        //                 filled_orders.get_mut(&symbol).unwrap();
-                        // 
-                        //             filled_orders
-                        //                 .insert(OrderStatus::Filled(order.clone()));
-                        //         }
-                        //     }
-                        // }
-                        // 
-                        // // skip partial fills for target and stop orders, if price reaches one of the targets or stop, the order will be immediately filled
-                        // OrderType::TakeProfit(for_id) => {
-                        //     if remove_for_orders.iter().any(|id| *id == for_id) {
-                        //         continue;
-                        //     }
-                        //     if (order.side == Side::Bid
-                        //         && (Decimal::from_f64(trade.price)
-                        //         .unwrap()
-                        //         .lt(&order.price)
-                        //         || order
-                        //         .price
-                        //         .eq(&Decimal::from_f64(trade.price).unwrap())))
-                        //         || (order.side == Side::Ask
-                        //         && (order
-                        //         .price
-                        //         .lt(&Decimal::from_f64(trade.price).unwrap())
-                        //         || order
-                        //         .price
-                        //         .eq(&Decimal::from_f64(trade.price).unwrap())))
-                        //     {
-                        //         filled = true;
-                        //         remove_orders.push(last.clone());
-                        // 
-                        //         println!("Filling order {:?} {}", order, trade.price);
-                        //         let mut position = positions.get_mut(&symbol).unwrap();
-                        //         let mut or = order.clone();
-                        //         or.price = Decimal::from_f64(trade.price).unwrap();
-                        //         if let Some(trade) =
-                        //             position.apply_order(&or, trade.timestamp)
-                        //         {
-                        //             let mut trade_q = trade_q.lock().await;
-                        //             trade_q.0.push_back(trade);
-                        //             trade_q.1.notify_one();
-                        //         }
-                        //         println!("[?] TP removing {:?} {:?}", order, trade);
-                        //         remove_for_orders.push(for_id);
-                        // 
-                        //         let filled_orders = filled_orders.get_mut(&symbol).unwrap();
-                        //         println!("[?] TP removing {:?} {:?}", order, trade);
-                        //         filled_orders.insert(OrderStatus::Filled(or.clone()));
-                        //     }
-                        // }
-                        // 
-                        // OrderType::StopLoss(for_id) => {
-                        //     if remove_for_orders.iter().any(|id| *id == for_id) {
-                        //         continue;
-                        //     }
-                        //     if (order.side == Side::Bid
-                        //         && (Decimal::from_f64(trade.price)
-                        //         .unwrap()
-                        //         .gt(&order.price)
-                        //         || order
-                        //         .price
-                        //         .eq(&Decimal::from_f64(trade.price).unwrap())))
-                        //         || (order.side == Side::Ask
-                        //         && (order
-                        //         .price
-                        //         .gt(&Decimal::from_f64(trade.price).unwrap())
-                        //         || order
-                        //         .price
-                        //         .eq(&Decimal::from_f64(trade.price).unwrap())))
-                        //     {
-                        //         remove_orders.push(last.clone());
-                        //         filled = true;
-                        //         println!("Filling order {:?} {}", order, trade.price);
-                        //         let mut position = positions.get_mut(&symbol).unwrap();
-                        //         let mut or = order.clone();
-                        //         or.quantity = position.qty;
-                        //         or.price = Decimal::from_f64(trade.price).unwrap();
-                        // 
-                        //         if let Some(trade) =
-                        //             position.apply_order(&or, trade.timestamp)
-                        //         {
-                        //             let mut trade_q = trade_q.lock().await;
-                        //             trade_q.0.push_back(trade);
-                        //             trade_q.1.notify_one();
-                        //         }
-                        //         println!("[?] SL removing {:?} {:?}", order, trade);
-                        // 
-                        //         remove_for_orders.push(for_id);
-                        // 
-                        //         let filled_orders = filled_orders.get_mut(&symbol).unwrap();
-                        // 
-                        //         filled_orders.insert(OrderStatus::Filled(or.clone()));
-                        //     }
-                        // }
+
+                        OrderType::StopLossLimit => {
+                            let mut position = positions.get_mut(&symbol).unwrap();
+                            if !position.is_open() {
+                                broadcast(
+                                    &self.order_status_subscribers,
+                                    OrderStatus::Canceled(order.clone(), "Stoploss on neutral position".to_string())
+                                ).await;
+                                break
+                            }
+                            // fill long stop if stop price is above trade price
+                               if position.is_long() {
+                                   if Decimal::from_f64(trade.price)
+                                       .unwrap()
+                                       .le(&order.price) {
+                                      
+                                       if let Some(trade) =
+                                           position.apply_order(order, trade.timestamp)
+                                       {
+                                           broadcast(&self.trade_subscribers, trade).await;
+
+                                       }
+                                       if Decimal::from_f64(trade.qty).unwrap().lt(&order.quantity) {
+                                               broadcast(
+                                                   &self.order_status_subscribers,
+                                                   OrderStatus::PartiallyFilled(
+                                                   order.clone(),
+                                                   Decimal::from_f64(trade.qty).unwrap(),
+                                               )).await;
+                                           } else {
+                                           broadcast(
+                                               &self.order_status_subscribers,
+                                               OrderStatus::Filled(order.clone()),
+                                           ).await;
+                                       }
+                                   }
+                               } else {
+                                   // fill short stop if stop price is below trade price
+                                   if Decimal::from_f64(trade.price)
+                                       .unwrap()
+                                       .ge(&order.price) {
+                                      
+                                       if let Some(trade) =
+                                           position.apply_order(order, trade.timestamp)
+                                       {
+                                           broadcast(&self.trade_subscribers, trade).await;
+
+                                       }
+                                       if Decimal::from_f64(trade.qty).unwrap().lt(&order.quantity) {
+                                           broadcast(
+                                               &self.order_status_subscribers,
+                                               OrderStatus::PartiallyFilled(
+                                                   order.clone(),
+                                                   Decimal::from_f64(trade.qty).unwrap(),
+                                               )).await;
+                                       } else {
+                                           broadcast(
+                                               &self.order_status_subscribers,
+                                               OrderStatus::Filled(order.clone()),
+                                           ).await;
+                                       }
+                                   }
+
+                               }
+                                break
+                        }
+
+                        OrderType::TakeProfitLimit => {
+                            let mut position = positions.get_mut(&symbol).unwrap();
+                            if !position.is_open() {
+                                broadcast(
+                                    &self.order_status_subscribers,
+                                    OrderStatus::Canceled(order.clone(), "Take profit on neutral position".to_string())
+                                ).await;
+                                break
+                            }
+                            // fill long if target price is above trade price
+                               if position.is_long() {
+                                   if Decimal::from_f64(trade.price)
+                                       .unwrap()
+                                       .le(&order.price) {
+                                       
+                                       if let Some(trade) =
+                                           position.apply_order(order, trade.timestamp)
+                                       {
+                                           broadcast(&self.trade_subscribers, trade).await;
+
+                                       }
+                                       if Decimal::from_f64(trade.qty).unwrap().lt(&order.quantity) {
+                                               broadcast(
+                                                   &self.order_status_subscribers,
+                                                   OrderStatus::PartiallyFilled(
+                                                   order.clone(),
+                                                   Decimal::from_f64(trade.qty).unwrap(),
+                                               )).await;
+                                           } else {
+                                           broadcast(
+                                               &self.order_status_subscribers,
+                                               OrderStatus::Filled(order.clone()),
+                                           ).await;
+                                       }
+                                   }
+                               } else {
+                                   // fill short if stop price is below trade price
+                                   if Decimal::from_f64(trade.price)
+                                       .unwrap()
+                                       .ge(&order.price) {
+                                      
+                                       if let Some(trade) =
+                                           position.apply_order(order, trade.timestamp)
+                                       {
+                                           broadcast(&self.trade_subscribers, trade).await;
+                                       }
+                                       if Decimal::from_f64(trade.qty).unwrap().lt(&order.quantity) {
+                                           broadcast(
+                                               &self.order_status_subscribers,
+                                               OrderStatus::PartiallyFilled(
+                                                   order.clone(),
+                                                   Decimal::from_f64(trade.qty).unwrap(),
+                                               )).await;
+                                       } else {
+                                           broadcast(
+                                               &self.order_status_subscribers,
+                                               OrderStatus::Filled(order.clone()),
+                                           ).await;
+                                       }
+                                   }
+
+                               }
+                                break
+                        }
+
+                        OrderType::Limit => {
+                            let mut position = positions.get_mut(&symbol).unwrap();
+                            if order.side == Side::Bid {
+                                if Decimal::from_f64(trade.price)
+                                    .unwrap()
+                                    .le(&order.price) {
+
+                                    if let Some(trade) =
+                                        position.apply_order(order, trade.timestamp)
+                                    {
+                                        broadcast(&self.trade_subscribers, trade).await;
+
+                                    }
+                                    if Decimal::from_f64(trade.qty).unwrap().lt(&order.quantity) {
+                                        broadcast(
+                                            &self.order_status_subscribers,
+                                            OrderStatus::PartiallyFilled(
+                                                order.clone(),
+                                                Decimal::from_f64(trade.qty).unwrap(),
+                                            )).await;
+                                    } else {
+                                        broadcast(
+                                            &self.order_status_subscribers,
+                                            OrderStatus::Filled(order.clone()),
+                                        ).await;
+                                    }
+                                }
+                            } else {
+                                if Decimal::from_f64(trade.price)
+                                    .unwrap()
+                                    .ge(&order.price) {
+
+                                    if let Some(trade) =
+                                        position.apply_order(order, trade.timestamp)
+                                    {
+                                        broadcast(&self.trade_subscribers, trade).await;
+                                    }
+                                    if Decimal::from_f64(trade.qty).unwrap().lt(&order.quantity) {
+                                        broadcast(
+                                            &self.order_status_subscribers,
+                                            OrderStatus::PartiallyFilled(
+                                                order.clone(),
+                                                Decimal::from_f64(trade.qty).unwrap(),
+                                            )).await;
+                                    } else {
+                                        broadcast(
+                                            &self.order_status_subscribers,
+                                            OrderStatus::Filled(order.clone()),
+                                        ).await;
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        OrderType::StopLoss(limit_order_id) => {
+                            // first we check if the limit order is filled
+                            // if it's not and is still an open order ignore and continue
+                            // if it's filled we try to fill this order
+                            // if it's not still an open order and doesn't exist in order history
+                            // cancel this order
+                        }
                         _ => {}
                     }
-                    // match last {
-                    //     OrderStatus::Pending(order) => {
-                    //         match order.order_type {
-                    //             OrderType::StopLossLimit
-                    //             | OrderType::TakeProfitLimit
-                    //             | OrderType::Cancel(_)
-                    //             | OrderType::CancelFor(_)
-                    //             | OrderType::Unknown => {}
-                    //             OrderType::StopLossTrailing(for_id, delta) => {
-                    //                 if remove_for_orders.iter().any(|id| *id == for_id) {
-                    //                     continue;
-                    //                 }
-                    // 
-                    //                 let trade_price = Decimal::from_f64(trade.price).unwrap();
-                    //                 if (order.side == Side::Bid
-                    //                     && (trade_price.gt(&order.price)
-                    //                         || order.price.eq(&trade_price)))
-                    //                     || (order.side == Side::Ask
-                    //                         && (order.price.gt(&trade_price)
-                    //                             || order.price.eq(&trade_price)))
-                    //                 {
-                    //                     remove_orders.push(last.clone());
-                    // 
-                    //                     filled = true;
-                    //                     // println!("Filling order {:?} {}", order, trade.price);
-                    //                     let mut position = positions.get_mut(&symbol).unwrap();
-                    //                     let mut or = order.clone();
-                    //                     or.quantity = position.qty;
-                    //                     or.price = Decimal::from_f64(trade.price).unwrap();
-                    //                     println!("[?] SLT removing {:?} {:?}", or, trade);
-                    //                     if let Some(trade) =
-                    //                         position.apply_order(&or, trade.timestamp)
-                    //                     {
-                    //                         let mut trade_q = trade_q.lock().await;
-                    //                         trade_q.0.push_back(trade);
-                    //                         trade_q.1.notify_one();
-                    //                     }
-                    // 
-                    //                     remove_for_orders.push(for_id);
-                    // 
-                    //                     let filled_orders = filled_orders.get_mut(&symbol).unwrap();
-                    // 
-                    //                     filled_orders.insert(OrderStatus::Filled(or.clone()));
-                    //                 } else {
-                    //                     match order.side {
-                    //                         Side::Bid => {
-                    //                             if trade_price + delta < order.price {
-                    //                                 remove_orders.push(last.clone());
-                    // 
-                    //                                 let mut or = order.clone();
-                    //                                 or.price = trade_price + delta;
-                    //                                 // println!("[?] executor > Adjusting price from {} to {} on side BID due to {}", order.price, or.price, trade_price);
-                    //                                 re_add.push(OrderStatus::Pending(or));
-                    //                             }
-                    //                         }
-                    //                         Side::Ask => {
-                    //                             if trade_price - delta > order.price {
-                    //                                 remove_orders.push(last.clone());
-                    // 
-                    //                                 let mut or = order.clone();
-                    //                                 or.price = trade_price - delta;
-                    //                                 // println!("[?] executor > Adjusting price from {} to {} on side ASK due to {}", order.price, or.price, trade_price);
-                    // 
-                    //                                 re_add.push(OrderStatus::Pending(or));
-                    //                             }
-                    //                         }
-                    //                     }
-                    //                 }
-                    //             }
-                    //             OrderType::Market | OrderType::Limit => {
-                    //                 if (order.side == Side::Bid
-                    //                     && (Decimal::from_f64(trade.price)
-                    //                         .unwrap()
-                    //                         .lt(&order.price)
-                    //                         || order
-                    //                             .price
-                    //                             .eq(&Decimal::from_f64(trade.price).unwrap())))
-                    //                     || (order.side == Side::Ask
-                    //                         && (order
-                    //                             .price
-                    //                             .lt(&Decimal::from_f64(trade.price).unwrap())
-                    //                             || order
-                    //                                 .price
-                    //                                 .eq(&Decimal::from_f64(trade.price).unwrap())))
-                    //                 {
-                    //                     filled = true;
-                    //                     remove_orders.push(last.clone());
-                    // 
-                    //                     let mut position = positions.get_mut(&symbol).unwrap();
-                    //                     let filled_qty = Decimal::from_f64(trade.qty).unwrap();
-                    //                     let filled_price = Decimal::from_f64(trade.price).unwrap();
-                    //                     let mut filled_order = order.clone();
-                    //                     filled_order.quantity = filled_qty.max(order.quantity);
-                    //                     filled_order.price = filled_price;
-                    //                     filled_order.time = trade.timestamp;
-                    // 
-                    //                     if let Some(trade) =
-                    //                         position.apply_order(&filled_order, trade.timestamp)
-                    //                     {
-                    //                         let mut trade_q = trade_q.lock().await;
-                    //                         trade_q.0.push_back(trade);
-                    //                         trade_q.1.notify_one();
-                    //                     }
-                    //                     if filled_qty < order.quantity {
-                    //                         re_add.push(OrderStatus::PartiallyFilled(
-                    //                             order.clone(),
-                    //                             Decimal::from_f64(trade.qty).unwrap(),
-                    //                         ));
-                    //                     } else {
-                    //                         let filled_orders =
-                    //                             filled_orders.get_mut(&symbol).unwrap();
-                    // 
-                    //                         filled_orders
-                    //                             .insert(OrderStatus::Filled(order.clone()));
-                    //                     }
-                    //                 }
-                    //             }
-                    // 
-                    //             // skip partial fills for target and stop orders, if price reaches one of the targets or stop, the order will be immediately filled
-                    //             OrderType::TakeProfit(for_id) => {
-                    //                 if remove_for_orders.iter().any(|id| *id == for_id) {
-                    //                     continue;
-                    //                 }
-                    //                 if (order.side == Side::Bid
-                    //                     && (Decimal::from_f64(trade.price)
-                    //                         .unwrap()
-                    //                         .lt(&order.price)
-                    //                         || order
-                    //                             .price
-                    //                             .eq(&Decimal::from_f64(trade.price).unwrap())))
-                    //                     || (order.side == Side::Ask
-                    //                         && (order
-                    //                             .price
-                    //                             .lt(&Decimal::from_f64(trade.price).unwrap())
-                    //                             || order
-                    //                                 .price
-                    //                                 .eq(&Decimal::from_f64(trade.price).unwrap())))
-                    //                 {
-                    //                     filled = true;
-                    //                     remove_orders.push(last.clone());
-                    // 
-                    //                     println!("Filling order {:?} {}", order, trade.price);
-                    //                     let mut position = positions.get_mut(&symbol).unwrap();
-                    //                     let mut or = order.clone();
-                    //                     or.price = Decimal::from_f64(trade.price).unwrap();
-                    //                     if let Some(trade) =
-                    //                         position.apply_order(&or, trade.timestamp)
-                    //                     {
-                    //                         let mut trade_q = trade_q.lock().await;
-                    //                         trade_q.0.push_back(trade);
-                    //                         trade_q.1.notify_one();
-                    //                     }
-                    //                     println!("[?] TP removing {:?} {:?}", order, trade);
-                    //                     remove_for_orders.push(for_id);
-                    // 
-                    //                     let filled_orders = filled_orders.get_mut(&symbol).unwrap();
-                    //                     println!("[?] TP removing {:?} {:?}", order, trade);
-                    //                     filled_orders.insert(OrderStatus::Filled(or.clone()));
-                    //                 }
-                    //             }
-                    // 
-                    //             OrderType::StopLoss(for_id) => {
-                    //                 if remove_for_orders.iter().any(|id| *id == for_id) {
-                    //                     continue;
-                    //                 }
-                    //                 if (order.side == Side::Bid
-                    //                     && (Decimal::from_f64(trade.price)
-                    //                         .unwrap()
-                    //                         .gt(&order.price)
-                    //                         || order
-                    //                             .price
-                    //                             .eq(&Decimal::from_f64(trade.price).unwrap())))
-                    //                     || (order.side == Side::Ask
-                    //                         && (order
-                    //                             .price
-                    //                             .gt(&Decimal::from_f64(trade.price).unwrap())
-                    //                             || order
-                    //                                 .price
-                    //                                 .eq(&Decimal::from_f64(trade.price).unwrap())))
-                    //                 {
-                    //                     remove_orders.push(last.clone());
-                    //                     filled = true;
-                    //                     println!("Filling order {:?} {}", order, trade.price);
-                    //                     let mut position = positions.get_mut(&symbol).unwrap();
-                    //                     let mut or = order.clone();
-                    //                     or.quantity = position.qty;
-                    //                     or.price = Decimal::from_f64(trade.price).unwrap();
-                    // 
-                    //                     if let Some(trade) =
-                    //                         position.apply_order(&or, trade.timestamp)
-                    //                     {
-                    //                         let mut trade_q = trade_q.lock().await;
-                    //                         trade_q.0.push_back(trade);
-                    //                         trade_q.1.notify_one();
-                    //                     }
-                    //                     println!("[?] SL removing {:?} {:?}", order, trade);
-                    // 
-                    //                     remove_for_orders.push(for_id);
-                    // 
-                    //                     let filled_orders = filled_orders.get_mut(&symbol).unwrap();
-                    // 
-                    //                     filled_orders.insert(OrderStatus::Filled(or.clone()));
-                    //                 }
-                    //             }
-                    //         }
-                    //     }
-                    //     OrderStatus::PartiallyFilled(order, filled_qty_so_far) => {
-                    //         if (order.side == Side::Bid
-                    //             && order.price.gt(&Decimal::from_f64(trade.price).unwrap()))
-                    //             || (order.side == Side::Ask
-                    //                 && order.price.lt(&Decimal::from_f64(trade.price).unwrap()))
-                    //         {
-                    //             remove_orders.push(last.clone());
-                    //             filled = true;
-                    //             let mut position = positions.get_mut(&symbol).unwrap();
-                    //             let filled_qty = Decimal::from_f64(trade.qty).unwrap();
-                    //             let filled_price = Decimal::from_f64(trade.price).unwrap();
-                    // 
-                    //             let mut filled_order = order.clone();
-                    //             filled_order.quantity =
-                    //                 filled_qty.max(order.quantity - filled_qty_so_far);
-                    //             filled_order.price = filled_price;
-                    //             filled_order.time = trade.timestamp;
-                    // 
-                    //             if let Some(trade) =
-                    //                 position.apply_order(&filled_order, trade.timestamp)
-                    //             {
-                    //                 let mut trade_q = trade_q.lock().await;
-                    //                 trade_q.0.push_back(trade);
-                    //                 trade_q.1.notify_one();
-                    //             }
-                    //             if filled_qty < order.quantity {
-                    //                 re_add.push(OrderStatus::PartiallyFilled(
-                    //                     order.clone(),
-                    //                     filled_qty + filled_qty_so_far,
-                    //                 ));
-                    //             } else {
-                    //                 let filled_orders = filled_orders.get_mut(&symbol).unwrap();
-                    // 
-                    //                 filled_orders.insert(OrderStatus::Filled(order.clone()));
-                    //             }
-                    //         }
-                    //     }
-                    //     OrderStatus::Filled(order) => {
-                    //         remove_orders.push(last.clone());
-                    //         let mut position = positions.get_mut(&symbol).unwrap();
-                    //         let filled_price = Decimal::from_f64(trade.price).unwrap();
-                    // 
-                    //         let mut filled_order = order.clone();
-                    // 
-                    //         filled_order.price = filled_price;
-                    //         filled_order.time = trade.timestamp;
-                    //         if let Some(trade) =
-                    //             position.apply_order(&filled_order, trade.timestamp)
-                    //         {
-                    //             let mut trade_q = trade_q.lock().await;
-                    //             trade_q.0.push_back(trade);
-                    //             trade_q.1.notify_one();
-                    //         }
-                    // 
-                    //         // if position is neutral, remove all stop and take profit orders
-                    //         if !position.is_open() {
-                    //             let to_keep_ids: Vec<Uuid> = open_orders
-                    //                 .iter()
-                    //                 .filter_map(|o| match &*o {
-                    //                     OrderStatus::Filled(or) | OrderStatus::Pending(or) => {
-                    //                         match or.order_type {
-                    //                             OrderType::Market | OrderType::Limit => {
-                    //                                 if order.id != or.id {
-                    //                                     Some(or.id)
-                    //                                 } else {
-                    //                                     None
-                    //                                 }
-                    //                             }
-                    //                             _ => None,
-                    //                         }
-                    //                     }
-                    //                     _ => None,
-                    //                 })
-                    //                 .collect();
-                    //             open_orders.iter().for_each(|o| {
-                    //                 // println!("to keep {:?} {:?}", to_keep_ids, open_orders);
-                    //                 match &*o {
-                    //                     OrderStatus::Pending(or)
-                    //                     | OrderStatus::PartiallyFilled(or, _) => {
-                    //                         match or.order_type {
-                    //                             OrderType::TakeProfit(for_id)
-                    //                             | OrderType::StopLoss(for_id)
-                    //                             | OrderType::StopLossTrailing(for_id, _) => {
-                    //                                 if !to_keep_ids.iter().any(|id| *id == for_id) {
-                    //                                     remove_for_orders.push(for_id);
-                    //                                     remove_orders.push(last.clone());
-                    //                                 }
-                    //                             }
-                    //                             _ => {}
-                    //                         }
-                    //                     }
-                    //                     _ => {}
-                    //                 }
-                    //             });
-                    //         }
-                    //         let filled_orders = filled_orders.get_mut(&symbol).unwrap();
-                    //         let mongo_client = MongoClient::new().await;
-                    //         let _ = mongo_client
-                    //             .orders
-                    //             .insert_one(filled_order.clone(), None)
-                    //             .await;
-                    //         filled_orders.insert(OrderStatus::Filled(filled_order.clone()));
-                    //     }
-                    // 
-                    //     // removes all orders that are sent in Cancel(id)
-                    //     // including target and stop order with for_id
-                    //     // to only cancel target or stop orders, use their associated id
-                    //     // canceling an order that has stop or target orders will cancel all of them
-                    //     OrderStatus::Canceled(order, reason) => {
-                    //         remove_orders.push(last.clone());
-                    // 
-                    //         match order.order_type {
-                    //             OrderType::Cancel(_id) => {}
-                    //             OrderType::CancelFor(for_id) => {
-                    //                 remove_for_orders.push(for_id);
-                    //             }
-                    //             _ => re_add
-                    //                 .push(OrderStatus::Canceled(order.clone(), reason.clone())),
-                    //         }
-                    //     }
-                    // }
+                    
                 }
 
-                // for id in remove_orders.clone() {
-                //     open_orders.remove(&id);
-                // }
-                // 
-                // let for_orders = open_orders
-                //     .iter()
-                //     .filter_map(|or| match &*or {
-                //         OrderStatus::Canceled(order, ..)
-                //         | OrderStatus::PartiallyFilled(order, _)
-                //         | OrderStatus::Filled(order)
-                //         | OrderStatus::Pending(order) => {
-                //             if remove_for_orders.contains(&order.id) {
-                //                 Some(or.clone())
-                //             } else {
-                //                 None
-                //             }
-                //         }
-                //     })
-                //     .collect::<Vec<_>>();
-                // for id in for_orders {
-                //     open_orders.remove(&id);
-                // }
-                // for order in &re_add {
-                //     open_orders.insert(order.clone());
-                // }
-
-                // println!("[?] Open orders: {}", open_orders_len);
-                // println!("re_add: {}", re_add.len());
-                // println!("remove_ids: {}", remove_ids.len());
-                // assert_eq!(open_orders_len, ((re_add.len() as i64 - remove_ids.len() as i64).max(0) as usize));
             }
         }
         Ok(())
@@ -863,11 +504,15 @@ impl EventSink<OrderStatus> for SimulatedAccount {
                     open_orders.insert(order.symbol.clone(), new_set);
                 }
             }
-            // valid types are limit 
+            // valid types are limit
             OrderStatus::PartiallyFilled(order, delta) => {
                 let mut new_order = order.clone();
                 new_order.quantity = order.quantity - delta;
-                trace!("adding new order {:?} for partially filled order: {:?}", new_order, order);
+                trace!(
+                    "adding new order {:?} for partially filled order: {:?}",
+                    new_order,
+                    order
+                );
                 if let Some(orders) = open_orders.get_mut(&order.symbol) {
                     orders.remove(order);
                     orders.insert(new_order);
@@ -883,10 +528,15 @@ impl EventSink<OrderStatus> for SimulatedAccount {
                 if let Some(orders) = open_orders.get_mut(&order.symbol) {
                     orders.remove(order);
                 }
+                println!("done: {}", "");
             }
-            // log reason and remove 
+            // log reason and remove
             OrderStatus::Canceled(order, reason) => {
-                trace!("Removing canceled order with reason `{}` from order set: {:?}", reason, order);
+                trace!(
+                    "Removing canceled order with reason `{}` from order set: {:?}",
+                    reason,
+                    order
+                );
                 if let Some(orders) = open_orders.get_mut(&order.symbol) {
                     orders.remove(order);
                 }
@@ -1059,12 +709,12 @@ mod tests {
                 tf_trades_channel.1.deactivate(),
                 order_statuses_channel.1.deactivate(),
                 vec![symbol.clone()],
-                Arc::new(RwLock::new(order_statuses_channel.0.clone()))
+                Arc::new(RwLock::new(order_statuses_channel.0.clone())),
             )
-                .await,
+            .await,
         );
         let open_orders = simulated_account.get_open_orders(&symbol).await;
-        
+
         tokio::spawn(async move {
             EventSink::<OrderStatus>::listen(simulated_account.clone()).unwrap();
         });
@@ -1105,6 +755,293 @@ mod tests {
         assert!(open_orders.is_empty(), "Order was not properly canceled");
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_simulated_account_apply_stop_loss() -> anyhow::Result<()> {
+        let tf_trades_channel = async_broadcast::broadcast(100);
+        let order_statuses_channel = async_broadcast::broadcast(100);
+
+        let symbol = Symbol {
+            symbol: "TST/USDT".to_string(),
+            exchange: ExchangeId::Simulated,
+            base_asset_precision: 1,
+            quote_asset_precision: 2,
+        };
+        let simulated_account = Arc::new(
+            SimulatedAccount::new(
+                tf_trades_channel.1.deactivate(),
+                order_statuses_channel.1.deactivate(),
+                vec![symbol.clone()],
+                Arc::new(RwLock::new(order_statuses_channel.0.clone())),
+
+            )
+                .await,
+        );
+
+        let sa1 = simulated_account.clone();
+        let sa2 = simulated_account.clone();
+        tokio::spawn(async move {
+            EventSink::<OrderStatus>::listen(sa1).unwrap();
+        });
+        tokio::spawn(async move {
+            EventSink::<TfTrades>::listen(sa2).unwrap();
+        });
+
+        let order_id =  Uuid::new_v4();
+
+        // Create an initial position
+        let os = OrderStatus::Pending(Order {
+            id: order_id,
+            symbol: symbol.clone(),
+            side: Side::Bid,
+            price: Decimal::new(100, 1),
+            quantity: Decimal::new(100, 1),
+            time: 123,
+            order_type: OrderType::Market,
+            lifetime: u64::MAX,
+            close_policy: ClosePolicy::None,
+        });
+
+        // Broadcast and fill the pending order
+        let notifier = Arc::new(Notify::new());
+        let n = notifier.notified();
+        order_statuses_channel
+            .0
+            .broadcast((os.clone(), Some(notifier.clone())))
+            .await
+            .unwrap();
+        n.await;
+
+        let n = notifier.notified();
+        let entry = TradeEntry {
+            id: 1,
+            price: 11.0,
+            qty: 100.0,
+            timestamp: 0,
+            delta: 0.0,
+            symbol: symbol.clone(),
+        };
+        tf_trades_channel
+            .0
+            .broadcast((
+                vec![TfTrade {
+                    symbol: symbol.clone(),
+                    tf: 1,
+                    id: 1,
+                    timestamp: 124,
+                    trades: vec![entry.clone()],
+                    min_price_trade: entry.clone(),
+                    max_price_trade: entry,
+                }],
+                Some(notifier.clone()),
+            ))
+            .await
+            .unwrap();
+        n.await;
+        let open_orders = simulated_account.get_open_orders(&symbol).await;
+        let position = simulated_account.get_position(&symbol).await;
+        assert!(open_orders.is_empty(), "initial position order not properly executed");
+        assert!(position.is_long(), "incorrect position");
+        // Create a stop-loss order
+        let os = OrderStatus::Pending(Order {
+            id: Uuid::new_v4(),
+            symbol: symbol.clone(),
+            side: Side::Ask,
+            price: Decimal::new(90, 1),
+            quantity: Decimal::new(100, 1),
+            time: 123,
+            order_type: OrderType::StopLossLimit,
+            lifetime: u64::MAX,
+            close_policy: ClosePolicy::None,
+        });
+
+        // Broadcast the stop-loss order
+        let notifier = Arc::new(Notify::new());
+        let n = notifier.notified();
+        order_statuses_channel
+            .0
+            .broadcast((os.clone(), Some(notifier.clone())))
+            .await
+            .unwrap();
+        n.await;
+
+        // Simulate a trade that triggers the stop-loss
+        let n = notifier.notified();
+        let entry = TradeEntry {
+            id: 1,
+            price: 8.0,
+            qty: 100.0,
+            timestamp: 0,
+            delta: 0.0,
+            symbol: symbol.clone(),
+        };
+        tf_trades_channel
+            .0
+            .broadcast((
+                vec![TfTrade {
+                    symbol: symbol.clone(),
+                    tf: 1,
+                    id: 1,
+                    timestamp: 124,
+                    trades: vec![entry.clone()],
+                    min_price_trade: entry.clone(),
+                    max_price_trade: entry,
+                }],
+                Some(notifier.clone()),
+            ))
+            .await
+            .unwrap();
+        n.await;
+
+        // Check if stop-loss is executed
+        assert!(open_orders.is_empty(), "Stop-loss order was not properly executed");
+        let position = simulated_account.get_position(&symbol).await;
+        assert!(!position.is_open(), "Position is still open");
+        Ok(())
+    }
+    #[tokio::test]
+    async fn test_simulated_account_apply_take_profit() -> anyhow::Result<()> {
+        let tf_trades_channel = async_broadcast::broadcast(100);
+        let order_statuses_channel = async_broadcast::broadcast(100);
+
+        let symbol = Symbol {
+            symbol: "TST/USDT".to_string(),
+            exchange: ExchangeId::Simulated,
+            base_asset_precision: 1,
+            quote_asset_precision: 2,
+        };
+        let simulated_account = Arc::new(
+            SimulatedAccount::new(
+                tf_trades_channel.1.deactivate(),
+                order_statuses_channel.1.deactivate(),
+                vec![symbol.clone()],
+                Arc::new(RwLock::new(order_statuses_channel.0.clone())),
+
+            )
+                .await,
+        );
+
+        let sa1 = simulated_account.clone();
+        let sa2 = simulated_account.clone();
+        tokio::spawn(async move {
+            EventSink::<OrderStatus>::listen(sa1).unwrap();
+        });
+        tokio::spawn(async move {
+            EventSink::<TfTrades>::listen(sa2).unwrap();
+        });
+
+        let order_id =  Uuid::new_v4();
+
+        // Create an initial position
+        let os = OrderStatus::Pending(Order {
+            id: order_id,
+            symbol: symbol.clone(),
+            side: Side::Bid,
+            price: Decimal::new(100, 1),
+            quantity: Decimal::new(100, 1),
+            time: 123,
+            order_type: OrderType::Market,
+            lifetime: u64::MAX,
+            close_policy: ClosePolicy::None,
+        });
+
+        // Broadcast and fill the pending order
+        let notifier = Arc::new(Notify::new());
+        let n = notifier.notified();
+        order_statuses_channel
+            .0
+            .broadcast((os.clone(), Some(notifier.clone())))
+            .await
+            .unwrap();
+        n.await;
+
+        let n = notifier.notified();
+        let entry = TradeEntry {
+            id: 1,
+            price: 11.0,
+            qty: 100.0,
+            timestamp: 0,
+            delta: 0.0,
+            symbol: symbol.clone(),
+        };
+        tf_trades_channel
+            .0
+            .broadcast((
+                vec![TfTrade {
+                    symbol: symbol.clone(),
+                    tf: 1,
+                    id: 1,
+                    timestamp: 124,
+                    trades: vec![entry.clone()],
+                    min_price_trade: entry.clone(),
+                    max_price_trade: entry,
+                }],
+                Some(notifier.clone()),
+            ))
+            .await
+            .unwrap();
+        n.await;
+        let open_orders = simulated_account.get_open_orders(&symbol).await;
+        let position = simulated_account.get_position(&symbol).await;
+        assert!(open_orders.is_empty(), "initial position order not properly executed");
+        assert!(position.is_long(), "incorrect position");
+        // Create a take-profit order
+        let os = OrderStatus::Pending(Order {
+            id: Uuid::new_v4(),
+            symbol: symbol.clone(),
+            side: Side::Ask,
+            price: Decimal::new(190, 1),
+            quantity: Decimal::new(100, 1),
+            time: 123,
+            order_type: OrderType::TakeProfitLimit,
+            lifetime: u64::MAX,
+            close_policy: ClosePolicy::None,
+        });
+
+        // Broadcast the stop-loss order
+        let notifier = Arc::new(Notify::new());
+        let n = notifier.notified();
+        order_statuses_channel
+            .0
+            .broadcast((os.clone(), Some(notifier.clone())))
+            .await
+            .unwrap();
+        n.await;
+
+        // Simulate a trade that triggers the stop-loss
+        let n = notifier.notified();
+        let entry = TradeEntry {
+            id: 1,
+            price: 19.0,
+            qty: 100.0,
+            timestamp: 0,
+            delta: 0.0,
+            symbol: symbol.clone(),
+        };
+        tf_trades_channel
+            .0
+            .broadcast((
+                vec![TfTrade {
+                    symbol: symbol.clone(),
+                    tf: 1,
+                    id: 1,
+                    timestamp: 124,
+                    trades: vec![entry.clone()],
+                    min_price_trade: entry.clone(),
+                    max_price_trade: entry,
+                }],
+                Some(notifier.clone()),
+            ))
+            .await
+            .unwrap();
+        n.await;
+
+        // Check if stop-loss is executed
+        assert!(open_orders.is_empty(), "take-profit order was not properly executed");
+        let position = simulated_account.get_position(&symbol).await;
+        assert!(!position.is_open(), "Position is still open");
+        Ok(())
+    }
     #[tokio::test]
     async fn test_simulated_account_add_pending_order() -> anyhow::Result<()> {
         let tf_trades_channel = async_broadcast::broadcast(100);
@@ -1121,8 +1058,7 @@ mod tests {
                 tf_trades_channel.1.deactivate(),
                 order_statuses_channel.1.deactivate(),
                 vec![symbol.clone()],
-                Arc::new(RwLock::new(order_statuses_channel.0.clone()))
-                
+                Arc::new(RwLock::new(order_statuses_channel.0.clone())),
             )
             .await,
         );
@@ -1172,8 +1108,7 @@ mod tests {
                 tf_trades_channel.1.deactivate(),
                 order_statuses_channel.1.deactivate(),
                 vec![symbol.clone()],
-                Arc::new(RwLock::new(order_statuses_channel.0.clone()))
-                
+                Arc::new(RwLock::new(order_statuses_channel.0.clone())),
             )
             .await,
         );
@@ -1224,7 +1159,7 @@ mod tests {
                     timestamp: 124,
                     trades: vec![entry.clone()],
                     min_price_trade: entry.clone(),
-                    max_price_trade: entry
+                    max_price_trade: entry,
                 }],
                 Some(notifier.clone()),
             ))
@@ -1233,7 +1168,7 @@ mod tests {
         n.await;
 
         let open_orders = s_a.get_open_orders(&symbol).await;
-        assert_eq!(open_orders.len(), 1);
+        assert_eq!(open_orders.len(), 0);
         Ok(())
     }
 
@@ -1253,8 +1188,7 @@ mod tests {
                 tf_trades_channel.1.deactivate(),
                 order_statuses_channel.1.deactivate(),
                 vec![symbol.clone()],
-                Arc::new(RwLock::new(order_statuses_channel.0.clone()))
-                
+                Arc::new(RwLock::new(order_statuses_channel.0.clone())),
             )
             .await,
         );
@@ -1305,7 +1239,7 @@ mod tests {
                     timestamp: 124,
                     trades: vec![entry.clone()],
                     min_price_trade: entry.clone(),
-                    max_price_trade: entry
+                    max_price_trade: entry,
                 }],
                 Some(notifier.clone()),
             ))
@@ -1316,7 +1250,7 @@ mod tests {
 
         let open_orders = s_a.get_open_orders(&symbol).await;
         assert_eq!(open_orders.len(), 1);
-      
+
         Ok(())
     }
 
@@ -1335,8 +1269,7 @@ mod tests {
             tf_trades_channel.1.deactivate(),
             order_statuses_channel.1.deactivate(),
             vec![symbol.clone()],
-            Arc::new(RwLock::new(order_statuses_channel.0.clone()))
-            
+            Arc::new(RwLock::new(order_statuses_channel.0.clone())),
         )
         .await;
         simulated_account.subscribe(trades_sender).await;
@@ -1410,7 +1343,7 @@ mod tests {
                     timestamp: 124,
                     trades: vec![entry.clone()],
                     min_price_trade: entry.clone(),
-                    max_price_trade: entry
+                    max_price_trade: entry,
                 }],
                 Some(notifier.clone()),
             ))
@@ -1422,7 +1355,7 @@ mod tests {
         // assert_eq!(trade.realized_pnl, Decimal::ZERO);
         // assert_eq!(trade.position_side, Side::Bid);
         // assert_eq!(trade.side, Side::Ask);
-        // 
+        //
         // let open_orders = s_a.get_open_orders(&symbol).await;
         // assert_eq!(open_orders.len(), 0);
         Ok(())
