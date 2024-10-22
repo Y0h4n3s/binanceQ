@@ -14,15 +14,15 @@ use async_std::sync::Arc;
 use async_trait::async_trait;
 pub use position::*;
 pub use spread::*;
-use std::collections::HashSet;
+use dashmap::DashSet;
 
 #[async_trait]
 pub trait ExchangeAccountInfo: Send + Sync {
     #[allow(unused)]
     fn get_exchange_id(&self) -> ExchangeId;
-    async fn get_open_orders(&self, symbol: &Symbol) -> Arc<HashSet<OrderStatus>>;
+    async fn get_open_orders(&self, symbol: &Symbol) -> Arc<DashSet<Order>>;
     async fn get_symbol_account(&self, symbol: &Symbol) -> SymbolAccount;
-    async fn get_past_trades(&self, symbol: &Symbol, length: Option<usize>) -> Arc<HashSet<Trade>>;
+    async fn get_past_trades(&self, symbol: &Symbol, length: Option<usize>) -> Arc<DashSet<Trade>>;
     async fn get_position(&self, symbol: &Symbol) -> Arc<Position>;
     async fn get_spread(&self, symbol: &Symbol) -> Arc<Spread>;
     async fn get_order(&self, symbol: &Symbol, id: &uuid::Uuid) -> Vec<Order>;

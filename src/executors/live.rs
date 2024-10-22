@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use binance::api::Binance;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use rust_decimal::Decimal;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{VecDeque};
 use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
 use tokio::task::JoinHandle;
@@ -19,35 +19,33 @@ use tokio::task::JoinHandle;
 use crate::executors::notification::{Notification, Notifier, TelegramNotifier};
 use binance::futures::account::{CustomOrderRequest, FuturesAccount, TimeInForce};
 use binance::futures::market::FuturesMarket;
+use dashmap::{DashMap, DashSet};
 use uuid::Uuid;
 
-type ArcMap<K, V> = Arc<RwLock<HashMap<K, V>>>;
-type ArcSet<T> = Arc<RwLock<HashSet<T>>>;
+type ArcMap<K, V> = Arc<DashMap<K, V>>;
+type ArcSet<T> = Arc<DashSet<T>>;
 
 #[derive(Clone)]
 pub struct BinanceLiveAccount {
     pub account: Arc<RwLock<FuturesAccount>>,
     pub market: Arc<RwLock<FuturesMarket>>,
     pub notifier: Arc<RwLock<TelegramNotifier>>,
-    pub symbol_accounts: ArcMap<Symbol, SymbolAccount>,
-    pub open_orders: ArcMap<Symbol, ArcSet<OrderStatus>>,
+    pub symbol_accounts: Arc<DashMap<Symbol, SymbolAccount>>,
+    pub open_orders: Arc<DashMap<Symbol, Arc<DashSet<Order>>>>,
     pub order_history: ArcMap<Symbol, ArcSet<OrderStatus>>,
     pub trade_history: ArcMap<Symbol, ArcSet<Trade>>,
     trade_q: Arc<RwLock<VecDeque<Trade>>>,
     pub trade_subscribers: Arc<RwLock<Sender<(Trade, Option<Arc<Notify>>)>>>,
-    pub positions: ArcMap<Symbol, Arc<RwLock<Position>>>,
-    tf_trades: Arc<RwLock<Receiver<(TfTrades, Option<Arc<Notify>>)>>>,
-    order_statuses: Arc<RwLock<Receiver<(OrderStatus, Option<Arc<Notify>>)>>>,
-    tf_trades_working: Arc<std::sync::RwLock<bool>>,
-    order_statuses_working: Arc<std::sync::RwLock<bool>>,
+    pub positions: Arc<DashMap<Symbol, Position>>,
+    tf_trades: Receiver<(TfTrades, Option<Arc<Notify>>)>,
+    order_statuses: Receiver<(OrderStatus, Option<Arc<Notify>>)>,
 }
 
 pub struct BinanceLiveExecutor {
     account: Arc<BinanceLiveAccount>,
-    pub orders: Arc<RwLock<Receiver<(Order, Option<Arc<Notify>>)>>>,
+    pub orders: Receiver<(Order, Option<Arc<Notify>>)>,
     order_status_q: Arc<RwLock<VecDeque<(OrderStatus, Option<Arc<Notify>>)>>>,
     pub order_status_subscribers: Arc<RwLock<Sender<(OrderStatus, Option<Arc<Notify>>)>>>,
-    order_working: Arc<std::sync::RwLock<bool>>,
 }
 
 impl BinanceLiveExecutor {
@@ -72,11 +70,10 @@ impl BinanceLiveExecutor {
             EventSink::<OrderStatus>::listen(ac).unwrap();
         });
         Self {
-            account: account,
-            orders: Arc::new(RwLock::new(orders_rx)),
+            account,
+            orders: orders_rx,
             order_status_q: Arc::new(RwLock::new(VecDeque::new())),
             order_status_subscribers: Arc::new(RwLock::new(order_statuses_channel.0)),
-            order_working: Arc::new(std::sync::RwLock::new(false)),
         }
     }
 }
@@ -88,11 +85,12 @@ impl BinanceLiveAccount {
         order_statuses: Receiver<(OrderStatus, Option<Arc<Notify>>)>,
         symbols: Vec<Symbol>,
     ) -> Self {
-        let symbol_accounts = Arc::new(RwLock::new(HashMap::new()));
-        let open_orders = Arc::new(RwLock::new(HashMap::new()));
-        let order_history = Arc::new(RwLock::new(HashMap::new()));
-        let trade_history = Arc::new(RwLock::new(HashMap::new()));
-        let positions = Arc::new(RwLock::new(HashMap::new()));
+
+        let symbol_accounts = Arc::new(DashMap::new());
+        let open_orders = Arc::new(DashMap::new());
+        let order_history = Arc::new(DashMap::new());
+        let trade_history = Arc::new(DashMap::new());
+        let positions = Arc::new(DashMap::new());
 
         let account = FuturesAccount::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
         let market = FuturesMarket::new(None, None);
@@ -106,25 +104,15 @@ impl BinanceLiveAccount {
             };
             let position = Position::new(Side::Ask, symbol.clone(), Decimal::ZERO, Decimal::ZERO);
             symbol_accounts
-                .write()
-                .await
                 .insert(symbol.clone(), symbol_account);
             open_orders
-                .write()
-                .await
-                .insert(symbol.clone(), Arc::new(RwLock::new(HashSet::new())));
+                .insert(symbol.clone(), Arc::new(DashSet::new()));
             order_history
-                .write()
-                .await
-                .insert(symbol.clone(), Arc::new(RwLock::new(HashSet::new())));
+                .insert(symbol.clone(), Arc::new(DashSet::new()));
             trade_history
-                .write()
-                .await
-                .insert(symbol.clone(), Arc::new(RwLock::new(HashSet::new())));
+                .insert(symbol.clone(), Arc::new(DashSet::new()));
             positions
-                .write()
-                .await
-                .insert(symbol.clone(), Arc::new(RwLock::new(position)));
+                .insert(symbol.clone(), position);
         }
         Self {
             symbol_accounts,
@@ -134,13 +122,11 @@ impl BinanceLiveAccount {
             positions,
             market: Arc::new(RwLock::new(market)),
             notifier: Arc::new(RwLock::new(TelegramNotifier::new())),
-            tf_trades: Arc::new(RwLock::new(tf_trades)),
+            tf_trades,
             account: Arc::new(RwLock::new(account)),
             trade_q: Arc::new(RwLock::new(VecDeque::new())),
             trade_subscribers: Arc::new(RwLock::new(async_broadcast::broadcast(1).0)),
-            order_statuses: Arc::new(RwLock::new(order_statuses)),
-            order_statuses_working: Arc::new(std::sync::RwLock::new(false)),
-            tf_trades_working: Arc::new(std::sync::RwLock::new(false)),
+            order_statuses,
         }
     }
 }
@@ -149,55 +135,39 @@ impl ExchangeAccountInfo for BinanceLiveAccount {
     fn get_exchange_id(&self) -> ExchangeId {
         ExchangeId::Binance
     }
-    async fn get_open_orders(&self, symbol: &Symbol) -> Arc<HashSet<OrderStatus>> {
-        Arc::new(
+    async fn get_open_orders(&self, symbol: &Symbol) -> Arc<DashSet<Order>> {
             self.open_orders
-                .read()
-                .await
                 .get(symbol)
                 .unwrap()
-                .read()
-                .await
-                .clone(),
-        )
+                .clone()
     }
 
     async fn get_symbol_account(&self, symbol: &Symbol) -> SymbolAccount {
         self.symbol_accounts
-            .read()
-            .await
             .get(symbol)
             .unwrap()
             .clone()
     }
 
-    async fn get_past_trades(&self, symbol: &Symbol, length: Option<usize>) -> Arc<HashSet<Trade>> {
+    async fn get_past_trades(&self, symbol: &Symbol, length: Option<usize>) -> Arc<DashSet<Trade>> {
         if let Some(length) = length {
-            let all_trades = self.trade_history.read().await;
-            let guard = all_trades.get(symbol).unwrap().read().await;
-            let mut trades_vec = guard.iter().collect::<Vec<&Trade>>();
+            let mut trades_vec = self.trade_history.get(symbol).unwrap().iter().map(|v| v.clone()).collect::<Vec<_>>();
             trades_vec.sort_by(|a, b| b.time.cmp(&a.time));
             trades_vec.truncate(length);
-            let trades = trades_vec.into_iter().cloned().collect::<HashSet<Trade>>();
+            let trades = trades_vec.into_iter().collect::<DashSet<Trade>>();
             Arc::new(trades)
         } else {
-            Arc::new(
                 self.trade_history
-                    .read()
-                    .await
                     .get(symbol)
                     .unwrap()
-                    .read()
-                    .await
-                    .clone(),
-            )
+                    .clone()
         }
     }
 
     async fn get_position(&self, symbol: &Symbol) -> Arc<Position> {
         let account = self.account.read().await;
         if let Ok(position_info) = account.position_information(symbol.symbol.clone()).await {
-            if position_info.len() <= 0 {
+            if position_info.len() == 0 {
                 return Arc::new(Position::new(
                     Side::Ask,
                     symbol.clone(),
@@ -451,30 +421,21 @@ impl ExchangeAccount for BinanceLiveAccount {
         Ok(OrderStatus::Canceled(order, "canceled".to_string()))
     }
 }
-
+#[async_trait]
 impl EventSink<Order> for BinanceLiveExecutor {
-    fn get_receiver(&self) -> Arc<RwLock<Receiver<(Order, Option<Arc<Notify>>)>>> {
+    fn get_receiver(&self) -> Receiver<(Order, Option<Arc<Notify>>)> {
         self.orders.clone()
     }
 
-    fn handle_event(&self, event_msg: Order) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+    async fn handle_event(&self, event_msg: Order) -> anyhow::Result<()> {
         let fut = self.process_order(event_msg);
         let order_status_q = self.order_status_q.clone();
-        Ok(tokio::spawn(async move {
             if let Ok(res) = fut {
                 order_status_q.write().await.push_back((res, None));
             }
             Ok(())
-        }))
     }
 
-    fn working(&self) -> bool {
-        *self.order_working.read().unwrap()
-    }
-    fn set_working(&self, working: bool) -> anyhow::Result<()> {
-        *self.order_working.write().unwrap() = working;
-        Ok(())
-    }
 }
 #[async_trait]
 impl EventEmitter<OrderStatus> for BinanceLiveExecutor {
@@ -504,20 +465,20 @@ impl EventEmitter<OrderStatus> for BinanceLiveExecutor {
     }
 }
 
+#[async_trait]
 impl EventSink<OrderStatus> for BinanceLiveAccount {
-    fn get_receiver(&self) -> Arc<RwLock<Receiver<(OrderStatus, Option<Arc<Notify>>)>>> {
+    fn get_receiver(&self) -> Receiver<(OrderStatus, Option<Arc<Notify>>)> {
         self.order_statuses.clone()
     }
-    fn handle_event(
+    async fn handle_event(
         &self,
         event_msg: OrderStatus,
-    ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+    ) -> anyhow::Result<()> {
         // let open_orders = self.open_orders.clone();
         // let order_history = self.order_history.clone();
         // let trade_q = self.trade_q.clone();
         // let all_positions = self.positions.clone();
         let notifier = self.notifier.clone();
-        Ok(tokio::spawn(async move {
             match &event_msg {
                 OrderStatus::Pending(_) => {}
                 OrderStatus::Filled(order) => {
@@ -558,25 +519,15 @@ impl EventSink<OrderStatus> for BinanceLiveAccount {
                 _ => {}
             }
             Ok(())
-        }))
     }
-    fn working(&self) -> bool {
-        *self.order_statuses_working.read().unwrap()
-    }
-    fn set_working(&self, working: bool) -> anyhow::Result<()> {
-        *self.order_statuses_working.write().unwrap() = working;
-        Ok(())
-    }
-}
 
+}
+#[async_trait]
 impl EventSink<TfTrades> for BinanceLiveAccount {
-    fn get_receiver(&self) -> Arc<RwLock<Receiver<(TfTrades,Option<Arc<Notify>>)>>> {
+    fn get_receiver(&self) -> Receiver<(TfTrades,Option<Arc<Notify>>)> {
         self.tf_trades.clone()
     }
-    fn handle_event(&self, event_msg: TfTrades) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
-        if event_msg.is_empty() {
-            return Ok(tokio::spawn(async move { Ok(()) }));
-        }
+    async fn handle_event(&self, event_msg: TfTrades) -> anyhow::Result<()> {
         // let open_orders = self.open_orders.clone();
         //
         // let trade_q = self.trade_q.clone();
@@ -584,16 +535,10 @@ impl EventSink<TfTrades> for BinanceLiveAccount {
         // let positions = self.positions.clone();
 
         // sync state
-        Ok(tokio::spawn(async move { Ok(()) }))
-    }
-
-    fn working(&self) -> bool {
-        *self.tf_trades_working.read().unwrap()
-    }
-    fn set_working(&self, working: bool) -> anyhow::Result<()> {
-        *self.tf_trades_working.write().unwrap() = working;
         Ok(())
     }
+
+
 }
 
 impl TradeExecutor for BinanceLiveExecutor {

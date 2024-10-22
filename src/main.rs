@@ -1,5 +1,9 @@
+
 #![feature(iterator_try_collect)]
 #![feature(async_closure)]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 
 mod back_tester;
 mod executors;
@@ -36,6 +40,9 @@ use std::fmt::Write;
 use std::time::{Duration, SystemTime};
 use subprocess::Exec;
 use tokio::sync::Notify;
+use tracing::Level;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::EnvFilter;
 use types::{
     AccessKey, ExchangeId, ExecutionCommand, GlobalConfig, Kline, Mode, Order, Symbol, TfTrades,
     Trade,
@@ -53,9 +60,19 @@ static KEY: Lazy<AccessKey> = Lazy::new(|| {
 });
 
 fn main() -> Result<(), anyhow::Error> {
+    // console_subscriber::init();
+    // or as an allow list (INFO, but drill into my crate's logs)
+    let filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::TRACE.into())
+        .parse("binance_q=trace")?;
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .compact()
+        .init();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(64)
+        .worker_threads(16)
         .max_blocking_threads(1024)
         .build()
         .unwrap();
@@ -225,12 +242,11 @@ async fn async_main() -> anyhow::Result<()> {
                 BackTester::new(global_config, back_tester_config);
 
             let start = std::time::SystemTime::now();
-
             let executor: Box<Arc<dyn TradeExecutor<Account = SimulatedAccount>>> =
                 Box::new(Arc::new(
                     executors::simulated::SimulatedExecutor::new(
-                        orders_channel.1,
-                        tf_trades_channel.1,
+                        orders_channel.1.deactivate(),
+                        tf_trades_channel.1.deactivate(),
                         vec![symbol.clone()],
                         trades_channel.0,
                     )
@@ -243,7 +259,7 @@ async fn async_main() -> anyhow::Result<()> {
             back_tester
                 .run(
                     pb.clone(),
-                    trades_channel.1,
+                    trades_channel.1.deactivate(),
                     tf_trades_channel.0,
                     orders_channel.0,
                     executor,
@@ -289,24 +305,24 @@ async fn async_main() -> anyhow::Result<()> {
             let executor: Box<Arc<dyn TradeExecutor<Account = SimulatedAccount>>> =
                 Box::new(Arc::new(
                     executors::simulated::SimulatedExecutor::new(
-                        orders_channel.1,
-                        tf_trades_channel.1,
+                        orders_channel.1.deactivate(),
+                        tf_trades_channel.1.deactivate(),
                         symbols_i.clone(),
                         trades_channel.0,
                     )
                     .await,
                 ));
-            let s_e = executor.clone();
-            std::thread::spawn(move || {
-                s_e.listen().unwrap();
-            });
+            // let s_e = executor.clone();
+            // tokio::spawn(async move {
+            //     s_e.listen().unwrap();
+            // });
 
             let back_tester = BackTesterMulti::new(global_config, b_configs);
             let start = std::time::SystemTime::now();
             back_tester
                 .run(
                     pb.clone(),
-                    trades_channel.1,
+                    trades_channel.1.deactivate(),
                     tf_trades_channel.0,
                     orders_channel.0,
                     executor,
@@ -334,7 +350,6 @@ async fn async_main() -> anyhow::Result<()> {
             .ok_or(anyhow::anyhow!("Invalid timeframe"))?;
         let download_klines = !matches.get_flag("nokline");
         let download_trades = !matches.get_flag("noaggtrades");
-        let mut threads = vec![];
         let pb = ProgressBar::new(0);
         let verbose = main_matches.get_flag("verbose");
 
@@ -349,6 +364,7 @@ async fn async_main() -> anyhow::Result<()> {
             .progress_chars("#>-"),
         );
 
+        let mut threads = vec![];
         for s in symbols.into_iter() {
             let symbol = Symbol {
                 symbol: s.clone(),
@@ -358,17 +374,25 @@ async fn async_main() -> anyhow::Result<()> {
             };
             let ktf = tf1.clone();
             let lpb = pb.clone();
-            threads.push(tokio::spawn(async move {
+            let lpb1 = pb.clone();
+
+            let rt_handle = Arc::new(tokio::runtime::Handle::current());
+           threads.push( std::thread::spawn(move || {
+               let s = symbol.clone();
                 if download_klines {
-                    load_klines_from_archive(symbol.clone(), ktf, l, lpb.clone(), verbose).await;
+                    rt_handle.block_on(async move {
+                        load_klines_from_archive(s, ktf, l, lpb, verbose).await;
+                    });
                 }
                 if download_trades {
-                    load_history_from_archive(symbol.clone(), l, tf, lpb.clone(), verbose).await;
+                    load_history_from_archive(symbol.clone(), l, tf, lpb1, verbose);
                 }
                 println!("[+] download > {} data downloaded", symbol.symbol.clone());
-            }))
+            }));
         }
-        futures::future::join_all(threads).await;
+        for t in threads.into_iter() {
+            t.join().unwrap();
+        }
     }
 
     if let Some(matches) = main_matches.subcommand_matches("live") {
@@ -415,11 +439,13 @@ async fn async_main() -> anyhow::Result<()> {
             s_e.listen().unwrap();
         });
 
+        let trades_rx = trades_channel.1.deactivate();
+
         let mut grpc_server = 50011;
         let mut workers = vec![];
         let verbose = main_matches.get_flag("verbose");
         for symbol in syms {
-            let t_r = trades_channel.1.clone();
+            let t_r = trades_rx.clone();
             let t_t = tf_trades_channel.0.clone();
             let o_t = orders_channel.0.clone();
             let e = executor.clone();
@@ -479,9 +505,9 @@ async fn async_main() -> anyhow::Result<()> {
                             max_daily_losses: 100,
                             max_risk_per_trade: 0.01,
                         },
-                        klines_channel.1.clone(),
+                        klines_channel.1.clone().deactivate(),
                         t_r,
-                        execution_commands_channel.1,
+                        execution_commands_channel.1.deactivate(),
                         inner_account,
                     );
 
@@ -498,7 +524,7 @@ async fn async_main() -> anyhow::Result<()> {
                             symbol: global_config.symbol.clone(),
                         },
                         global_config.clone(),
-                        klines_channel.1,
+                        klines_channel.1.deactivate(),
                         grpc_server.to_string(),
                         inner_account,
                     )
@@ -555,7 +581,6 @@ async fn async_main() -> anyhow::Result<()> {
 
             grpc_server += 1;
         }
-        drop(trades_channel.1);
         for worker in workers {
             worker.join().unwrap();
         }

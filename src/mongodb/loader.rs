@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use crate::events::EventEmitter;
 use crate::mongodb::MongoClient;
 use crate::types::{AccessKey, GlobalConfig, Kline, TfTrade, TfTrades};
@@ -16,7 +17,7 @@ use futures::TryStreamExt;
 use indicatif::ProgressBar;
 use mongodb::bson;
 use mongodb::bson::doc;
-use mongodb::options::{FindOneOptions, FindOptions};
+use mongodb::options::{FindOneOptions, FindOptions, InsertManyOptions};
 use rust_decimal::prelude::*;
 use serde::Deserialize;
 use std::io::{Read};
@@ -26,8 +27,12 @@ use tokio::task::JoinHandle;
 use futures::stream::{self, StreamExt};
 use tokio_retry::RetryIf;
 use tokio_retry::strategy::ExponentialBackoff;
+use rayon::prelude::*;
+use tempdir::TempDir;
+use tracing::{debug, error, info, warn};
+use crate::mongodb::client::MongoClientSync;
 
-pub fn to_tf_chunks(tf: u64, data: &Vec<TradeEntry>) -> Vec<Vec<TradeEntry>> {
+pub fn to_tf_chunks(tf: u64, data: &Vec<TradeEntry>) -> Vec<&[TradeEntry]> {
     if data.len() <= 0 {
         return vec![];
     }
@@ -35,34 +40,34 @@ pub fn to_tf_chunks(tf: u64, data: &Vec<TradeEntry>) -> Vec<Vec<TradeEntry>> {
     let mut chunks = vec![];
     let mut timestamp = data[0].timestamp;
     if data[data.len() - 1].timestamp - timestamp < tf * 1000 {
-        return vec![data.clone()];
+        return vec![data];
     }
     let mut last_i = 0;
-    for (i, trade) in data.clone().iter().enumerate() {
+    for (i, trade) in data.iter().enumerate() {
         if trade.timestamp - timestamp < tf * 1000 {
             continue;
         }
         timestamp = trade.timestamp;
-        chunks.push(data[last_i..i].to_vec());
+        chunks.push(&data[last_i..i]);
         last_i = i;
     }
     if chunks.len() <= 0 {
-        chunks.push(data.clone());
+        chunks.push(data);
     }
     chunks
 }
 
-pub async fn insert_trade_entries(
+pub fn insert_trade_entries(
     trades: &Vec<AggTrade>,
-    symbol: Symbol,
-    client: Arc<MongoClient>,
+    symbol: &Symbol,
+    client: Arc<MongoClientSync>,
     tf: Arc<u64>,
 ) -> anyhow::Result<()> {
-    let mut entries = vec![];
-    for (i, t) in trades.iter().enumerate() {
-        if i == 0 {
-            continue;
-        }
+    if trades.is_empty() {
+        return Ok(())
+    }
+    let mut entries = Vec::with_capacity(trades.len() - 1);
+    for (i, t) in trades.iter().enumerate().skip(1) {
         let delta = ((trades[i].price - trades[i - 1].price) * 100.0) / trades[i - 1].price;
 
         let entry = TradeEntry {
@@ -76,19 +81,29 @@ pub async fn insert_trade_entries(
         entries.push(entry);
     }
     let chunks = to_tf_chunks(*tf, &entries);
-    let mut tf_trades = vec![];
+
+    let mut tf_trades = Vec::with_capacity(chunks.len());
     for chunk in chunks {
+        let min = chunk.iter().max_by(|x, y| if x.price > y.price {Ordering::Less} else {Ordering::Greater}).unwrap().clone();
+        let max = chunk.iter().max_by(|x, y|  if x.price > y.price {Ordering::Greater} else {Ordering::Less}).unwrap().clone();
+
         let tf_trade = TfTrade {
             symbol: symbol.clone(),
             tf: *tf,
             id: chunk[0].id,
             timestamp: chunk[0].timestamp,
-            trades: chunk,
+            trades: chunk.to_vec(),
+            max_price_trade: max,
+            min_price_trade: min
         };
         tf_trades.push(tf_trade);
     }
-    client.tf_trades.insert_many(tf_trades, None).await?;
-    client.trades.insert_many(entries, None).await?;
+
+    for chunk in tf_trades.chunks(4000) {
+        client.tf_trades.insert_many(chunk, Some(InsertManyOptions::builder().ordered(false).bypass_document_validation(Some(true)).build()))?;
+    }
+
+
     Ok(())
 }
 
@@ -155,7 +170,8 @@ pub async fn load_klines_from_archive(
     fetch_history_span: i64,
     pb: ProgressBar,
     verbose: bool,
-) {
+)
+{
     let client = MongoClient::new().await;
     client
         .kline
@@ -203,7 +219,7 @@ pub async fn load_klines_from_archive(
                     month_str
                 );
                 if verbose {
-                    println!("[+] fetching {}", url);
+                    debug!("[+] fetching {}", url);
                 }
                 let retry_strategy = ExponentialBackoff::from_millis(100).take(3);
 
@@ -212,7 +228,7 @@ pub async fn load_klines_from_archive(
                 }).await;
                 if let Ok(res) = res {
                     if !res.status().is_success() {
-                        println!("[-] Failed to fetch {}. Reason: {}", url, res.status());
+                        warn!("[-] Failed to fetch {}. Reason: {}", url, res.status());
                         return;
                     }
                     if let Ok(bytes) = res.bytes().await {
@@ -254,15 +270,15 @@ pub async fn load_klines_from_archive(
                         }
 
                         if trades.is_empty() {
-                            println!("[-] No Kline found");
+                            info!("[-] No Kline found");
                         } else {
                             mongo_client.kline.insert_many(&trades, None).await.unwrap();
                         }
                     } else if verbose {
-                        println!("[-] failed to deserialize {}", url);
+                        warn!("[-] failed to deserialize {}", url);
                     }
                 } else if verbose {
-                    println!("[-] failed to fetch {}", url);
+                    warn!("[-] failed to fetch {}", url);
                 }
                 if !verbose {
                     pb.inc(1);
@@ -273,21 +289,20 @@ pub async fn load_klines_from_archive(
         .await;
 }
 
-pub async fn load_history_from_archive(
+pub fn load_history_from_archive(
     symbol: Symbol,
     fetch_history_span: i64,
     tf: u64,
     pb: ProgressBar,
     verbose: bool,
 )  {
-    let client = MongoClient::new().await;
+    let client = MongoClientSync::new();
     client
         .trades
         .delete_many(
             doc! {"symbol": bson::to_bson(&symbol.clone()).unwrap()},
             None,
         )
-        .await
         .unwrap();
     client
         .tf_trades
@@ -295,7 +310,6 @@ pub async fn load_history_from_archive(
             doc! {"symbol": bson::to_bson(&symbol.clone()).unwrap()},
             None,
         )
-        .await
         .unwrap();
 
     let mongo_client = Arc::new(client);
@@ -319,87 +333,78 @@ pub async fn load_history_from_archive(
     if !verbose {
         pb.inc_length(months.len() as u64);
     }
-    let concurrency_limit = num_cpus::get_physical();
+    let concurrency_limit = num_cpus::get_physical() / 2;
+    let tmp_dir = TempDir::new(&format!("agg-trades-{}", symbol.symbol)).unwrap();
 
-    stream::iter(months)
-        .map(|month| {
-            let tf = tf.clone();
-            let symbol = symbol.clone();
-            let mongo_client = mongo_client.clone();
-            let pb = pb.clone();
-            async move {
-                let month_str = month.format("%Y-%m").to_string();
-                let url = format!(
-                    "https://data.binance.vision/data/spot/monthly/aggTrades/{}/{}-aggTrades-{}.zip",
-                    symbol.symbol,
-                    symbol.symbol,
-                    month_str
-                );
+    info!("[?] Downloading...");
+    months.par_iter().for_each(|month| {
+        let month_str = month.format("%Y-%m").to_string();
+        let url = format!(
+            "https://data.binance.vision/data/spot/monthly/aggTrades/{}/{}-aggTrades-{}.zip",
+            symbol.symbol,
+            symbol.symbol,
+            month_str
+        );
+        if verbose {
 
-                if verbose {
+            debug!("[+] fetching {}", url);
+        }
+        if let Ok(res) = ripunzip::UnzipEngine::for_uri(&url, None, || {
 
-                    println!("[+] fetching {}", url);
-                }
-
-                let retry_strategy = ExponentialBackoff::from_millis(100).take(3);
-
-                let res = RetryIf::spawn(retry_strategy, || reqwest::get(&url), |e: &reqwest::Error| {
-                    e.is_connect() || e.is_timeout()
-                }).await;
-                if let Ok(res) = res {
-                    if !res.status().is_success() {
-                        println!("[-] Failed to fetch {}. Reason: {}", url, res.status());
-
-                        return;
-                    }
-                    if let Ok( bytes) = res.bytes().await {
-                        let buf = bytes.to_vec();
-                        let reader = std::io::Cursor::new(buf);
-                        let mut archive = zip::ZipArchive::new(reader).unwrap();
-
-                        let mut file_contents = String::new();
-
-                        archive.by_index(0).unwrap().read_to_string(&mut file_contents).expect("failed to read archive file");
-                        let mut trades = vec![];
-                        let mut reader = csv::Reader::from_reader(file_contents.as_bytes());
-
-                        reader.set_headers(
-                            StringRecord::from(vec!["agg_trade_id", "price", "quantity", "first_trade_id", "last_trade_id", "transact_time", "is_buyer_maker", "was_best_price"])
-                        );
-                        for record in  reader
-                            .deserialize::<ArchiveAggTrade>()
-                            .filter_map(|result| result.ok()) {
-                            trades.push(AggTrade::from(record));
-                        }
-
-                        let symbol = Symbol {
-                            symbol: symbol.symbol.clone(),
-                            exchange: symbol.exchange.clone(),
-                            base_asset_precision: symbol.base_asset_precision,
-                            quote_asset_precision: symbol.quote_asset_precision,
-                        };
-
-                        if trades.is_empty() {
-                            println!("[-] No agg trades found");
-                        } else {
-                            insert_trade_entries(&trades, symbol, mongo_client.clone(), tf).await.expect("error inserting trade entries");
-                        }
-
-                    } else if verbose {
-
-                        println!("[-] failed to deserialize {}", url);
-                    }
-                } else if verbose {
-
-                    println!("[-] failed to fetch {}", url);
-                }
-                if !verbose {
-                    pb.inc(1);
-                }
+        }) {
+            if let Err(e) = res.unzip(ripunzip::UnzipOptions{
+                output_directory: Some(tmp_dir.path().to_path_buf()),
+                password: None,
+                single_threaded: false,
+                filename_filter: None,
+                progress_reporter: Box::new(ripunzip::NullProgressReporter),
+            }) {
+                warn!("[-] Failed to fetch {}. Reason: {}", url, e);
+                return;
             }
-        }).buffer_unordered(concurrency_limit)
-        .collect::<Vec<_>>()
-        .await;
+
+            let tmp_dir = tmp_dir.path();
+            let file_name = format!("{}-aggTrades-{}.csv",
+                                    symbol.symbol,
+                                    month_str);
+            let file_path = tmp_dir.join(file_name);
+
+
+            let reader = csv::Reader::from_path(file_path.clone());
+
+            if let Ok( mut reader) = reader {
+
+                reader.set_headers(
+                    StringRecord::from(vec!["agg_trade_id", "price", "quantity", "first_trade_id", "last_trade_id", "transact_time", "is_buyer_maker", "was_best_price"])
+                );
+                let trades =  reader
+                    .deserialize::<ArchiveAggTrade>()
+                    .filter_map(|result| result.ok()).collect::<Vec<_>>().into_par_iter().map(AggTrade::from).collect::<Vec<_>>();
+
+                drop(reader);
+                let symbol = Symbol {
+                    symbol: symbol.symbol.clone(),
+                    exchange: symbol.exchange.clone(),
+                    base_asset_precision: symbol.base_asset_precision,
+                    quote_asset_precision: symbol.quote_asset_precision,
+                };
+
+                if trades.is_empty() {
+                    warn!("[-] No agg trades found");
+                } else {
+                    insert_trade_entries(&trades, &symbol, mongo_client.clone(), tf.clone()).expect("error inserting trade entries");
+                }
+
+            } else if verbose {
+
+                warn!("[-] failed to deserialize {}", file_path.display());
+            }
+            if !verbose {
+                pb.inc(1);
+            }
+        }
+
+    });
 }
 #[derive(Deserialize)]
 struct ArchiveAggTrade {
@@ -439,7 +444,7 @@ pub async fn load_history(key: AccessKey, symbol: Symbol, fetch_history_span: u6
     let start_time = starting_time as u64 - span;
 
     loop {
-        println!(
+        info!(
             "Fetching history from {} to {}",
             Local
                 .timestamp_millis_opt(start_time as i64)
@@ -489,7 +494,7 @@ pub async fn start_loader(symbol: Symbol, tf1: u64) -> JoinHandle<()> {
                 .as_millis() as u64
                 - tf1,
         );
-        let mongo_client = Arc::new(MongoClient::new().await);
+        let mongo_client = Arc::new(MongoClientSync::new());
 
         loop {
             let trades_result = market
@@ -502,8 +507,8 @@ pub async fn start_loader(symbol: Symbol, tf1: u64) -> JoinHandle<()> {
                             continue;
                         }
                         if let Ok(_) =
-                            insert_trade_entries(&trades, symbol.clone(), mongo_client.clone(), Arc::new(tf1))
-                                .await
+                            insert_trade_entries(&trades, &symbol, mongo_client.clone(), Arc::new(tf1))
+
                         {
                             last_id = Some(trades.last().unwrap().agg_id + 1);
                             // println!("{}: {} {:?}", tf1, first_id.agg_id,  last_id.unwrap());
@@ -692,66 +697,44 @@ impl EventEmitter<TfTrades> for TfTradeEmitter {
             )
             .await?;
         let mut last_timestamp = 0_u64;
-        let mut last_id = 1_u64;
         if let Some(t) = last_entry {
             last_timestamp = t.timestamp;
-            last_id = t.id + 1;
         }
         let tf = self.tf;
         let subscribers = self.subscribers.clone();
-        let config = self.global_config.clone();
         Ok(tokio::spawn(async move {
             loop {
                 if let Ok(t) = mongo_client
-                    .trades
+                    .tf_trades
                     .find(
-                        doc! {
-                            "timestamp": {
+                        doc! {"tf": bson::to_bson(&tf).unwrap(), "timestamp": {
                                 "$gt": bson::to_bson(&last_timestamp).unwrap()
-                            }
-                        },
-                        None,
+                            }},
+                        Some(FindOptions::builder().sort(doc! {"id": -1}).build()),
                     )
                     .await
                 {
-                    let trades = t.try_collect().await.unwrap_or_else(|_| vec![]);
-                    let tf_trades = to_tf_chunks(tf, &trades)
-                        .iter()
-                        .map(|t| {
-                            let trades = t.clone();
-                            let trade = TfTrade {
-                                id: last_id,
-                                tf,
-                                symbol: config.symbol.clone(),
-                                timestamp: SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_secs(),
-                                trades,
-                            };
-                            last_id += 1;
-                            trade
-                        })
-                        .collect::<Vec<_>>();
-                    if !tf_trades.is_empty() {
-                        mongo_client
-                            .tf_trades
-                            .insert_many(tf_trades.clone(), None)
-                            .await
-                            .unwrap();
-                    }
-                    if !tf_trades.is_empty() {
-                        last_timestamp = tf_trades.last().unwrap().trades.last().unwrap().timestamp;
-                        match subscribers.read().await.broadcast((tf_trades.clone(), None)).await {
-                            Ok(_) => {}
-                            Err(e) => {
-                                eprintln!("Error broadcasting tf trades {:?}", e)
-                            }
+                    let tf_trades = t.try_collect().await.unwrap_or_else(|_| vec![]);
+                    debug!("last_timestamp: {} trades_len: {}", last_timestamp, tf_trades.len());
+                    let notify = Arc::new(Notify::new());
+                    let sm_notifer = notify.notified();
+                    last_timestamp = tf_trades.last().unwrap().trades.last().unwrap().timestamp;
+
+                    match subscribers.read().await.broadcast((tf_trades, Some(notify.clone()))).await {
+                        Ok(_) => {
+                            sm_notifer.await;
+
+                        }
+                        Err(e) => {
+                            error!("Error broadcasting tf trades {:?}", e)
                         }
                     }
+                } else {
+                    debug!("no trades last_timestamp: {} trades_len: ", last_timestamp, );
+
                 }
-                tokio::time::sleep(Duration::from_secs(tf)).await;
             }
         }))
     }
 }
+

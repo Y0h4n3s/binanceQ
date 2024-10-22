@@ -9,7 +9,7 @@ use crate::types::{
     ClosePolicy, ExecutionCommand, GlobalConfig, Kline, Order, OrderStatus, OrderType, Side
     , Trade,
 };
-use async_broadcast::{Receiver, Sender};
+use async_broadcast::{InactiveReceiver, Receiver, Sender};
 use async_trait::async_trait;
 use rust_decimal::Decimal;
 use std::time::Duration;
@@ -26,14 +26,11 @@ pub struct RiskManager {
     pub global_config: Arc<GlobalConfig>,
     pub config: RiskManagerConfig,
     pub account: Box<Arc<dyn ExchangeAccount>>,
-    klines: Arc<RwLock<Receiver<(Kline, Option<Arc<Notify>>)>>>,
-    trades: Arc<RwLock<Receiver<(Trade, Option<Arc<Notify>>)>>>,
-    execution_commands: Arc<RwLock<Receiver<(ExecutionCommand, Option<Arc<Notify>>)>>>,
+    klines: InactiveReceiver<(Kline, Option<Arc<Notify>>)>,
+    trades: InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
+    execution_commands: InactiveReceiver<(ExecutionCommand, Option<Arc<Notify>>)>,
     subscribers: Arc<RwLock<Sender<(Order, Option<Arc<Notify>>)>>>,
     order_q: Arc<RwLock<VecDeque<Order>>>,
-    execution_commands_working: Arc<std::sync::RwLock<bool>>,
-    tf_trades_working: Arc<std::sync::RwLock<bool>>,
-    trade_working: Arc<std::sync::RwLock<bool>>,
 }
 
 #[async_trait]
@@ -61,45 +58,34 @@ impl EventEmitter<Order> for RiskManager {
     }
 }
 
+
+#[async_trait]
 impl EventSink<Trade> for RiskManager {
-    fn get_receiver(&self) -> Arc<RwLock<Receiver<(Trade, Option<Arc<Notify>>)>>> {
-        self.trades.clone()
-    }
-    fn working(&self) -> bool {
-        *self.trade_working.read().unwrap()
-    }
-    fn set_working(&self, working: bool) -> anyhow::Result<()> {
-        *self.trade_working.write().unwrap() = working;
-        Ok(())
+    fn get_receiver(&self) -> Receiver<(Trade, Option<Arc<Notify>>)> {
+        self.trades.clone().activate()
     }
     // Act on trade events for risk manager
-    fn handle_event(&self, event: Trade) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+    async fn handle_event(&self, event: Trade) -> anyhow::Result<()> {
         let global_config = self.global_config.clone();
         let account = self.account.clone();
-        Ok(tokio::spawn(async move { Ok(()) }))
-    }
-}
-
-impl EventSink<ExecutionCommand> for RiskManager {
-    fn get_receiver(&self) -> Arc<RwLock<Receiver<(ExecutionCommand, Option<Arc<Notify>>)>>> {
-        self.execution_commands.clone()
-    }
-    fn working(&self) -> bool {
-        *self.execution_commands_working.read().unwrap()
-    }
-    fn set_working(&self, working: bool) -> anyhow::Result<()> {
-        *self.execution_commands_working.write().unwrap() = working;
         Ok(())
     }
-    fn handle_event(
+}
+#[async_trait]
+impl EventSink<ExecutionCommand> for RiskManager {
+    fn get_receiver(&self) -> Receiver<(ExecutionCommand, Option<Arc<Notify>>)>{
+        self.execution_commands.clone().activate()
+    }
+
+    async fn handle_event(
         &self,
         event_msg: ExecutionCommand,
-    ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+    ) -> anyhow::Result<()> {
         let account = self.account.clone();
         let global_config = self.global_config.clone();
         let order_q = self.order_q.clone();
         /// decide on size and price and order_type and send to order_q
-        Ok(tokio::spawn(async move {
+
             let position = account.get_position(&global_config.symbol).await;
             let lifetime = 80 * 60 * 1000;
             match event_msg {
@@ -234,322 +220,315 @@ impl EventSink<ExecutionCommand> for RiskManager {
                 _ => {}
             }
             Ok(())
-        }))
     }
 }
 
+#[async_trait]
 impl EventSink<Kline> for RiskManager {
-    fn get_receiver(&self) -> Arc<RwLock<Receiver<(Kline, Option<Arc<Notify>>)>>> {
-        self.klines.clone()
-    }
-    fn working(&self) -> bool {
-        *self.tf_trades_working.read().unwrap()
-    }
-    fn set_working(&self, working: bool) -> anyhow::Result<()> {
-        *self.tf_trades_working.write().unwrap() = working;
-        Ok(())
+    fn get_receiver(&self) -> Receiver<(Kline, Option<Arc<Notify>>)> {
+        self.klines.clone().activate()
     }
     // Act on trade events for risk manager
     // deal with expired lifetime orders
-    fn handle_event(&self, event: Kline) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
-        let global_config = self.global_config.clone();
-        let account = self.account.clone();
-        let order_q = self.order_q.clone();
-        Ok(tokio::spawn(async move {
-            let open_orders = account.get_open_orders(&global_config.symbol).await;
-
-            let mut handled_orders = vec![];
-            for o in open_orders.iter() {
-                match o {
-                    // skip partially filled orders as they are mostly going to be limit orders
-                    OrderStatus::Pending(order) => {
-                        let now = event.close_time;
-                        if now < order.time {
-                            return Ok(());
-                        }
-                        if order.lifetime > 0 && now - order.time > order.lifetime {
-                            match order.order_type {
-                                // handle case when market filled order's lifetime is expired
-                                OrderType::StopLoss(for_id)
-                                | OrderType::StopLossTrailing(for_id, _) => {
-                                    if handled_orders.iter().any(|x| x == &order.id) {
-                                        continue;
-                                    }
-
-                                    let for_orders =
-                                        account.get_order(&global_config.symbol, &for_id).await;
-                                    let position =
-                                        account.get_position(&global_config.symbol).await;
-                                    let mut oq = order_q.write().await;
-
-                                    // if position is neutral and there are no limit orders with the same id
-                                    if !position.is_open()
-                                        && open_orders
-                                            .iter()
-                                            .find(|o| match o {
-                                                OrderStatus::Pending(order)
-                                                | OrderStatus::PartiallyFilled(order, _) => {
-                                                    order.order_type == OrderType::Limit
-                                                        && order.id == for_id
-                                                }
-                                                _ => false,
-                                            })
-                                            .is_none()
-                                    {
-                                        oq.push_back(Order {
-                                            id: for_id,
-                                            symbol: order.symbol.clone(),
-                                            side: order.side.clone(),
-                                            price: Default::default(),
-                                            quantity: order.quantity,
-                                            time: 0,
-                                            order_type: OrderType::CancelFor(for_id),
-                                            lifetime: 30 * 60 * 1000,
-                                            close_policy: ClosePolicy::ImmediateMarket,
-                                        });
-                                        return Ok(());
-                                    }
-                                    let spread = account.get_spread(&global_config.symbol).await;
-                                    let average_entry = for_orders
-                                        .iter()
-                                        .map(|o| o.price)
-                                        .reduce(|a, b| a + b)
-                                        .unwrap()
-                                        / Decimal::new(for_orders.len() as i64, 0);
-                                    match order.close_policy {
-                                        ClosePolicy::ImmediateMarket => {
-                                            // println!("Target/Stop order expired for order {} Handling with policy {:?} {:?}", for_id, order.close_policy, order.side);
-
-                                            // cancel the take profit or stop loss order
-                                            oq.push_back(Order {
-                                                id: for_id,
-                                                symbol: order.symbol.clone(),
-                                                side: order.side.clone(),
-                                                price: Default::default(),
-                                                quantity: order.quantity,
-                                                time: 0,
-                                                order_type: OrderType::CancelFor(for_id),
-                                                lifetime: 30 * 60 * 1000,
-                                                close_policy: ClosePolicy::ImmediateMarket,
-                                            });
-                                            // then market close the order's position
-                                            oq.push_back(Order {
-                                                id: uuid::Uuid::new_v4(),
-                                                symbol: order.symbol.clone(),
-                                                side: order.side.clone(),
-                                                price: Default::default(),
-                                                quantity: order.quantity,
-                                                time: 0,
-                                                order_type: OrderType::Market,
-                                                lifetime: 30 * 60 * 1000,
-                                                close_policy: ClosePolicy::ImmediateMarket,
-                                            });
-                                            handled_orders.push(order.id);
-                                        }
-                                        ClosePolicy::BreakEvenOrMarketClose => {
-                                            match order.side {
-                                                Side::Bid => {
-                                                    // breakeven stop order
-                                                    if spread.spread < average_entry {
-                                                        oq.push_back(Order {
-                                                            id: for_id,
-                                                            symbol: order.symbol.clone(),
-                                                            side: order.side.clone(),
-                                                            price: Default::default(),
-                                                            quantity: order.quantity,
-                                                            time: 0,
-                                                            order_type: OrderType::Cancel(order.id),
-                                                            lifetime: 30 * 60 * 1000,
-                                                            close_policy: ClosePolicy::None,
-                                                        });
-                                                        oq.push_back(Order {
-                                                            id: uuid::Uuid::new_v4(),
-                                                            symbol: order.symbol.clone(),
-                                                            side: order.side.clone(),
-                                                            price: average_entry,
-                                                            quantity: order.quantity,
-                                                            time: 0,
-                                                            order_type: OrderType::StopLoss(for_id),
-                                                            lifetime: u64::MAX,
-                                                            close_policy: ClosePolicy::None,
-                                                        });
-                                                    }
-                                                    // market close
-                                                    else {
-                                                        oq.push_back(Order {
-                                                            id: for_id,
-                                                            symbol: order.symbol.clone(),
-                                                            side: order.side.clone(),
-                                                            price: Default::default(),
-                                                            quantity: order.quantity,
-                                                            time: 0,
-                                                            order_type: OrderType::CancelFor(
-                                                                for_id,
-                                                            ),
-                                                            lifetime: 30 * 60 * 1000,
-                                                            close_policy:
-                                                                ClosePolicy::ImmediateMarket,
-                                                        });
-                                                        // then market close the order's position
-                                                        oq.push_back(Order {
-                                                            id: uuid::Uuid::new_v4(),
-                                                            symbol: order.symbol.clone(),
-                                                            side: order.side.clone(),
-                                                            price: Default::default(),
-                                                            quantity: order.quantity,
-                                                            time: 0,
-                                                            order_type: OrderType::Market,
-                                                            lifetime: 30 * 60 * 1000,
-                                                            close_policy:
-                                                                ClosePolicy::ImmediateMarket,
-                                                        });
-                                                    }
-                                                    handled_orders.push(order.id);
-                                                }
-                                                Side::Ask => {
-                                                    if spread.spread > average_entry {
-                                                        oq.push_back(Order {
-                                                            id: for_id,
-                                                            symbol: order.symbol.clone(),
-                                                            side: order.side.clone(),
-                                                            price: Default::default(),
-                                                            quantity: order.quantity,
-                                                            time: 0,
-                                                            order_type: OrderType::CancelFor(
-                                                                order.id,
-                                                            ),
-                                                            lifetime: 30 * 60 * 1000,
-                                                            close_policy: ClosePolicy::None,
-                                                        });
-                                                        oq.push_back(Order {
-                                                            id: uuid::Uuid::new_v4(),
-                                                            symbol: order.symbol.clone(),
-                                                            side: order.side.clone(),
-                                                            price: average_entry,
-                                                            quantity: order.quantity,
-                                                            time: 0,
-                                                            order_type: OrderType::StopLoss(for_id),
-                                                            lifetime: u64::MAX,
-                                                            close_policy: ClosePolicy::None,
-                                                        });
-                                                    } else {
-                                                        oq.push_back(Order {
-                                                            id: for_id,
-                                                            symbol: order.symbol.clone(),
-                                                            side: order.side.clone(),
-                                                            price: Default::default(),
-                                                            quantity: order.quantity,
-                                                            time: 0,
-                                                            order_type: OrderType::CancelFor(
-                                                                for_id,
-                                                            ),
-                                                            lifetime: 30 * 60 * 1000,
-                                                            close_policy:
-                                                                ClosePolicy::ImmediateMarket,
-                                                        });
-                                                        // then market close the order's position
-                                                        oq.push_back(Order {
-                                                            id: uuid::Uuid::new_v4(),
-                                                            symbol: order.symbol.clone(),
-                                                            side: order.side.clone(),
-                                                            price: Default::default(),
-                                                            quantity: order.quantity,
-                                                            time: 0,
-                                                            order_type: OrderType::Market,
-                                                            lifetime: 30 * 60 * 1000,
-                                                            close_policy:
-                                                                ClosePolicy::ImmediateMarket,
-                                                        });
-                                                    }
-                                                    handled_orders.push(order.id);
-                                                }
-                                            }
-                                        }
-                                        ClosePolicy::BreakEven => match order.side {
-                                            Side::Bid => {
-                                                if spread.spread < average_entry {
-                                                    oq.push_back(Order {
-                                                        id: for_id,
-                                                        symbol: order.symbol.clone(),
-                                                        side: order.side.clone(),
-                                                        price: Default::default(),
-                                                        quantity: order.quantity,
-                                                        time: 0,
-                                                        order_type: OrderType::Cancel(order.id),
-                                                        lifetime: 30 * 60 * 1000,
-                                                        close_policy: ClosePolicy::None,
-                                                    });
-                                                    oq.push_back(Order {
-                                                        id: uuid::Uuid::new_v4(),
-                                                        symbol: order.symbol.clone(),
-                                                        side: order.side.clone(),
-                                                        price: average_entry,
-                                                        quantity: order.quantity,
-                                                        time: 0,
-                                                        order_type: OrderType::StopLoss(for_id),
-                                                        lifetime: u64::MAX,
-                                                        close_policy: ClosePolicy::None,
-                                                    });
-                                                    handled_orders.push(order.id)
-                                                }
-                                            }
-                                            Side::Ask => {
-                                                if spread.spread > average_entry {
-                                                    oq.push_back(Order {
-                                                        id: for_id,
-                                                        symbol: order.symbol.clone(),
-                                                        side: order.side.clone(),
-                                                        price: Default::default(),
-                                                        quantity: order.quantity,
-                                                        time: 0,
-                                                        order_type: OrderType::CancelFor(order.id),
-                                                        lifetime: 30 * 60 * 1000,
-                                                        close_policy: ClosePolicy::None,
-                                                    });
-                                                    oq.push_back(Order {
-                                                        id: uuid::Uuid::new_v4(),
-                                                        symbol: order.symbol.clone(),
-                                                        side: order.side.clone(),
-                                                        price: average_entry,
-                                                        quantity: order.quantity,
-                                                        time: 0,
-                                                        order_type: OrderType::StopLoss(for_id),
-                                                        lifetime: u64::MAX,
-                                                        close_policy: ClosePolicy::None,
-                                                    });
-                                                }
-                                                handled_orders.push(order.id);
-                                            }
-                                        },
-                                        _ => {
-                                            todo!()
-                                        }
-                                    }
-                                }
-
-                                _ => {}
-                            }
-                            return Ok(());
-                        }
-                    }
-
-                    _ => {}
-
-                    _ => {}
-                }
-            }
+    async fn handle_event(&self, event: Kline) -> anyhow::Result<()> {
+        // let global_config = self.global_config.clone();
+        // let account = self.account.clone();
+        // let order_q = self.order_q.clone();
+        //     let open_orders = account.get_open_orders(&global_config.symbol).await;
+        //     let o1 = open_orders.clone();
+        //     let mut handled_orders = vec![];
+        //     for o in open_orders.iter() {
+        //         match &*o {
+        //             // skip partially filled orders as they are mostly going to be limit orders
+        //             OrderStatus::Pending(order) => {
+        //                 let now = event.close_time;
+        //                 if now < order.time {
+        //                     return Ok(());
+        //                 }
+        //                 if order.lifetime > 0 && now - order.time > order.lifetime {
+        //                     match order.order_type {
+        //                         // handle case when market filled order's lifetime is expired
+        //                         OrderType::StopLoss(for_id)
+        //                         | OrderType::StopLossTrailing(for_id, _) => {
+        //                             if handled_orders.iter().any(|x| x == &order.id) {
+        //                                 continue;
+        //                             }
+        // 
+        //                             let for_orders =
+        //                                 account.get_order(&global_config.symbol, &for_id).await;
+        //                             let position =
+        //                                 account.get_position(&global_config.symbol).await;
+        //                             let mut oq = order_q.write().await;
+        // 
+        //                             // if position is neutral and there are no limit orders with the same id
+        //                             if !position.is_open()
+        //                                 && o1
+        //                                     .iter()
+        //                                     .find(|o| match &**o {
+        //                                         OrderStatus::Pending(order)
+        //                                         | OrderStatus::PartiallyFilled(order, _) => {
+        //                                             order.order_type == OrderType::Limit
+        //                                                 && order.id == for_id
+        //                                         }
+        //                                         _ => false,
+        //                                     })
+        //                                     .is_none()
+        //                             {
+        //                                 oq.push_back(Order {
+        //                                     id: for_id,
+        //                                     symbol: order.symbol.clone(),
+        //                                     side: order.side.clone(),
+        //                                     price: Default::default(),
+        //                                     quantity: order.quantity,
+        //                                     time: 0,
+        //                                     order_type: OrderType::CancelFor(for_id),
+        //                                     lifetime: 30 * 60 * 1000,
+        //                                     close_policy: ClosePolicy::ImmediateMarket,
+        //                                 });
+        //                                 return Ok(());
+        //                             }
+        //                             let spread = account.get_spread(&global_config.symbol).await;
+        //                             let average_entry = for_orders
+        //                                 .iter()
+        //                                 .map(|o| o.price)
+        //                                 .reduce(|a, b| a + b)
+        //                                 .unwrap()
+        //                                 / Decimal::new(for_orders.len() as i64, 0);
+        //                             match order.close_policy {
+        //                                 ClosePolicy::ImmediateMarket => {
+        //                                     // println!("Target/Stop order expired for order {} Handling with policy {:?} {:?}", for_id, order.close_policy, order.side);
+        // 
+        //                                     // cancel the take profit or stop loss order
+        //                                     oq.push_back(Order {
+        //                                         id: for_id,
+        //                                         symbol: order.symbol.clone(),
+        //                                         side: order.side.clone(),
+        //                                         price: Default::default(),
+        //                                         quantity: order.quantity,
+        //                                         time: 0,
+        //                                         order_type: OrderType::CancelFor(for_id),
+        //                                         lifetime: 30 * 60 * 1000,
+        //                                         close_policy: ClosePolicy::ImmediateMarket,
+        //                                     });
+        //                                     // then market close the order's position
+        //                                     oq.push_back(Order {
+        //                                         id: uuid::Uuid::new_v4(),
+        //                                         symbol: order.symbol.clone(),
+        //                                         side: order.side.clone(),
+        //                                         price: Default::default(),
+        //                                         quantity: order.quantity,
+        //                                         time: 0,
+        //                                         order_type: OrderType::Market,
+        //                                         lifetime: 30 * 60 * 1000,
+        //                                         close_policy: ClosePolicy::ImmediateMarket,
+        //                                     });
+        //                                     handled_orders.push(order.id);
+        //                                 }
+        //                                 ClosePolicy::BreakEvenOrMarketClose => {
+        //                                     match order.side {
+        //                                         Side::Bid => {
+        //                                             // breakeven stop order
+        //                                             if spread.spread < average_entry {
+        //                                                 oq.push_back(Order {
+        //                                                     id: for_id,
+        //                                                     symbol: order.symbol.clone(),
+        //                                                     side: order.side.clone(),
+        //                                                     price: Default::default(),
+        //                                                     quantity: order.quantity,
+        //                                                     time: 0,
+        //                                                     order_type: OrderType::Cancel(order.id),
+        //                                                     lifetime: 30 * 60 * 1000,
+        //                                                     close_policy: ClosePolicy::None,
+        //                                                 });
+        //                                                 oq.push_back(Order {
+        //                                                     id: uuid::Uuid::new_v4(),
+        //                                                     symbol: order.symbol.clone(),
+        //                                                     side: order.side.clone(),
+        //                                                     price: average_entry,
+        //                                                     quantity: order.quantity,
+        //                                                     time: 0,
+        //                                                     order_type: OrderType::StopLoss(for_id),
+        //                                                     lifetime: u64::MAX,
+        //                                                     close_policy: ClosePolicy::None,
+        //                                                 });
+        //                                             }
+        //                                             // market close
+        //                                             else {
+        //                                                 oq.push_back(Order {
+        //                                                     id: for_id,
+        //                                                     symbol: order.symbol.clone(),
+        //                                                     side: order.side.clone(),
+        //                                                     price: Default::default(),
+        //                                                     quantity: order.quantity,
+        //                                                     time: 0,
+        //                                                     order_type: OrderType::CancelFor(
+        //                                                         for_id,
+        //                                                     ),
+        //                                                     lifetime: 30 * 60 * 1000,
+        //                                                     close_policy:
+        //                                                         ClosePolicy::ImmediateMarket,
+        //                                                 });
+        //                                                 // then market close the order's position
+        //                                                 oq.push_back(Order {
+        //                                                     id: uuid::Uuid::new_v4(),
+        //                                                     symbol: order.symbol.clone(),
+        //                                                     side: order.side.clone(),
+        //                                                     price: Default::default(),
+        //                                                     quantity: order.quantity,
+        //                                                     time: 0,
+        //                                                     order_type: OrderType::Market,
+        //                                                     lifetime: 30 * 60 * 1000,
+        //                                                     close_policy:
+        //                                                         ClosePolicy::ImmediateMarket,
+        //                                                 });
+        //                                             }
+        //                                             handled_orders.push(order.id);
+        //                                         }
+        //                                         Side::Ask => {
+        //                                             if spread.spread > average_entry {
+        //                                                 oq.push_back(Order {
+        //                                                     id: for_id,
+        //                                                     symbol: order.symbol.clone(),
+        //                                                     side: order.side.clone(),
+        //                                                     price: Default::default(),
+        //                                                     quantity: order.quantity,
+        //                                                     time: 0,
+        //                                                     order_type: OrderType::CancelFor(
+        //                                                         order.id,
+        //                                                     ),
+        //                                                     lifetime: 30 * 60 * 1000,
+        //                                                     close_policy: ClosePolicy::None,
+        //                                                 });
+        //                                                 oq.push_back(Order {
+        //                                                     id: uuid::Uuid::new_v4(),
+        //                                                     symbol: order.symbol.clone(),
+        //                                                     side: order.side.clone(),
+        //                                                     price: average_entry,
+        //                                                     quantity: order.quantity,
+        //                                                     time: 0,
+        //                                                     order_type: OrderType::StopLoss(for_id),
+        //                                                     lifetime: u64::MAX,
+        //                                                     close_policy: ClosePolicy::None,
+        //                                                 });
+        //                                             } else {
+        //                                                 oq.push_back(Order {
+        //                                                     id: for_id,
+        //                                                     symbol: order.symbol.clone(),
+        //                                                     side: order.side.clone(),
+        //                                                     price: Default::default(),
+        //                                                     quantity: order.quantity,
+        //                                                     time: 0,
+        //                                                     order_type: OrderType::CancelFor(
+        //                                                         for_id,
+        //                                                     ),
+        //                                                     lifetime: 30 * 60 * 1000,
+        //                                                     close_policy:
+        //                                                         ClosePolicy::ImmediateMarket,
+        //                                                 });
+        //                                                 // then market close the order's position
+        //                                                 oq.push_back(Order {
+        //                                                     id: uuid::Uuid::new_v4(),
+        //                                                     symbol: order.symbol.clone(),
+        //                                                     side: order.side.clone(),
+        //                                                     price: Default::default(),
+        //                                                     quantity: order.quantity,
+        //                                                     time: 0,
+        //                                                     order_type: OrderType::Market,
+        //                                                     lifetime: 30 * 60 * 1000,
+        //                                                     close_policy:
+        //                                                         ClosePolicy::ImmediateMarket,
+        //                                                 });
+        //                                             }
+        //                                             handled_orders.push(order.id);
+        //                                         }
+        //                                     }
+        //                                 }
+        //                                 ClosePolicy::BreakEven => match order.side {
+        //                                     Side::Bid => {
+        //                                         if spread.spread < average_entry {
+        //                                             oq.push_back(Order {
+        //                                                 id: for_id,
+        //                                                 symbol: order.symbol.clone(),
+        //                                                 side: order.side.clone(),
+        //                                                 price: Default::default(),
+        //                                                 quantity: order.quantity,
+        //                                                 time: 0,
+        //                                                 order_type: OrderType::Cancel(order.id),
+        //                                                 lifetime: 30 * 60 * 1000,
+        //                                                 close_policy: ClosePolicy::None,
+        //                                             });
+        //                                             oq.push_back(Order {
+        //                                                 id: uuid::Uuid::new_v4(),
+        //                                                 symbol: order.symbol.clone(),
+        //                                                 side: order.side.clone(),
+        //                                                 price: average_entry,
+        //                                                 quantity: order.quantity,
+        //                                                 time: 0,
+        //                                                 order_type: OrderType::StopLoss(for_id),
+        //                                                 lifetime: u64::MAX,
+        //                                                 close_policy: ClosePolicy::None,
+        //                                             });
+        //                                             handled_orders.push(order.id)
+        //                                         }
+        //                                     }
+        //                                     Side::Ask => {
+        //                                         if spread.spread > average_entry {
+        //                                             oq.push_back(Order {
+        //                                                 id: for_id,
+        //                                                 symbol: order.symbol.clone(),
+        //                                                 side: order.side.clone(),
+        //                                                 price: Default::default(),
+        //                                                 quantity: order.quantity,
+        //                                                 time: 0,
+        //                                                 order_type: OrderType::CancelFor(order.id),
+        //                                                 lifetime: 30 * 60 * 1000,
+        //                                                 close_policy: ClosePolicy::None,
+        //                                             });
+        //                                             oq.push_back(Order {
+        //                                                 id: uuid::Uuid::new_v4(),
+        //                                                 symbol: order.symbol.clone(),
+        //                                                 side: order.side.clone(),
+        //                                                 price: average_entry,
+        //                                                 quantity: order.quantity,
+        //                                                 time: 0,
+        //                                                 order_type: OrderType::StopLoss(for_id),
+        //                                                 lifetime: u64::MAX,
+        //                                                 close_policy: ClosePolicy::None,
+        //                                             });
+        //                                         }
+        //                                         handled_orders.push(order.id);
+        //                                     }
+        // 
+        //                                 },
+        //                                 _ => {
+        //                                     todo!()
+        //                                 }
+        //                             }
+        //                         }
+        // 
+        //                         _ => {}
+        //                     }
+        //                     return Ok(());
+        //                 }
+        //             }
+        // 
+        //             _ => {}
+        // 
+        //             _ => {}
+        //         }
+        //     }
             Ok(())
-        }))
     }
+
 }
 
 impl RiskManager {
     pub fn new(
         global_config: GlobalConfig,
         config: RiskManagerConfig,
-        klines: Receiver<(Kline, Option<Arc<Notify>>)>,
-        trades: Receiver<(Trade, Option<Arc<Notify>>)>,
-        execution_commands: Receiver<(ExecutionCommand, Option<Arc<Notify>>)>,
+        klines: InactiveReceiver<(Kline, Option<Arc<Notify>>)>,
+        trades: InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
+        execution_commands: InactiveReceiver<(ExecutionCommand, Option<Arc<Notify>>)>,
         account: Box<Arc<dyn ExchangeAccount>>,
     ) -> Self {
         let key = &global_config.key;
@@ -558,14 +537,11 @@ impl RiskManager {
             global_config: Arc::new(global_config),
             config,
             account,
-            klines: Arc::new(RwLock::new(klines)),
-            trades: Arc::new(RwLock::new(trades)),
-            execution_commands: Arc::new(RwLock::new(execution_commands)),
+            klines,
+            trades,
+            execution_commands,
             subscribers: Arc::new(RwLock::new(async_broadcast::broadcast(1).0)),
             order_q: Arc::new(RwLock::new(VecDeque::new())),
-            execution_commands_working: Arc::new(std::sync::RwLock::new(false)),
-            tf_trades_working: Arc::new(std::sync::RwLock::new(false)),
-            trade_working: Arc::new(std::sync::RwLock::new(false)),
         }
     }
 

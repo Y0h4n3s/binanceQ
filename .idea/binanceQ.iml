@@ -19,6 +19,7 @@
       <sourceFolder url="file://$MODULE_DIR$/src/mongodb/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/src/types/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/src/utils/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/benches" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/temp" />
       <excludeFolder url="file://$MODULE_DIR$/.tmp" />
       <excludeFolder url="file://$MODULE_DIR$/tmp" />

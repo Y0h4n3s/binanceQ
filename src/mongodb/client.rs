@@ -12,6 +12,58 @@ pub struct MongoClient {
     pub past_trades: mongodb::Collection<Trade>,
 }
 
+pub struct MongoClientSync {
+    pub database: mongodb::sync::Database,
+    pub trades: mongodb::sync::Collection<TradeEntry>,
+    pub tf_trades: mongodb::sync::Collection<TfTrade>,
+    pub kline: mongodb::sync::Collection<Kline>,
+    pub orders: mongodb::sync::Collection<Order>,
+    pub past_trades: mongodb::sync::Collection<Trade>,
+}
+
+
+impl MongoClientSync {
+    pub fn new() -> Self {
+        let mut mongodb_url = "mongodb://localhost:27017/binance-studies".to_string();
+        if let Ok(url) = std::env::var("MONGODB_URL") {
+            mongodb_url = url
+        }
+
+        let client = mongodb::sync::Client::with_uri_str(&mongodb_url).unwrap();
+        let database = client.database("binance-studies");
+        let trades = database.collection::<TradeEntry>("trade");
+        let tf_trades = database.collection::<TfTrade>("tf_trade");
+        let orders = database.collection::<Order>("orders");
+        let past_trades = database.collection::<Trade>("past_trades");
+        let kline = database.collection::<Kline>("kline");
+        MongoClientSync {
+            database,
+            orders,
+            trades,
+            tf_trades,
+            kline,
+            past_trades,
+        }
+    }
+    pub fn reset_db(&self, symbol: &Symbol) {
+        self.kline
+            .delete_many(doc! {"symbol": bson::to_bson(symbol).unwrap()}, None)
+            .unwrap();
+    }
+
+    pub fn reset_trades(&self, symbol: &Symbol) {
+        self.past_trades
+            .delete_many(doc! {"symbol": bson::to_bson(symbol).unwrap()}, None)
+            .unwrap();
+    }
+    pub fn reset_orders(&self, symbol: &Symbol) {
+        self.orders
+            .delete_many(doc! {"symbol": bson::to_bson(symbol).unwrap()}, None)
+            .unwrap();
+    }
+}
+
+
 impl MongoClient {
     pub async fn new() -> Self {
         let mut mongodb_url = "mongodb://localhost:27017/binance-studies".to_string();

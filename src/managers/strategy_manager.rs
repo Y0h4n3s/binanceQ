@@ -5,7 +5,7 @@ use crate::types::{
     Order, OrderStatus, OrderType, Symbol,
 };
 use anyhow::Error;
-use async_broadcast::{Receiver, Sender};
+use async_broadcast::{InactiveReceiver, Receiver, Sender};
 use async_std::io::ReadExt;
 use async_std::sync::Arc;
 use async_trait::async_trait;
@@ -113,7 +113,6 @@ impl SignalGenerator for SignalGeneratorService {
                 w.push_back(ExecutionCommand::ExecuteOrder(order));
             }
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
         Ok(Response::new(NotifyResponse {
             success: true,
             message: "ok".to_string(),
@@ -184,39 +183,39 @@ impl SignalGenerator for SignalGeneratorService {
         let orders = account.get_open_orders(&sym).await;
 
         let mut p_orders = vec![];
-        for order in orders.iter() {
-            if let OrderStatus::Pending(order) = order {
-                let mut for_id = "".to_string();
-                match order.order_type {
-                    OrderType::StopLoss(id)
-                    | OrderType::TakeProfit(id)
-                    | OrderType::CancelFor(id)
-                    | OrderType::StopLossTrailing(id, _) => {
-                        for_id = id.to_string();
-                    }
-
-                    _ => {}
-                }
-                let p_order = POrder {
-                    id: order.id.to_string(),
-                    for_id,
-                    symbol: Some(msg.clone()),
-                    side: if order.side == crate::types::Side::Bid {
-                        1
-                    } else {
-                        2
-                    },
-                    price: order.price.to_f64().unwrap(),
-                    quantity: order.quantity.to_f64().unwrap(),
-                    timestamp: order.time,
-                    order_type: 1,
-                    lifetime: order.lifetime,
-                    close_policy: 1,
-                    extra: "".to_string(),
-                };
-                p_orders.push(p_order);
-            }
-        }
+        // for order in orders.iter() {
+        //     if let OrderStatus::Pending(order) = &*order {
+        //         let mut for_id = "".to_string();
+        //         match order.order_type {
+        //             OrderType::StopLoss(id)
+        //             | OrderType::TakeProfit(id)
+        //             | OrderType::CancelFor(id)
+        //             | OrderType::StopLossTrailing(id, _) => {
+        //                 for_id = id.to_string();
+        //             }
+        // 
+        //             _ => {}
+        //         }
+        //         let p_order = POrder {
+        //             id: order.id.to_string(),
+        //             for_id,
+        //             symbol: Some(msg.clone()),
+        //             side: if order.side == crate::types::Side::Bid {
+        //                 1
+        //             } else {
+        //                 2
+        //             },
+        //             price: order.price.to_f64().unwrap(),
+        //             quantity: order.quantity.to_f64().unwrap(),
+        //             timestamp: order.time,
+        //             order_type: 1,
+        //             lifetime: order.lifetime,
+        //             close_policy: 1,
+        //             extra: "".to_string(),
+        //         };
+        //         p_orders.push(p_order);
+        //     }
+        // }
         Ok(Response::new(POrders { orders: p_orders }))
     }
 }
@@ -225,8 +224,7 @@ pub struct StrategyManager {
     global_config: GlobalConfig,
     pub command_subscribers: Arc<RwLock<Sender<(ExecutionCommand, Option<Arc<Notify>>)>>>,
     signal_generators: Arc<RwLock<SignalGeneratorService>>,
-    klines: Arc<RwLock<Receiver<(Kline, Option<Arc<Notify>>)>>>,
-    klines_working: Arc<std::sync::RwLock<bool>>,
+    klines: InactiveReceiver<(Kline, Option<Arc<Notify>>)>,
     command_q: Arc<RwLock<VecDeque<ExecutionCommand>>>,
     backtest_sock: Arc<RwLock<UnixStream>>,
 }
@@ -260,13 +258,13 @@ struct SocketMessage {
     pub msg: String,
 }
 
+#[async_trait]
 impl EventSink<Kline> for StrategyManager {
-    fn get_receiver(&self) -> Arc<RwLock<Receiver<(Kline, Option<Arc<Notify>>)>>> {
-        self.klines.clone()
+    fn get_receiver(&self) -> Receiver<(Kline, Option<Arc<Notify>>)> {
+        self.klines.clone().activate()
     }
-    fn handle_event(&self, event_msg: Kline) -> anyhow::Result<JoinHandle<anyhow::Result<()>>> {
+    async fn handle_event(&self, event_msg: Kline) -> anyhow::Result<()> {
         let sock = self.backtest_sock.clone();
-        Ok(tokio::spawn(async move {
             // TODO: make sure socket is open
 
             // this is only run during backtest mode,
@@ -296,14 +294,6 @@ impl EventSink<Kline> for StrategyManager {
                 }
                 Err(e) => Err(Error::new(e)),
             }
-        }))
-    }
-    fn working(&self) -> bool {
-        *self.klines_working.read().unwrap()
-    }
-    fn set_working(&self, working: bool) -> anyhow::Result<()> {
-        *self.klines_working.write().unwrap() = working;
-        Ok(())
     }
 }
 
@@ -315,7 +305,7 @@ impl StrategyManager {
     pub async fn new(
         config: StrategyManagerConfig,
         global_config: GlobalConfig,
-        klines: Receiver<(Kline, Option<Arc<Notify>>)>,
+        klines: InactiveReceiver<(Kline, Option<Arc<Notify>>)>,
         grpc_server_port: String,
         account: Box<Arc<dyn ExchangeAccount>>,
     ) -> Self {
@@ -342,9 +332,8 @@ impl StrategyManager {
         Self {
             global_config,
             command_subscribers: Arc::new(RwLock::new(async_broadcast::broadcast(1).0)),
-            klines: Arc::new(RwLock::new(klines)),
+            klines,
             signal_generators: Arc::new(RwLock::new(service)),
-            klines_working: Arc::new(std::sync::RwLock::new(false)),
             command_q: Arc::new(RwLock::new(VecDeque::new())),
             backtest_sock: Arc::new(RwLock::new(UnixStream::connect(sock_addr).await.unwrap())),
         }

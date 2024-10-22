@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
@@ -40,6 +41,9 @@ impl From<Vec<TradeEntry>> for Candle {
         if trades.is_empty() {
             return Self::default();
         }
+        let mut trades = trades;
+        let min = trades.iter().max_by(|x, y| if x.price > y.price {Ordering::Less} else {Ordering::Greater}).unwrap().clone();
+        let max = trades.iter().max_by(|x, y|  if x.price > y.price {Ordering::Greater} else {Ordering::Less}).unwrap().clone();
         let tf_trade_entry = TfTrade {
             symbol: trades.first().unwrap().symbol.clone(),
             tf: 1,
@@ -49,6 +53,8 @@ impl From<Vec<TradeEntry>> for Candle {
                 .map(|trade| trade.timestamp)
                 .min()
                 .unwrap_or(0),
+            min_price_trade: min,
+            max_price_trade: max,
             trades,
         };
         Self::from(&tf_trade_entry)
@@ -183,6 +189,8 @@ pub struct TfTrade {
     pub tf: u64,
     pub id: u64,
     pub timestamp: u64,
+    pub min_price_trade: TradeEntry,
+    pub max_price_trade: TradeEntry,
     pub trades: Vec<TradeEntry>,
 }
 
@@ -301,6 +309,19 @@ pub enum OrderStatus {
     Filled(Order),
     PartiallyFilled(Order, Decimal),
     Canceled(Order, String),
+}
+
+impl OrderStatus {
+    pub fn order(&self) -> Order {
+        match self {
+            OrderStatus::Pending(o) |
+            OrderStatus::Filled(o) |
+            OrderStatus::PartiallyFilled(o, _) |
+            OrderStatus::Canceled(o, _)  => {
+                o.clone()
+            }
+        }
+    }
 }
 
 impl PartialEq for Order {

@@ -15,9 +15,9 @@ serde = "1.0.141"
 anyhow = "1.0.66"
 serde_with = "2.0.1"
 env_logger = "0.9.0"
-tokio = {version = "1.22.0", features = ["rt-multi-thread"]}
+tokio = {version = "1.22.0", features = ["rt-multi-thread", "tracing"]}
 futures = "0.3.25"
-async-std = "1.12.0"
+async-std = "1.13.0"
 once_cell = "1.16.0"
 async-trait = "0.1.58"
 error-chain = "0.12.4"
@@ -30,21 +30,35 @@ kanal = "0.1.0-pre7"
 rand = "0.8.5"
 subprocess = "0.2.9"
 async-broadcast = "0.4.1"
-mongodb = {version = "2.1.0", default-features = false, features = ["tokio-runtime"]}
+mongodb = {version = "2.8.2", features = ["tokio-sync"]}
 tonic = "0.8.3"
 prost = "0.11.3"
 uuid = { version = "1.10.0", features = ["v4"] }
 serde-pickle = "1.1.1"
 chrono = "0.4.38"
-reqwest = "0.12.8"
+reqwest = { version = "0.12.8", features = ["stream"] }
 teloxide = "0.13.0"
 csv = "1.3.0"
 headless_chrome = "1.0.15"
 zip = "2.2.0"
 num_cpus = "1.16.0"
 tokio-retry = "0.3.0"
+console-subscriber = "0.4.0"
+rayon = "1.10.0"
+rust_decimal_macros = "1.36.0"
+dashmap = "6.1.0"
+tikv-jemallocator = "0.5"
+ripunzip = "2.0.0"
+tempdir = "0.3.7"
+tracing = "0.1"
+tracing-subscriber = "0.3"
 [dev-dependencies]
 tonic-build = "0.8.4"
 
+
 [build-dependencies]
 tonic-build = "0.8.4"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"

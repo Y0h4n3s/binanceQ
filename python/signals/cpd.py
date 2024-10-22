@@ -134,7 +134,7 @@ class ChangePointDetector:
         # TODO: expose exchange account info via RPC
         if probs[-1] > average * 10 and len(pqpl) > 0:
             with grpc.insecure_channel(self.grpc_server) as channel:
-                print(self.steps)
+                # print(self.steps)
                 stub = signals_pb2_grpc.SignalGeneratorStub(channel)
                 s["exchange"] = signals_pb2.ExchangeId.EXCHANGE_ID_SIMULATED
 
@@ -142,7 +142,7 @@ class ChangePointDetector:
                 spread = stub.GetSpread(signals_pb2.Symbol(**s))
                 pqpl, nqpl = self.qpl.qpl_at_price(symbol, spread.spread)
 
-                print(position)
+                # print(position)
                 lifetime = 3000 * 60 * 1000
                 entry_id = str(uuid.uuid4())
                 quantity = round(100 / spread.spread, 5)
@@ -199,7 +199,7 @@ class ChangePointDetector:
                         orders.append(signals_pb2.Order(**entry_order))
                         orders.append(signals_pb2.Order(**stop_loss_order))
                         orders.append(signals_pb2.Order(**take_profit_order))
-                        print(f"[+] BUY {symbol} {spread.spread} {target} {stop_loss} {probs[-1]}")
+                        # print(f"[+] BUY {symbol} {spread.spread} {target} {stop_loss} {probs[-1]}")
                     else:
                         if position.side == signals_pb2.Side.SIDE_BUY:
                             orders.append(signals_pb2.Order(**entry_order))
@@ -224,7 +224,7 @@ class ChangePointDetector:
                             orders.append(signals_pb2.Order(**entry_order))
                             orders.append(signals_pb2.Order(**stop_loss_order))
                             orders.append(signals_pb2.Order(**take_profit_order))
-                        print(f"[+] BUY {symbol} {spread.spread} {target} {stop_loss} {probs[-1]}")
+                        # print(f"[+] BUY {symbol} {spread.spread} {target} {stop_loss} {probs[-1]}")
                 else:
                     entry_order["side"] = signals_pb2.Side.SIDE_SELL
                     stop_loss_order["side"] = signals_pb2.Side.SIDE_BUY
@@ -239,7 +239,7 @@ class ChangePointDetector:
                         orders.append(signals_pb2.Order(**entry_order))
                         orders.append(signals_pb2.Order(**stop_loss_order))
                         orders.append(signals_pb2.Order(**take_profit_order))
-                        print(f"[+] SELL {symbol} {spread.spread} {target} {stop_loss} {probs[-1]}")
+                        # print(f"[+] SELL {symbol} {spread.spread} {target} {stop_loss} {probs[-1]}")
                     else:
                         if position.side == signals_pb2.Side.SIDE_SELL:
                             orders.append(signals_pb2.Order(**entry_order))
@@ -265,7 +265,7 @@ class ChangePointDetector:
                             orders.append(signals_pb2.Order(**entry_order))
                             orders.append(signals_pb2.Order(**stop_loss_order))
                             orders.append(signals_pb2.Order(**take_profit_order))
-                        print(f"[+] SELL {symbol} {spread.spread} {target} {stop_loss} {probs[-1]}")
+                        # print(f"[+] SELL {symbol} {spread.spread} {target} {stop_loss} {probs[-1]}")
                 resp = stub.NotifyOrders(signals_pb2.Orders(orders=orders))
 
         # reset to min_buffer if we have too many values
