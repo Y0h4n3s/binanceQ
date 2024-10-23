@@ -12,6 +12,8 @@ use mongodb::options::FindOptions;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
 use tracing::{error, info};
+use tracing::log::debug;
+use crate::db::client::SQLiteClient;
 
 #[derive(Debug, Clone)]
 pub struct BackTesterConfig {
@@ -94,7 +96,7 @@ impl BackTester {
         executor: Box<Arc<dyn TradeExecutor<Account = SimulatedAccount>>>,
     ) -> anyhow::Result<()> {
         let mongo_client = MongoClient::new().await;
-
+        let sqlite_client = SQLiteClient::new().await;
         // Start the python signal generator for this symbol
         let config = self.config.clone();
         let backtest_done = Arc::new(AtomicBool::new(false));
@@ -231,65 +233,22 @@ impl BackTester {
             "{} Loading Data...",
             self.config.symbol.symbol
         );
-        let count = mongo_client
-            .kline
-            .count_documents(
-                doc! {
-                    "symbol.symbol": mongodb::bson::to_bson(&self.config.symbol.symbol).unwrap(),
-                    "close_time": {
-                                "$gt": mongodb::bson::to_bson(&(until as u64)).unwrap(),
-                    }
-                },
-                None,
-            )
-            .await?;
+        let mut klines = SQLiteClient::get_kline_stream(&sqlite_client.pool, &self.config.symbol);
+        let mut tf_trade_steps = SQLiteClient::get_tf_trades_stream(&sqlite_client.pool, &self.config.symbol);
+
+        if let Some(Err(e)) = klines.next().await {
+            debug!("{:?}", e);
+        }
+        let count: u64 = sqlx::query_scalar("SELECT COUNT(*) FROM klines WHERE close_time > ?").bind(until.to_string()).fetch_one(&sqlite_client.pool).await.unwrap();
         info!(
             "Starting backtest for {} on {}  Klines",
             self.config.symbol.symbol, count
         );
-        let mut klines = mongo_client
-            .kline
-            .find(
-                doc! {
-                    "symbol.symbol": mongodb::bson::to_bson(&self.config.symbol.symbol).unwrap(),
-                    "close_time": {
-                        "$gt": mongodb::bson::to_bson(&(until as u64)).unwrap(),
-                    }
-                },
-                FindOptions::builder()
-                    .sort(doc! {
-                        "close_time": 1
-                    })
-                    .allow_disk_use(true)
-                    .build(),
-            )
-            .await?;
-        let mut tf_trade_steps = mongo_client
-            .tf_trades
-            .find(
-                doc! {
-                    "tf": mongodb::bson::to_bson(&self.global_config.tf1).unwrap(),
-                    "symbol.symbol": mongodb::bson::to_bson(&self.config.symbol.symbol).unwrap(),
-                    "timestamp": {
-                        "$gt": mongodb::bson::to_bson(&(until as u64)).unwrap(),
-                    }
-                },
-                FindOptions::builder()
-                    .sort(doc! {
-                        "timestamp": 1
-                    })
-                    .allow_disk_use(true)
-                    .build(),
-            )
-            .await?;
-
-        // let event_sequence: Arc<RwLock<VecDeque<Order>>> = Arc::new(RwLock::new(VecDeque::new()));
-        // let mut event_registers = vec![];
-
-        pb.inc_length(count);
+       pb.inc_length(count);
 
         while let Some(Ok(kline)) = klines.next().await {
-            'i: while let Some(Ok(trade)) = tf_trade_steps.next().await {
+            debug!("{:?}", kline);
+            'i: while let Some(Ok(mut trade)) = tf_trade_steps.next().await {
                 if trade.timestamp >= kline.close_time {
                     let notify = Arc::new(Notify::new());
                     let sm_notifer = notify.notified();
@@ -309,6 +268,9 @@ impl BackTester {
                     // }
                     break 'i;
                 }
+                trade.trades = SQLiteClient::select_values_between_min_max(&sqlite_client.pool, trade.min_price_trade.to_string(), trade.max_price_trade.to_string()).await;
+                debug!("{:?}", trade.trades.len());
+                
                 let notify = Arc::new(Notify::new());
                 let sm_notifer = notify.notified();
 

@@ -2,37 +2,39 @@ use std::cmp::Ordering;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
+use rust_decimal::prelude::ToPrimitive;
+use rust_decimal_macros::dec;
 use yata::core::{ValueType, OHLCV};
 pub type TfTrades = Vec<TfTrade>;
 
 #[derive(Debug, Clone, Default)]
 pub struct Candle {
-    pub open: f64,
-    pub high: f64,
-    pub low: f64,
-    pub close: f64,
-    pub volume: f64,
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
+    pub close: Decimal,
+    pub volume: Decimal,
 }
 
 impl OHLCV for Candle {
     fn open(&self) -> ValueType {
-        self.open
+        self.open.to_f64().unwrap()
     }
 
     fn high(&self) -> ValueType {
-        self.high
+        self.high.to_f64().unwrap()
     }
 
     fn low(&self) -> ValueType {
-        self.low
+        self.low.to_f64().unwrap()
     }
 
     fn close(&self) -> ValueType {
-        self.close
+        self.close.to_f64().unwrap()
     }
 
     fn volume(&self) -> ValueType {
-        self.volume
+        self.volume.to_f64().unwrap()
     }
 }
 
@@ -53,8 +55,8 @@ impl From<Vec<TradeEntry>> for Candle {
                 .map(|trade| trade.timestamp)
                 .min()
                 .unwrap_or(0),
-            min_price_trade: min,
-            max_price_trade: max,
+            min_price_trade: min.price,
+            max_price_trade: max.price,
             trades,
         };
         Self::from(&tf_trade_entry)
@@ -96,7 +98,7 @@ impl From<&TfTrade> for Candle {
                 .iter()
                 .map(|t| t.qty)
                 .reduce(|a, b| a + b)
-                .unwrap_or(0.0),
+                .unwrap_or(dec!(0.0)),
         }
     }
 }
@@ -175,11 +177,11 @@ pub struct BookSideEntry {
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TradeEntry {
-    pub id: u64,
-    pub price: f64,
-    pub qty: f64,
+    pub trade_id: u64,
+    pub price: Decimal,
+    pub qty: Decimal,
     pub timestamp: u64,
-    pub delta: f64,
+    pub delta: Decimal,
     pub symbol: Symbol,
 }
 
@@ -189,8 +191,8 @@ pub struct TfTrade {
     pub tf: u64,
     pub id: u64,
     pub timestamp: u64,
-    pub min_price_trade: TradeEntry,
-    pub max_price_trade: TradeEntry,
+    pub min_price_trade: Decimal,
+    pub max_price_trade: Decimal,
     pub trades: Vec<TradeEntry>,
 }
 

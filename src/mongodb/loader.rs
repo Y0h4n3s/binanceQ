@@ -71,12 +71,12 @@ pub fn insert_trade_entries(
         let delta = ((trades[i].price - trades[i - 1].price) * 100.0) / trades[i - 1].price;
 
         let entry = TradeEntry {
-            id: t.agg_id,
-            price: t.price,
-            qty: t.qty,
+            trade_id: t.agg_id,
+            price: Decimal::from_f64(t.price).unwrap(),
+            qty: Decimal::from_f64(t.qty).unwrap(),
             timestamp: t.time,
             symbol: symbol.clone(),
-            delta,
+            delta: Decimal::from_f64(delta).unwrap(),
         };
         entries.push(entry);
     }
@@ -90,11 +90,11 @@ pub fn insert_trade_entries(
         let tf_trade = TfTrade {
             symbol: symbol.clone(),
             tf: *tf,
-            id: chunk[0].id,
+            id: chunk[0].trade_id,
             timestamp: chunk[0].timestamp,
             trades: chunk.to_vec(),
-            max_price_trade: max,
-            min_price_trade: min
+            max_price_trade: max.price,
+            min_price_trade: min.price
         };
         tf_trades.push(tf_trade);
     }

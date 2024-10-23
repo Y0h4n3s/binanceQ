@@ -198,7 +198,6 @@ impl EventSink<TfTrades> for SimulatedAccount {
         let open_orders = self.open_orders.clone();
 
         let trade_q = self.trade_q.clone();
-        let filled_orders = self.order_history.clone();
         let positions = self.positions.clone();
         let spreads = self.spreads.clone();
         // update spread first with the last trade
@@ -206,11 +205,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
             if let Some(last) = last_trade.trades.last() {
                 if let Some(spread_lock) = spreads.get(&last_trade.symbol) {
                     let mut spread = spread_lock.write().await;
-                    if let Some(price_decimal) = Decimal::from_f64(last.price) {
-                        spread.update(price_decimal, last_trade.timestamp);
-                    } else {
-                        // Handle invalid price conversion
-                    }
+                        spread.update(last.price, last_trade.timestamp);
                 } else {
                     // Handle missing spread for the symbol
                 }
@@ -218,6 +213,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
         }
 
         // TODO: remove used orders to avoid trade reuse inconsistencies
+        // TODO: wait for all order status wakes to be notified to increase reliability
         // if any open orders are fillable move them to filled orders and update position and push a trade event to trade queue if it is a order opposite to position
         for tf_trade in event_msg {
             let symbol = tf_trade.symbol.clone();
@@ -240,7 +236,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                         // check if order is in pending openorders list and send a
                         // cancelled order status if it exists and a filled orderstatus
                         // for this order
-                         OrderType::Cancel(order_id)=> {
+                        OrderType::Cancel(order_id)=> {
                              if let Some(order1) = order_search.get(&order_id) {
                                  broadcast(
                                      &self.order_status_subscribers, 
@@ -263,12 +259,12 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                     trade_q.0.push_back(trade);
                                     trade_q.1.notify_one();
                                 }
-                            if Decimal::from_f64(trade.qty).unwrap().lt(&order.quantity) {
+                            if trade.qty.lt(&order.quantity) {
                                 broadcast(
                                     &self.order_status_subscribers,
                                     OrderStatus::PartiallyFilled(
                                         order.clone(),
-                                        Decimal::from_f64(trade.qty).unwrap(),
+                                        trade.qty,
                                     )).await;
                             } else {
                                 broadcast(
@@ -290,8 +286,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                             }
                             // fill long stop if stop price is above trade price
                                if position.is_long() {
-                                   if Decimal::from_f64(trade.price)
-                                       .unwrap()
+                                   if trade.price
                                        .le(&order.price) {
                                       
                                        if let Some(trade) =
@@ -300,12 +295,12 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                            broadcast(&self.trade_subscribers, trade).await;
 
                                        }
-                                       if Decimal::from_f64(trade.qty).unwrap().lt(&order.quantity) {
+                                       if trade.qty.lt(&order.quantity) {
                                                broadcast(
                                                    &self.order_status_subscribers,
                                                    OrderStatus::PartiallyFilled(
                                                    order.clone(),
-                                                   Decimal::from_f64(trade.qty).unwrap(),
+                                                   trade.qty,
                                                )).await;
                                            } else {
                                            broadcast(
@@ -316,8 +311,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                    }
                                } else {
                                    // fill short stop if stop price is below trade price
-                                   if Decimal::from_f64(trade.price)
-                                       .unwrap()
+                                   if trade.price
                                        .ge(&order.price) {
                                       
                                        if let Some(trade) =
@@ -326,12 +320,12 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                            broadcast(&self.trade_subscribers, trade).await;
 
                                        }
-                                       if Decimal::from_f64(trade.qty).unwrap().lt(&order.quantity) {
+                                       if trade.qty.lt(&order.quantity) {
                                            broadcast(
                                                &self.order_status_subscribers,
                                                OrderStatus::PartiallyFilled(
                                                    order.clone(),
-                                                   Decimal::from_f64(trade.qty).unwrap(),
+                                                   trade.qty,
                                                )).await;
                                        } else {
                                            broadcast(
@@ -356,8 +350,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                             }
                             // fill long if target price is above trade price
                                if position.is_long() {
-                                   if Decimal::from_f64(trade.price)
-                                       .unwrap()
+                                   if trade.price
                                        .le(&order.price) {
                                        
                                        if let Some(trade) =
@@ -366,12 +359,12 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                            broadcast(&self.trade_subscribers, trade).await;
 
                                        }
-                                       if Decimal::from_f64(trade.qty).unwrap().lt(&order.quantity) {
+                                       if trade.qty.lt(&order.quantity) {
                                                broadcast(
                                                    &self.order_status_subscribers,
                                                    OrderStatus::PartiallyFilled(
                                                    order.clone(),
-                                                   Decimal::from_f64(trade.qty).unwrap(),
+                                                   trade.qty,
                                                )).await;
                                            } else {
                                            broadcast(
@@ -382,8 +375,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                    }
                                } else {
                                    // fill short if stop price is below trade price
-                                   if Decimal::from_f64(trade.price)
-                                       .unwrap()
+                                   if trade.price
                                        .ge(&order.price) {
                                       
                                        if let Some(trade) =
@@ -391,12 +383,12 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                        {
                                            broadcast(&self.trade_subscribers, trade).await;
                                        }
-                                       if Decimal::from_f64(trade.qty).unwrap().lt(&order.quantity) {
+                                       if trade.qty.lt(&order.quantity) {
                                            broadcast(
                                                &self.order_status_subscribers,
                                                OrderStatus::PartiallyFilled(
                                                    order.clone(),
-                                                   Decimal::from_f64(trade.qty).unwrap(),
+                                                   trade.qty,
                                                )).await;
                                        } else {
                                            broadcast(
@@ -413,8 +405,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                         OrderType::Limit => {
                             let mut position = positions.get_mut(&symbol).unwrap();
                             if order.side == Side::Bid {
-                                if Decimal::from_f64(trade.price)
-                                    .unwrap()
+                                if trade.price
                                     .le(&order.price) {
 
                                     if let Some(trade) =
@@ -423,12 +414,12 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                         broadcast(&self.trade_subscribers, trade).await;
 
                                     }
-                                    if Decimal::from_f64(trade.qty).unwrap().lt(&order.quantity) {
+                                    if trade.qty.lt(&order.quantity) {
                                         broadcast(
                                             &self.order_status_subscribers,
                                             OrderStatus::PartiallyFilled(
                                                 order.clone(),
-                                                Decimal::from_f64(trade.qty).unwrap(),
+                                                trade.qty,
                                             )).await;
                                     } else {
                                         broadcast(
@@ -438,8 +429,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                     }
                                 }
                             } else {
-                                if Decimal::from_f64(trade.price)
-                                    .unwrap()
+                                if trade.price
                                     .ge(&order.price) {
 
                                     if let Some(trade) =
@@ -447,12 +437,12 @@ impl EventSink<TfTrades> for SimulatedAccount {
                                     {
                                         broadcast(&self.trade_subscribers, trade).await;
                                     }
-                                    if Decimal::from_f64(trade.qty).unwrap().lt(&order.quantity) {
+                                    if trade.qty.lt(&order.quantity) {
                                         broadcast(
                                             &self.order_status_subscribers,
                                             OrderStatus::PartiallyFilled(
                                                 order.clone(),
-                                                Decimal::from_f64(trade.qty).unwrap(),
+                                                trade.qty,
                                             )).await;
                                     } else {
                                         broadcast(
@@ -490,7 +480,6 @@ impl EventSink<OrderStatus> for SimulatedAccount {
     }
     async fn handle_event(&self, event_msg: OrderStatus) -> anyhow::Result<()> {
         println!("orderStatus: {:?}", event_msg);
-
         let open_orders = self.open_orders.clone();
         match &event_msg {
             // add to order set
@@ -814,11 +803,11 @@ mod tests {
 
         let n = notifier.notified();
         let entry = TradeEntry {
-            id: 1,
-            price: 11.0,
-            qty: 100.0,
+            trade_id: 1,
+            price: dec!(11.0),
+            qty: dec!(100.0),
             timestamp: 0,
-            delta: 0.0,
+            delta: dec!(0.0),
             symbol: symbol.clone(),
         };
         tf_trades_channel
@@ -868,11 +857,11 @@ mod tests {
         // Simulate a trade that triggers the stop-loss
         let n = notifier.notified();
         let entry = TradeEntry {
-            id: 1,
-            price: 8.0,
-            qty: 100.0,
+            trade_id: 1,
+            price: dec!(8.0),
+            qty: dec!(100.0),
             timestamp: 0,
-            delta: 0.0,
+            delta: dec!(0.0),
             symbol: symbol.clone(),
         };
         tf_trades_channel
@@ -957,11 +946,11 @@ mod tests {
 
         let n = notifier.notified();
         let entry = TradeEntry {
-            id: 1,
-            price: 11.0,
-            qty: 100.0,
+            trade_id: 1,
+            price: dec!(11.0),
+            qty: dec!(100.0),
             timestamp: 0,
-            delta: 0.0,
+            delta: dec!(0.0),
             symbol: symbol.clone(),
         };
         tf_trades_channel
@@ -1011,11 +1000,11 @@ mod tests {
         // Simulate a trade that triggers the stop-loss
         let n = notifier.notified();
         let entry = TradeEntry {
-            id: 1,
-            price: 19.0,
-            qty: 100.0,
+            trade_id: 1,
+            price: dec!(19.0),
+            qty: dec!(100.0),
             timestamp: 0,
-            delta: 0.0,
+            delta: dec!(0.0),
             symbol: symbol.clone(),
         };
         tf_trades_channel
@@ -1142,11 +1131,11 @@ mod tests {
         n.await;
         let n = notifier.notified();
         let entry = TradeEntry {
-            id: 1,
-            price: 9.0,
-            qty: 100.0,
+            trade_id: 1,
+            price: dec!(9.0),
+            qty: dec!(100.0),
             timestamp: 0,
-            delta: 0.0,
+            delta: dec!(0.0),
             symbol: symbol.clone(),
         };
         tf_trades_channel
@@ -1222,11 +1211,11 @@ mod tests {
         let notifier = Arc::new(Notify::new());
         let n = notifier.notified();
         let entry = TradeEntry {
-            id: 1,
-            price: 10.0,
-            qty: 90.0,
+            trade_id: 1,
+            price: dec!(10.0),
+            qty: dec!(90.0),
             timestamp: 0,
-            delta: 0.0,
+            delta: dec!(0.0),
             symbol: symbol.clone(),
         };
         tf_trades_channel
@@ -1326,11 +1315,11 @@ mod tests {
         let notifier = Arc::new(Notify::new());
         let n = notifier.notified();
         let entry = TradeEntry {
-            id: 1,
-            price: 10.0,
-            qty: 90.0,
+            trade_id: 1,
+            price: dec!(10.0),
+            qty: dec!(90.0),
             timestamp: 0,
-            delta: 0.0,
+            delta: dec!(0.0),
             symbol: symbol.clone(),
         };
         tf_trades_channel

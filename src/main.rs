@@ -15,6 +15,8 @@ mod mongodb;
 #[allow(dead_code)]
 mod types;
 mod utils;
+mod db;
+
 use crate::back_tester::{BackTester, BackTesterConfig, BackTesterMulti};
 use async_broadcast::{Receiver, Sender};
 use async_std::sync::Arc;
@@ -70,6 +72,10 @@ fn main() -> Result<(), anyhow::Error> {
         .with_env_filter(filter)
         .compact()
         .init();
+    let cpus = num_cpus::get_physical() / 2;
+    rayon::ThreadPoolBuilder::new().num_threads(cpus).build_global()?;
+
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(16)
@@ -365,6 +371,7 @@ async fn async_main() -> anyhow::Result<()> {
         );
 
         let mut threads = vec![];
+        let client = Arc::new(db::client::SQLiteClient::new().await);
         for s in symbols.into_iter() {
             let symbol = Symbol {
                 symbol: s.clone(),
@@ -375,17 +382,20 @@ async fn async_main() -> anyhow::Result<()> {
             let ktf = tf1.clone();
             let lpb = pb.clone();
             let lpb1 = pb.clone();
-
+            let client = client.clone();
             let rt_handle = Arc::new(tokio::runtime::Handle::current());
            threads.push( std::thread::spawn(move || {
                let s = symbol.clone();
+               let c = client.clone();
                 if download_klines {
                     rt_handle.block_on(async move {
-                        load_klines_from_archive(s, ktf, l, lpb, verbose).await;
+                        db::loader::load_klines_from_archive(s, ktf, l, lpb, verbose, c).await;
                     });
                 }
+               let client = client.clone();
+               let s = symbol.clone();
                 if download_trades {
-                    load_history_from_archive(symbol.clone(), l, tf, lpb1, verbose);
+                        db::loader::load_history_from_archive(s, l, tf, lpb1, verbose, client, rt_handle);
                 }
                 println!("[+] download > {} data downloaded", symbol.symbol.clone());
             }));
