@@ -31,7 +31,7 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use managers::risk_manager::{RiskManager, RiskManagerConfig};
-use managers::strategy_manager::{StrategyManager, StrategyManagerConfig};
+use managers::strategy_manager_python::{StrategyManagerPython, StrategyManagerConfig};
 use mongodb::loader::{
     load_history_from_archive, load_klines_from_archive, start_kline_loader, KlineEmitter,
     TfTradeEmitter,
@@ -571,7 +571,7 @@ async fn async_main() -> anyhow::Result<()> {
                         "[?] live > Initializing Strategy Manager for {}",
                         symbol.symbol
                     );
-                    let mut strategy_manager = StrategyManager::new(
+                    let mut strategy_manager = StrategyManagerPython::new(
                         StrategyManagerConfig {
                             symbol: global_config.symbol.clone(),
                         },
