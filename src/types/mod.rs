@@ -55,8 +55,8 @@ impl From<Vec<TradeEntry>> for Candle {
                 .map(|trade| trade.timestamp)
                 .min()
                 .unwrap_or(0),
-            min_price_trade: min.price,
-            max_price_trade: max.price,
+            min_trade_time: min.timestamp,
+            max_trade_time: max.timestamp,
             trades,
         };
         Self::from(&tf_trade_entry)
@@ -191,8 +191,8 @@ pub struct TfTrade {
     pub tf: u64,
     pub id: u64,
     pub timestamp: u64,
-    pub min_price_trade: Decimal,
-    pub max_price_trade: Decimal,
+    pub min_trade_time: u64,
+    pub max_trade_time: u64,
     pub trades: Vec<TradeEntry>,
 }
 

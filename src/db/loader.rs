@@ -1,91 +1,26 @@
-use std::cmp::Ordering;
-use crate::events::EventEmitter;
-use crate::mongodb::MongoClient;
-use crate::types::{AccessKey, GlobalConfig, Kline, TfTrade, TfTrades};
-use crate::types::{Symbol, TradeEntry};
-use async_broadcast::Sender;
+use crate::db;
+use crate::db::client::SQLiteTradeEntry;
+use crate::types::{ Kline, TfTrade, TfTrades};
+use crate::types::{Symbol};
 use async_std::sync::Arc;
-use async_trait::async_trait;
-use binance::api::Binance;
-use binance::futures::market::FuturesMarket;
-use binance::futures::model::AggTrade;
-use binance::futures::model::AggTrades::AllAggTrades;
-use binance::model::KlineSummaries::AllKlineSummaries;
 use chrono::prelude::*;
 use csv::StringRecord;
-use futures::TryStreamExt;
+use db::client::SQLiteClient;
+use futures::stream::{self, StreamExt};
 use indicatif::ProgressBar;
+use rayon::prelude::*;
 use rust_decimal::prelude::*;
 use serde::Deserialize;
-use std::io::{Read};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::{Notify, RwLock};
-use tokio::task::JoinHandle;
-use futures::stream::{self, StreamExt};
-use tokio_retry::RetryIf;
-use tokio_retry::strategy::ExponentialBackoff;
-use rayon::prelude::*;
+use std::cmp::Ordering;
+use std::io::Read;
+use std::time::{ SystemTime};
+use binance::model::AggTrade;
 use tempdir::TempDir;
 use tokio::runtime::Handle;
-use tracing::{debug, error, info, warn};
-use crate::db;
-use db::client::SQLiteClient;
-use crate::db::client::SQLiteTradeEntry;
+use tokio_retry::strategy::ExponentialBackoff;
+use tokio_retry::RetryIf;
+use tracing::{debug, info, warn};
 
-pub fn to_tf_chunks(tf: u64, data: &Vec<AggTrade>, symbol: &Symbol) -> Vec<TfTrade> {
-    if data.len() <= 0 {
-        return vec![];
-    }
-
-    let mut chunks = vec![];
-    let mut timestamp = data[0].time;
-    if data[data.len() - 1].time - timestamp < tf * 1000 {
-        let min = data
-            .iter()
-            .max_by(|x, y| if x.price > y.price {Ordering::Less} else {Ordering::Greater})
-            .unwrap()
-            .clone();
-        let max = data.iter().max_by(|x, y|  if x.price > y.price {Ordering::Greater} else {Ordering::Less}).unwrap().clone();
-
-        let tf_trade = TfTrade {
-            symbol: symbol.clone(),
-            tf,
-            id: data[0].agg_id,
-            timestamp: data[0].time,
-            trades: vec![],
-            max_price_trade: Decimal::from_f64(max.price).unwrap(),
-            min_price_trade: Decimal::from_f64(min.price).unwrap(),
-        };
-        return vec![tf_trade];
-    }
-    let mut last_i = 0;
-    for (i, trade) in data.iter().enumerate() {
-        if trade.time - timestamp < tf * 1000 {
-            continue;
-        }
-        timestamp = trade.time;
-        let span = &data[last_i..i];
-        let min = span
-            .iter()
-            .max_by(|x, y| if x.price > y.price {Ordering::Less} else {Ordering::Greater})
-            .unwrap()
-            .clone();
-        let max = span.iter().max_by(|x, y|  if x.price > y.price {Ordering::Greater} else {Ordering::Less}).unwrap().clone();
-
-        let tf_trade = TfTrade {
-            symbol: symbol.clone(),
-            tf,
-            id: span[0].agg_id,
-            timestamp: span[0].time,
-            trades: vec![],
-            max_price_trade: Decimal::from_f64(max.price).unwrap(),
-            min_price_trade: Decimal::from_f64(min.price).unwrap(),
-        };
-        chunks.push(tf_trade);
-        last_i = i;
-    }
-    chunks
-}
 
 pub async fn insert_trade_entries(
     trades: Vec<AggTrade>,
@@ -96,7 +31,6 @@ pub async fn insert_trade_entries(
     if trades.is_empty() {
         return Ok(())
     }
-    let tf_trades = to_tf_chunks(*tf, &trades, symbol);
 
     let mut entries = Vec::with_capacity(trades.len() - 1);
     for (i, t) in trades.iter().enumerate().skip(1) {
@@ -106,16 +40,14 @@ pub async fn insert_trade_entries(
             price: t.price.to_string(),
             qty: t.qty.to_string(),
             timestamp: t.time.to_string(),
-            symbol_data: serde_json::to_value(symbol).unwrap(),
+            symbol_data: serde_json::to_value(symbol)?,
             symbol: symbol.symbol.clone(),
             delta: delta.to_string(),
         };
         entries.push(entry);
     }
     drop(trades);
-    SQLiteClient::insert_trade_entries(&client.conn, &entries).await;
-    drop(entries);
-    SQLiteClient::insert_tf_trades(&client.conn, tf_trades).await;
+    SQLiteClient::insert_trade_entries(&client.conn, &entries);
 
     
 
@@ -178,6 +110,77 @@ where
 
         (y1 - y0, m1 - m0, d1 - d0, false)
     }
+}
+
+pub async fn compile_agg_trades_for(
+    symbol: &Symbol,
+    tf: u64,
+    pb: ProgressBar,
+    verbose: bool,
+    sqlite_client: Arc<SQLiteClient>
+) {
+
+    sqlite_client.reset_tf_trades_by_tf(symbol, tf).await;
+    let count = SQLiteClient::get_trades_count_by_symbol(&sqlite_client.pool, symbol).await;
+    pb.inc_length(count);
+    let last_entry = SQLiteClient::get_oldest_trade(&sqlite_client.pool, symbol).await;
+    let latest_entry = SQLiteClient::get_latest_trade(&sqlite_client.pool, symbol).await;
+    let mut start = last_entry.timestamp;
+    let concurrency_limit = num_cpus::get_physical();
+
+    stream::iter((start..latest_entry.timestamp).step_by(tf as usize * 1000))
+        .chunks(concurrency_limit)
+        .map(|batch| {
+            let sqlite_client = sqlite_client.clone();
+            let pb = pb.clone();
+            async move {
+                let results = stream::iter(batch)
+                    .map(|start_time| {
+                        let sqlite_client = sqlite_client.clone();
+                            async move {
+                                tokio::spawn(async move {
+                                    SQLiteClient::select_values_between_min_max(
+                                        &sqlite_client.pool,
+                                        start_time.to_string(),
+                                        (start_time + tf * 1000).to_string(),
+                                    ).await
+
+                                }).await
+                                    .expect("Failed to get  range values")
+                            }
+
+
+                    })
+                    .buffer_unordered(concurrency_limit)
+                    .collect::<Vec<_>>()
+                    .await;
+
+                let tf_trades = results.into_par_iter()
+                    .filter(|v| !v.is_empty())
+                    .map(|entries| {
+                        pb.inc(entries.len() as u64);
+
+                        TfTrade {
+                            symbol: symbol.clone(),
+                            tf,
+                            id: entries[0].trade_id,
+                            timestamp: entries[0].timestamp,
+                            max_trade_time: entries.last().unwrap().timestamp,
+                            min_trade_time: entries.first().unwrap().timestamp,
+                            trades: entries,
+                        }
+                    }).collect::<Vec<_>>();
+
+                tokio::task::spawn_blocking(move || {
+                    SQLiteClient::insert_tf_trades(&sqlite_client.conn, tf_trades)
+                }).await.unwrap();
+
+
+            }
+        })
+        .buffer_unordered(concurrency_limit)
+        .collect::<Vec<_>>()
+        .await;
 }
 
 pub async fn load_klines_from_archive(
@@ -280,7 +283,7 @@ pub async fn load_klines_from_archive(
                         if trades.is_empty() {
                             info!("[-] No Kline found");
                         } else {
-                            SQLiteClient::insert_klines(&sqlite_client.conn, trades).await;
+                            SQLiteClient::insert_klines(&sqlite_client.conn, trades);
                         }
                     } else if verbose {
                         warn!("[-] failed to deserialize {}", url);
@@ -427,6 +430,7 @@ impl From<ArchiveAggTrade> for AggTrade {
             last_id: a.last_trade_id,
             time: a.transact_time,
             maker: a.is_buyer_maker == "True",
+            best_match: false,
         }
     }
 }

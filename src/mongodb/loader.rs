@@ -93,8 +93,8 @@ pub fn insert_trade_entries(
             id: chunk[0].trade_id,
             timestamp: chunk[0].timestamp,
             trades: chunk.to_vec(),
-            max_price_trade: max.price,
-            min_price_trade: min.price
+            max_trade_time: max.timestamp,
+            min_trade_time: min.timestamp
         };
         tf_trades.push(tf_trade);
     }

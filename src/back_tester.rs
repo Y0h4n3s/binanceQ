@@ -7,8 +7,6 @@ use async_broadcast::{InactiveReceiver, Sender};
 use async_std::sync::Arc;
 use futures::{stream, StreamExt};
 use indicatif::ProgressBar;
-use mongodb::bson::doc;
-use mongodb::options::FindOptions;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
 use tracing::{error, info};
@@ -239,6 +237,9 @@ impl BackTester {
         if let Some(Err(e)) = klines.next().await {
             debug!("{:?}", e);
         }
+        if let Some(Err(e)) = tf_trade_steps.next().await {
+            debug!("{:?}", e);
+        }
         let count: u64 = sqlx::query_scalar("SELECT COUNT(*) FROM klines WHERE close_time > ?").bind(until.to_string()).fetch_one(&sqlite_client.pool).await.unwrap();
         info!(
             "Starting backtest for {} on {}  Klines",
@@ -247,12 +248,14 @@ impl BackTester {
        pb.inc_length(count);
 
         while let Some(Ok(kline)) = klines.next().await {
-            debug!("{:?}", kline);
+
             'i: while let Some(Ok(mut trade)) = tf_trade_steps.next().await {
+                // let start = std::time::Instant::now();
+
                 if trade.timestamp >= kline.close_time {
-                    let notify = Arc::new(Notify::new());
-                    let sm_notifer = notify.notified();
-                    let rm_notifier = notify.notified();
+                    // let notify = Arc::new(Notify::new());
+                    // let sm_notifer = notify.notified();
+                    // let rm_notifier = notify.notified();
                     // send this kline to the strategy manager and let it decide what to do
                     // match klines_channel.0.broadcast((kline.clone(), Some(notify.clone()))).await {
                     //     Ok(_) => {
@@ -268,12 +271,9 @@ impl BackTester {
                     // }
                     break 'i;
                 }
-                trade.trades = SQLiteClient::select_values_between_min_max(&sqlite_client.pool, trade.min_price_trade.to_string(), trade.max_price_trade.to_string()).await;
-                debug!("{:?}", trade.trades.len());
-                
+
                 let notify = Arc::new(Notify::new());
                 let sm_notifer = notify.notified();
-
                 match tf_trades_tx.broadcast((vec![trade], Some(notify.clone()))).await {
                     Ok(_) => {
                         // only wait for all listeners to recv()
@@ -291,12 +291,14 @@ impl BackTester {
                         //     tokio::time::sleep(Duration::from_millis(5)).await;
                         // }
                     }
-                    // continue 'step
                     Err(e) => {
                         // don't do anything, print and continue
                         error!("{} Error: {}", self.config.symbol.symbol, e);
                     }
                 }
+                // let duration = start.elapsed();
+                // println!("Iteration took: {:?}", duration);
+
             }
             if !self.global_config.verbose {
                 pb.inc(1);

@@ -49,6 +49,7 @@ use types::{
     AccessKey, ExchangeId, ExecutionCommand, GlobalConfig, Kline, Mode, Order, Symbol, TfTrades,
     Trade,
 };
+use crate::db::loader::compile_agg_trades_for;
 
 static KEY: Lazy<AccessKey> = Lazy::new(|| {
     let api_key = env::var("API_KEY")
@@ -72,7 +73,7 @@ fn main() -> Result<(), anyhow::Error> {
         .with_env_filter(filter)
         .compact()
         .init();
-    let cpus = num_cpus::get_physical() / 2;
+    let cpus = num_cpus::get_physical() / 3;
     rayon::ThreadPoolBuilder::new().num_threads(cpus).build_global()?;
 
 
@@ -159,6 +160,19 @@ async fn async_main() -> anyhow::Result<()> {
                 .arg(arg!(--nokline "Don't download klines").required(false))
                 .arg(arg!(--noaggtrades "Don't download aggtrades").required(false))
                 .about("download candles"),
+        ).subcommand(
+            Command::new("compile")
+                .arg(
+                    arg!(--tf <TF> "Chunk timeframe in seconds")
+                        .required(false)
+                        .default_value("30")
+                        .value_parser(value_parser!(u64)),
+                )
+                .arg(
+                    arg!(-s --symbol <SYMBOLS> "The instrument to compile for")
+                        .required(true)
+                        .num_args(1)
+                )
         )
         .subcommand(
             Command::new("live")
@@ -405,6 +419,34 @@ async fn async_main() -> anyhow::Result<()> {
         }
     }
 
+    if let Some(matches) = main_matches.subcommand_matches("compile") {
+        let symbol = matches.get_one::<String>("symbol").unwrap().clone();
+        let tf = *matches
+            .get_one::<u64>("tf")
+            .ok_or(anyhow::anyhow!("Invalid timeframe"))?;
+        let pb = ProgressBar::new(0);
+        let verbose = main_matches.get_flag("verbose");
+
+        pb.set_style(
+            ProgressStyle::with_template(
+                "[?] Progress [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}%}",
+            )
+                .unwrap()
+                .with_key("eta", |state: &ProgressState, w: &mut dyn Write| {
+                    write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap()
+                })
+                .progress_chars("#>-"),
+        );
+
+        let client = Arc::new(db::client::SQLiteClient::new().await);
+        let symbol = Symbol {
+            symbol,
+            exchange: ExchangeId::Simulated,
+            base_asset_precision: 1,
+            quote_asset_precision: 2,
+        };
+        compile_agg_trades_for(&symbol, tf, pb, verbose, client).await;
+    }
     if let Some(matches) = main_matches.subcommand_matches("live") {
         let symbols = matches.get_many::<String>("symbols").unwrap().clone();
         let ktf = matches.get_one::<String>("ktf").unwrap().clone();
