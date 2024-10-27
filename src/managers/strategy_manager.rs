@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use futures::SinkExt;
 use rayon::prelude::IntoParallelRefIterator;
 use tokio::sync::{Mutex, Notify, RwLock};
+use tracing::debug;
 use crate::events::EventSink;
 use crate::executors::{ ExchangeAccountInfo};
 use crate::managers::risk_manager::RiskManager;
@@ -13,7 +14,7 @@ use crate::types::{ExecutionCommand, GlobalConfig, Kline, Order};
 
 #[async_trait]
 pub trait SignalGenerator:  Send + Sync + 'static {
-    async fn handle_kline(&self, kline: &Kline, account: &Box<Arc<dyn ExchangeAccountInfo>>) -> Option<Vec<Order>>;
+    async fn handle_kline(&mut self, kline: &Kline, account: &Box<Arc<dyn ExchangeAccountInfo>>) -> Option<Vec<Order>>;
 }
 #[derive(Clone)]
 pub struct StrategyManager<RiskManager: Send + Sync + 'static> {
@@ -49,13 +50,17 @@ impl<RiskManager:  Send + Sync + 'static> EventSink<Kline> for StrategyManager<R
     }
 
     async fn handle_event(&self, event_msg: Kline) -> anyhow::Result<()> {
-        for strategy in self.strategies.read().await.iter() {
+        for mut strategy in self.strategies.read().await.iter() {
             if let Some(orders) = strategy.handle_kline(&event_msg, &self.account).await {
                 let broadcast = self.command_subscribers.lock().await;
                 for order in orders {
+                    debug!("Sending order: {:?}", order);
                     // apply risk management and send off to executor
                     // should wait for in case risk management depends on open orders
-                    broadcast.broadcast((order, None)).await?;
+                    let notify = Arc::new(Notify::new());
+                    let notified = notify.notified();
+                    broadcast.broadcast((order, Some(notify.clone()))).await?;
+                    notified.await;
                 }
             }
         }

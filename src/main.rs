@@ -16,6 +16,7 @@ mod mongodb;
 mod types;
 mod utils;
 mod db;
+mod strategies;
 
 use crate::back_tester::{BackTester, BackTesterConfig, BackTesterMulti};
 use async_broadcast::{Receiver, Sender};
@@ -589,17 +590,12 @@ async fn async_main() -> anyhow::Result<()> {
                     trade_emitter.subscribe(t_t).await;
                     kline_emitter.subscribe(klines_channel.0).await;
 
-                    risk_manager.subscribe(o_t).await;
 
                     println!("[?] live > Starting Listeners {}", symbol.symbol);
                     strategy_manager
                         .subscribe(execution_commands_channel.0)
                         .await;
                     let mut r_threads = vec![];
-                    let rc = Arc::new(risk_manager.clone());
-                    r_threads.push(std::thread::spawn(move || {
-                        EventSink::<ExecutionCommand>::listen(rc).unwrap();
-                    }));
                     let rc = Arc::new(risk_manager.clone());
                     r_threads.push(std::thread::spawn(move || {
                         EventSink::<Trade>::listen(rc).unwrap();
@@ -617,7 +613,6 @@ async fn async_main() -> anyhow::Result<()> {
                     // futures.push(start_loader(symbol.clone(), tf1).await);
                     futures.push(start_kline_loader(symbol.clone(), ktf.clone(), from_time).await);
                     futures.push(strategy_manager.emit().await.unwrap());
-                    futures.push(risk_manager.emit().await.unwrap());
                     futures.push(e.emit().await.unwrap());
                     futures.push(trade_emitter.emit().await.unwrap());
                     futures.push(kline_emitter.emit().await.unwrap());
