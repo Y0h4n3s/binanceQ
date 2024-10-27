@@ -1,8 +1,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::executors::simulated::SimulatedAccount;
-use crate::executors::TradeExecutor;
+use crate::executors::{ExchangeAccount, ExchangeAccountInfo, TradeExecutor};
 use crate::mongodb::MongoClient;
-use crate::types::{GlobalConfig, Order, Symbol, TfTrades, Trade};
+use crate::types::{GlobalConfig, Kline, Order, Symbol, TfTrades, Trade};
 use async_broadcast::{InactiveReceiver, Sender};
 use async_std::sync::Arc;
 use futures::{stream, StreamExt};
@@ -12,6 +12,9 @@ use tokio::sync::Notify;
 use tracing::{error, info};
 use tracing::log::debug;
 use crate::db::client::SQLiteClient;
+use crate::events::EventSink;
+use crate::managers::risk_manager::{RiskManager, RiskManagerConfig};
+use crate::managers::strategy_manager::StrategyManager;
 
 #[derive(Debug, Clone)]
 pub struct BackTesterConfig {
@@ -130,45 +133,42 @@ impl BackTester {
         mongo_client.reset_trades(&self.config.symbol).await;
         mongo_client.reset_orders(&self.config.symbol).await;
 
-        // let klines_channel = async_broadcast::broadcast(10000);
-        // let execution_commands_channel = async_broadcast::broadcast(100);
+        let klines_channel = async_broadcast::broadcast(10000);
+        let execution_commands_channel = async_broadcast::broadcast(100);
         //
-        // let inner_account: Box<Arc<dyn ExchangeAccount>> = Box::new(executor.get_account().clone());
-        // println!(
-        //     "[?] back_tester> Initializing Risk Manager for {}",
-        //     self.config.symbol.symbol
-        // );
+        let inner_account: Box<Arc<dyn ExchangeAccount>> = Box::new(executor.get_account().clone());
+        println!(
+            "[?] back_tester> Initializing Risk Manager for {}",
+            self.config.symbol.symbol
+        );
         // calculate position size based on risk tolerance and send orders to executors
-        // let mut risk_manager = RiskManager::new(
-        //     self.global_config.clone(),
-        //     RiskManagerConfig {
-        //         max_daily_losses: 100,
-        //         max_risk_per_trade: 0.01,
-        //     },
-        //     klines_channel.1.clone(),
-        //     trades_receiver,
-        //     execution_commands_channel.1,
-        //     inner_account,
-        // );
+        let mut risk_manager = RiskManager::new(
+            self.global_config.clone(),
+            RiskManagerConfig {
+                max_daily_losses: 100,
+                max_risk_per_trade: 0.01,
+            },
+            klines_channel.1.clone().deactivate(),
+            trades_receiver,
+            execution_commands_channel.1.deactivate(),
+            inner_account,
+        );
 
-        // let inner_account: Box<Arc<dyn ExchangeAccount>> = Box::new(executor.get_account().clone());
+        let inner_account: Box<Arc<dyn ExchangeAccountInfo>> = Box::new(executor.get_account().clone());
 
         // receive strategy edges from multiple strategies and forward them to risk manager
         info!(
             "Initializing Strategy Manager for {}",
             self.config.symbol.symbol
         );
-        // let mut strategy_manager = StrategyManager::new(
-        //     StrategyManagerConfig {
-        //         symbol: self.global_config.symbol.clone(),
-        //     },
-        //     self.global_config.clone(),
-        //     klines_channel.1,
-        //     self.config.grpc_server_port.clone(),
-        //     inner_account,
-        // )
-        // .await;
+        let mut strategy_manager = StrategyManager::new(
+            self.global_config.clone(),
+            orders_tx,
+            inner_account,
+            klines_channel.1.deactivate(),
+            risk_manager
 
+        );
         // sends orders to executor
         // risk_manager.subscribe(orders_tx).await;
 
@@ -193,12 +193,12 @@ impl BackTester {
         //         eprintln!("Error in Trade listener: {}", e);
         //     }
         // });
-        // let sm = Arc::new(strategy_manager.clone());
-        // tokio::spawn(async move {
-        //     if let Err(e) = EventSink::<Kline>::listen(sm) {
-        //         eprintln!("Error in Kline listener: {}", e);
-        //     }
-        // });
+        let sm = Arc::new(strategy_manager.clone());
+        tokio::spawn(async move {
+            if let Err(e) = EventSink::<Kline>::listen(sm) {
+                eprintln!("Error in Kline listener: {}", e);
+            }
+        });
         // let rc = Arc::new(risk_manager.clone());
         // tokio::spawn(async move {
         //     if let Err(e) = EventSink::<Kline>::listen(rc) {
@@ -253,22 +253,22 @@ impl BackTester {
                 // let start = std::time::Instant::now();
 
                 if trade.timestamp >= kline.close_time {
-                    // let notify = Arc::new(Notify::new());
-                    // let sm_notifer = notify.notified();
+                    let notify = Arc::new(Notify::new());
+                    let sm_notifer = notify.notified();
                     // let rm_notifier = notify.notified();
                     // send this kline to the strategy manager and let it decide what to do
-                    // match klines_channel.0.broadcast((kline.clone(), Some(notify.clone()))).await {
-                    //     Ok(_) => {
-                    //         // sm_notifer.await;
-                    //         // rm_notifier.await;
-                    //     }
-                    //     Err(e) => {
-                    //         eprintln!(
-                    //             "[-] {} Error sending kline to strategy manager {}",
-                    //             self.config.symbol.symbol, e
-                    //         );
-                    //     }
-                    // }
+                    match klines_channel.0.broadcast((kline.clone(), Some(notify.clone()))).await {
+                        Ok(_) => {
+                            sm_notifer.await;
+                            // rm_notifier.await;
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[-] {} Error sending kline to strategy manager {}",
+                                self.config.symbol.symbol, e
+                            );
+                        }
+                    }
                     break 'i;
                 }
 

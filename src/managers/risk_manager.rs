@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::events::{EventEmitter, EventSink};
-use crate::executors::ExchangeAccount;
+use crate::executors::{ExchangeAccount, ExchangeAccountInfo};
 use crate::managers::Manager;
 use crate::types::{
     ClosePolicy, ExecutionCommand, GlobalConfig, Kline, Order, OrderStatus, OrderType, Side
@@ -25,38 +25,13 @@ pub struct RiskManagerConfig {
 pub struct RiskManager {
     pub global_config: Arc<GlobalConfig>,
     pub config: RiskManagerConfig,
-    pub account: Box<Arc<dyn ExchangeAccount>>,
+    pub account: Box<Arc<dyn ExchangeAccountInfo>>,
     klines: InactiveReceiver<(Kline, Option<Arc<Notify>>)>,
     trades: InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
-    execution_commands: InactiveReceiver<(ExecutionCommand, Option<Arc<Notify>>)>,
     subscribers: Arc<RwLock<Sender<(Order, Option<Arc<Notify>>)>>>,
-    order_q: Arc<RwLock<VecDeque<Order>>>,
 }
 
-#[async_trait]
-impl EventEmitter<Order> for RiskManager {
-    fn get_subscribers(&self) -> Arc<RwLock<Sender<(Order, Option<Arc<Notify>>)>>> {
-        self.subscribers.clone()
-    }
 
-    async fn emit(&self) -> anyhow::Result<JoinHandle<()>> {
-        let order_q = self.order_q.clone();
-        let subscribers = self.subscribers.clone();
-        Ok(tokio::spawn(async move {
-            //send waiting orders to the executor
-            loop {
-                let mut oq = order_q.write().await;
-                let order = oq.pop_front();
-                std::mem::drop(oq);
-                if let Some(order) = order {
-                    // there is only one subscriber
-                    let subs = subscribers.read().await;
-                    subs.broadcast((order, None)).await.unwrap();
-                }
-            }
-        }))
-    }
-}
 
 
 #[async_trait]
@@ -71,158 +46,6 @@ impl EventSink<Trade> for RiskManager {
         Ok(())
     }
 }
-#[async_trait]
-impl EventSink<ExecutionCommand> for RiskManager {
-    fn get_receiver(&self) -> Receiver<(ExecutionCommand, Option<Arc<Notify>>)>{
-        self.execution_commands.clone().activate()
-    }
-
-    async fn handle_event(
-        &self,
-        event_msg: ExecutionCommand,
-    ) -> anyhow::Result<()> {
-        let account = self.account.clone();
-        let global_config = self.global_config.clone();
-        let order_q = self.order_q.clone();
-        /// decide on size and price and order_type and send to order_q
-
-            let position = account.get_position(&global_config.symbol).await;
-            let lifetime = 80 * 60 * 1000;
-            match event_msg {
-                // try different configs here
-                ExecutionCommand::OpenLongPosition(symbol, confidence) => {
-                    let symbol_balance = account.get_symbol_account(&symbol).await;
-                    let trade_history = account.get_past_trades(&symbol, None).await;
-                    let position = account.get_position(&symbol).await;
-
-                    let spread = account.get_spread(&symbol).await;
-                    // calculate size here
-                    let size = symbol_balance.quote_asset_free;
-                    // get the price based on confidence level
-                    let price = spread.spread;
-
-                    // Entry order
-                    let order = Order {
-                        id: uuid::Uuid::new_v4(),
-                        symbol: symbol.clone(),
-                        side: Side::Bid,
-                        price: Default::default(),
-                        quantity: Decimal::new(1000, 0),
-                        time: spread.time,
-                        order_type: OrderType::Market,
-                        lifetime,
-                        close_policy: ClosePolicy::ImmediateMarket,
-                    };
-
-                    let pr = Decimal::new(20, 3);
-
-                    // target order
-                    let target_price = price + (price * pr);
-                    let target_order = Order {
-                        id: uuid::Uuid::new_v4(),
-                        symbol: symbol.clone(),
-                        side: Side::Ask,
-                        price: target_price,
-                        quantity: Decimal::new(1000, 0),
-                        time: spread.time,
-                        order_type: OrderType::TakeProfit(order.id),
-                        lifetime,
-                        close_policy: ClosePolicy::ImmediateMarket,
-                    };
-
-                    // stop loss order
-                    let stop_loss_price = price - (price * pr / Decimal::new(2, 0));
-                    let stop_loss_order = Order {
-                        id: uuid::Uuid::new_v4(),
-                        symbol: symbol.clone(),
-                        side: Side::Ask,
-                        price: stop_loss_price,
-                        quantity: Decimal::new(1000, 0),
-                        time: spread.time,
-                        order_type: OrderType::StopLoss(order.id),
-                        lifetime,
-                        close_policy: ClosePolicy::ImmediateMarket,
-                    };
-
-                    if position.is_open() && position.is_long() {
-                        println!("Adding long to position");
-                        println!("position: {:?}", position);
-                    }
-                    let mut oq = order_q.write().await;
-                    oq.push_back(order);
-                    oq.push_back(target_order);
-                    oq.push_back(stop_loss_order);
-                }
-                ExecutionCommand::OpenShortPosition(symbol, confidence) => {
-                    let spread = account.get_spread(&symbol).await;
-                    let price = spread.spread;
-
-                    let order = Order {
-                        id: uuid::Uuid::new_v4(),
-                        symbol: symbol.clone(),
-                        side: Side::Ask,
-                        price: Default::default(),
-                        quantity: Decimal::new(1000, 0),
-                        time: spread.time,
-                        order_type: OrderType::Market,
-                        lifetime,
-                        close_policy: ClosePolicy::ImmediateMarket,
-                    };
-
-                    let pr = Decimal::new(20, 3);
-
-                    // target order
-                    let target_price = price - (price * pr);
-                    let target_order = Order {
-                        id: uuid::Uuid::new_v4(),
-                        symbol: symbol.clone(),
-                        side: Side::Bid,
-                        price: target_price,
-                        quantity: Decimal::new(1000, 0),
-                        time: spread.time,
-                        order_type: OrderType::TakeProfit(order.id),
-                        lifetime,
-                        close_policy: ClosePolicy::ImmediateMarket,
-                    };
-
-                    // stop loss order
-                    let stop_loss_price = price + (price * pr / Decimal::new(2, 0));
-                    let stop_loss_order = Order {
-                        id: uuid::Uuid::new_v4(),
-                        symbol: symbol.clone(),
-                        side: Side::Bid,
-                        price: stop_loss_price,
-                        quantity: Decimal::new(1000, 0),
-                        time: spread.time,
-                        order_type: OrderType::StopLoss(order.id),
-                        lifetime,
-                        close_policy: ClosePolicy::ImmediateMarket,
-                    };
-                    if position.is_open() && position.is_short() {
-                        println!("Adding short to position");
-                        println!("position: {:?}", position);
-                    }
-                    let mut oq = order_q.write().await;
-                    oq.push_back(order);
-                    oq.push_back(target_order);
-                    oq.push_back(stop_loss_order);
-                }
-                ExecutionCommand::ExecuteOrder(order) => {
-                    // possibly add some controls here
-                    // like if there is too much risk, don't execute
-                    // or if there is too much exposure, don't execute
-                    // or if there is no enough balance, don't execute
-                    // or apply portfolio management rules
-                    let mut order = order.clone();
-                    let mut oq = order_q.write().await;
-                    oq.push_back(order);
-                }
-                _ => {}
-            }
-            Ok(())
-    }
-}
-
 #[async_trait]
 impl EventSink<Kline> for RiskManager {
     fn get_receiver(&self) -> Receiver<(Kline, Option<Arc<Notify>>)> {
@@ -539,15 +362,13 @@ impl RiskManager {
             account,
             klines,
             trades,
-            execution_commands,
             subscribers: Arc::new(RwLock::new(async_broadcast::broadcast(1).0)),
-            order_q: Arc::new(RwLock::new(VecDeque::new())),
         }
     }
 
     pub async fn neutralize(&self) {
         let position = self.account.get_position(&self.global_config.symbol).await;
-        let oq = self.order_q.clone();
+        let oq = self.subscribers.clone();
         if position.is_open() {
             loop {
                 // wait for all orders to be sent for execution
@@ -563,8 +384,8 @@ impl RiskManager {
 
             match position.side {
                 Side::Bid => {
-                    let mut oq = self.order_q.write().await;
-                    oq.push_back(Order {
+                    let mut oq = oq.write().await;
+                    oq.broadcast((Order {
                         id: uuid::Uuid::new_v4(),
                         symbol: self.global_config.symbol.clone(),
                         side: Side::Ask,
@@ -574,11 +395,11 @@ impl RiskManager {
                         order_type: OrderType::Market,
                         lifetime: 30 * 60 * 1000,
                         close_policy: ClosePolicy::ImmediateMarket,
-                    });
+                    }, None)).await;
                 }
                 Side::Ask => {
-                    let mut oq = self.order_q.write().await;
-                    oq.push_back(Order {
+                    let mut oq = oq.write().await;
+                    oq.broadcast((Order {
                         id: uuid::Uuid::new_v4(),
                         symbol: self.global_config.symbol.clone(),
                         side: Side::Bid,
@@ -588,31 +409,9 @@ impl RiskManager {
                         order_type: OrderType::Market,
                         lifetime: 30 * 60 * 1000,
                         close_policy: ClosePolicy::ImmediateMarket,
-                    });
+                    }, None)).await;
                 }
             }
-        }
-        loop {
-            // wait for all orders to be sent for execution
-            if oq.read().await.len() > 0 {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
-            } else {
-                break;
-            }
-        }
-    }
-}
-#[async_trait]
-impl Manager for RiskManager {
-    async fn manage(&self) {
-        let start_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis();
-
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(45));
         }
     }
 }
