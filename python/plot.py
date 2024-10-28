@@ -1,139 +1,119 @@
-# Data manipulation and analysis
+import sqlite3
 import pandas as pd
-import numpy as np
 
-# MongoDB connection
-from pymongo import MongoClient
-from bson.binary import Binary
-from bson.objectid import ObjectId
+# Replace 'your_database.db' with the path to your SQLite database file
+conn = sqlite3.connect('binance_studies.db')
+trades_df = pd.read_sql_query("SELECT * FROM trades", conn)
 
-# UUID decoding
-import uuid
+# Load orders data
+orders_df = pd.read_sql_query("SELECT * FROM orders", conn)
 
-# Visualization
+# Load klines data
+klines_df = pd.read_sql_query("SELECT * FROM klines", conn)
+# Ensure correct data types
+trades_df['realized_pnl'] = trades_df['realized_pnl'].astype(float)
+trades_df['price'] = trades_df['price'].astype(float)
+trades_df['qty'] = trades_df['qty'].astype(float)
+trades_df['side'] = trades_df['side'].astype(str)
+
+# Define a function to calculate entry price
+def estimate_entry_price(row):
+    if row['qty'] == 0:
+        return None  # Avoid division by zero
+    if row['position_side'].upper() == 'ASK':
+        # Short position
+        entry_price = row['price'] - (row['realized_pnl'] / row['qty'])
+    elif row['position_side'].upper() == 'BID':
+        # Long position
+        entry_price = row['price'] + (row['realized_pnl'] / row['qty'])
+    else:
+        entry_price = None
+    return entry_price
+
+# Apply the function to estimate entry prices
+trades_df['entry_price'] = trades_df.apply(estimate_entry_price, axis=1)
+
+# Convert timestamps to datetime
+klines_df['open_time'] = pd.to_datetime(klines_df['open_time'], unit='ms')
+klines_df['close_time'] = pd.to_datetime(klines_df['close_time'], unit='ms')
+
+# Sort by time
+klines_df.sort_values('open_time', inplace=True)
+# Convert 'time' in trades to datetime
+trades_df['trade_time'] = pd.to_datetime(trades_df['time'], unit='ms')
+
+# Separate trades based on side
+long_trades = trades_df[trades_df['position_side'].str.upper() == 'ASK']
+short_trades = trades_df[trades_df['position_side'].str.upper() == 'BID']
+import plotly.graph_objects as go
+# Create candlestick chart
+fig = go.Figure(data=[go.Line(
+    x=klines_df['open_time'],
+    y=klines_df['open'],
+    # high=klines_df['high'],
+    # low=klines_df['low'],
+    # close=klines_df['close'],
+)])
+
+# # Add entry and exit points for long trades
+fig.add_trace(go.Scatter(
+    x=long_trades['trade_time'],
+    y=long_trades['entry_price'],
+    mode='markers',
+    marker=dict(symbol='triangle-up', color='blue', size=10),
+    name='Long Entry'
+))
+
+
+# print(long_trades)
+#
+fig.add_trace(go.Scatter(
+    x=long_trades['trade_time'],
+    y=long_trades['price'],
+    mode='markers',
+    marker=dict(symbol='triangle-down', color='red', size=10),
+    name='Long Exit'
+))
+
+# # Add entry and exit points for short trades
+fig.add_trace(go.Scatter(
+    x=short_trades['trade_time'],
+    y=short_trades['entry_price'],
+    mode='markers',
+    marker=dict(symbol='triangle-down', color='orange', size=10),
+    name='Short Entry'
+))
+#
+fig.add_trace(go.Scatter(
+    x=short_trades['trade_time'],
+    y=short_trades['price'],
+    mode='markers',
+    marker=dict(symbol='triangle-up', color='green', size=10),
+    name='Short Exit'
+))
+
+# Update layout
+fig.update_layout(
+    title='Backtest Trades on Market Data',
+    xaxis_title='Time',
+    yaxis_title='Price',
+    xaxis_rangeslider_visible=False,
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+)
+
+# Show the figure
+fig.show()
+
+# Calculate cumulative PnL
+trades_df['cumulative_pnl'] = trades_df['realized_pnl'].cumsum()
+
+# Plot cumulative PnL over time
 import matplotlib.pyplot as plt
-import seaborn as sns
 
-# Display settings
-plt.style.use('seaborn-darkgrid')
-sns.set_context('talk')
-
-# Suppress warnings
-import warnings
-warnings.filterwarnings('ignore')
-# MongoDB connection parameters
-mongo_host = 'localhost'
-mongo_port = 27017
-database_name = 'binance-studies'  # Replace with your database name
-
-# Create a MongoDB client
-client = MongoClient(f'mongodb://{mongo_host}:{mongo_port}/')
-
-# Access the database
-db = client[database_name]
-
-# Access the collections
-past_trades_col = db['past_trades']
-orders_col = db['orders']
-
-# Retrieve data from the collections
-past_trades_data = list(past_trades_col.find())
-orders_data = list(orders_col.find())
-
-print(f"Retrieved {len(past_trades_data)} documents from 'past_trades' collection.")
-print(f"Retrieved {len(orders_data)} documents from 'orders' collection.")
-
-# Load data into DataFrames
-past_trades_df = pd.DataFrame(past_trades_data)
-orders_df = pd.DataFrame(orders_data)
-
-# Function to decode Binary UUIDs
-def decode_binary_uuid(val):
-    if isinstance(val, Binary):
-        return str(uuid.UUID(bytes=val))
-    return val
-
-# Function to convert MongoDB Long type to int
-def convert_long(val):
-    try:
-        return int(val)
-    except (ValueError, TypeError):
-        return val
-
-# Decode binary UUIDs
-past_trades_df['order_id'] = past_trades_df['order_id'].apply(decode_binary_uuid)
-
-# Convert numeric fields
-numeric_fields = ['price', 'commission', 'qty', 'quote_qty', 'realized_pnl']
-for field in numeric_fields:
-    past_trades_df[field] = pd.to_numeric(past_trades_df[field], errors='coerce')
-
-# Convert time field to datetime
-past_trades_df['time'] = pd.to_datetime(past_trades_df['time'], unit='ms')
-
-# Expand the 'symbol' field
-symbol_df = past_trades_df['symbol'].apply(pd.Series)
-past_trades_df = pd.concat([past_trades_df.drop('symbol', axis=1), symbol_df], axis=1)
-
-# Display the cleaned DataFrame
-past_trades_df.head()
-
-# Decode binary UUIDs
-orders_df['id'] = orders_df['id'].apply(decode_binary_uuid)
-
-# Convert numeric fields
-numeric_fields_orders = ['price', 'quantity', 'lifetime']
-for field in numeric_fields_orders:
-    orders_df[field] = pd.to_numeric(orders_df[field], errors='coerce')
-
-# Convert time field to datetime
-orders_df['time'] = pd.to_datetime(orders_df['time'], unit='ms')
-
-# Expand the 'symbol' field
-symbol_orders_df = orders_df['symbol'].apply(pd.Series)
-orders_df = pd.concat([orders_df.drop('symbol', axis=1), symbol_orders_df], axis=1)
-
-# Display the cleaned DataFrame
-orders_df.head()
-
-# Check for missing values in past_trades_df
-# print("Missing values in past_trades_df:")
-# print(past_trades_df.isnull().sum())
-
-# Fill or drop missing values as appropriate
-# past_trades_df.dropna(inplace=True)
-
-# Check for missing values in orders_df
-# print("\nMissing values in orders_df:")
-# print(orders_df.isnull().sum())
-
-# Fill or drop missing values as appropriate
-# orders_df.dropna(inplace=True)
-
-# Total number of trades
-total_trades = past_trades_df.shape[0]
-print(f"Total Trades: {total_trades}")
-
-# Total traded volume (quantity)
-total_volume = past_trades_df['qty'].sum()
-print(f"Total Traded Volume (Qty): {total_volume}")
-
-# Average trade price
-average_price = past_trades_df['price'].mean()
-print(f"Average Trade Price: {average_price:.2f}")
-
-# Total realized PnL
-total_pnl = past_trades_df['realized_pnl'].sum()
-print(f"Total Realized PnL: {total_pnl:.2f}")
-
-# Total number of orders
-total_orders = orders_df.shape[0]
-print(f"\nTotal Orders: {total_orders}")
-
-# Orders by type
-orders_by_type = orders_df['order_type'].value_counts()
-print("\nOrders by Type:", orders_by_type)
-
-# Average order quantity
-average_order_qty = orders_df['quantity'].mean()
-print(f"Average Order Quantity: {average_order_qty:.2f}")
+plt.figure(figsize=(12, 6))
+plt.plot(trades_df['trade_time'], trades_df['cumulative_pnl'], marker='o')
+plt.title('Cumulative Realized PnL Over Time')
+plt.xlabel('Time')
+plt.ylabel('Cumulative PnL')
+plt.grid(True)
+plt.show()

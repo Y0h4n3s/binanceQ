@@ -22,28 +22,17 @@ use crate::back_tester::{BackTester, BackTesterConfig, BackTesterMulti};
 use async_broadcast::{Receiver, Sender};
 use async_std::sync::Arc;
 use binance::api::Binance;
-use binance::futures::general::FuturesGeneral;
 use clap::{arg, command, value_parser, Command};
 use events::{EventEmitter, EventSink};
-use executors::live::BinanceLiveAccount;
 use executors::simulated::SimulatedAccount;
 use executors::{ExchangeAccount, TradeExecutor};
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
-use managers::risk_manager::{RiskManager, RiskManagerConfig};
-use managers::strategy_manager_python::{StrategyManagerPython, StrategyManagerConfig};
-use mongodb::loader::{
-    load_history_from_archive, load_klines_from_archive, start_kline_loader, KlineEmitter,
-    TfTradeEmitter,
-};
 use once_cell::sync::Lazy;
 use std::env;
 use std::fmt::Write;
 use std::time::{Duration, SystemTime};
-use subprocess::Exec;
 use tokio::sync::Notify;
-use tracing::Level;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 use types::{
@@ -51,6 +40,8 @@ use types::{
     Trade,
 };
 use crate::db::loader::compile_agg_trades_for;
+use crate::executors::ExchangeAccountInfo;
+use crate::types::OrderStatus;
 
 static KEY: Lazy<AccessKey> = Lazy::new(|| {
     let api_key = env::var("API_KEY")
@@ -67,7 +58,7 @@ fn main() -> Result<(), anyhow::Error> {
     // console_subscriber::init();
     // or as an allow list (INFO, but drill into my crate's logs)
     let filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::TRACE.into())
+        .with_default_directive(LevelFilter::DEBUG.into())
         .parse("binance_q=trace")?;
 
     tracing_subscriber::fmt()
@@ -230,10 +221,11 @@ async fn async_main() -> anyhow::Result<()> {
             .progress_chars("#>-"),
         );
 
-        let orders_channel: (Sender<(Order, Option<Arc<Notify>>)>, Receiver<(Order, Option<Arc<Notify>>)>) = async_broadcast::broadcast(1000);
         let tf_trades_channel: (Sender<(TfTrades, Option<Arc<Notify>>)>, Receiver<(TfTrades, Option<Arc<Notify>>)>) =
             async_broadcast::broadcast(10000);
         let trades_channel: (Sender<(Trade, Option<Arc<Notify>>)>, Receiver<(Trade, Option<Arc<Notify>>)>) = async_broadcast::broadcast(1000);
+        let order_statuses_channel: (Sender<(OrderStatus, Option<Arc<Notify>>)>, Receiver<(OrderStatus, Option<Arc<Notify>>)>) = async_broadcast::broadcast(100);
+        let client = Arc::new(db::client::SQLiteClient::new().await);
 
         if mode == "single" {
             let symbol = Symbol {
@@ -262,28 +254,40 @@ async fn async_main() -> anyhow::Result<()> {
             let back_tester =
                 BackTester::new(global_config, back_tester_config);
 
-            let start = std::time::SystemTime::now();
-            let executor: Box<Arc<dyn TradeExecutor<Account = SimulatedAccount>>> =
-                Box::new(Arc::new(
-                    executors::simulated::SimulatedExecutor::new(
-                        orders_channel.1.deactivate(),
-                        tf_trades_channel.1.deactivate(),
-                        vec![symbol.clone()],
-                        trades_channel.0,
-                    )
-                    .await,
-                ));
-            let s_e = executor.clone();
-           tokio::spawn(async move {
-                s_e.listen().unwrap();
+            let start = SystemTime::now();
+            let mut account = SimulatedAccount::new(
+                tf_trades_channel.1.deactivate(),
+                order_statuses_channel.1.deactivate(),
+                trades_channel.1.clone().deactivate(),
+                vec![symbol],
+                order_statuses_channel.0.clone(),
+                trades_channel.0,
+                client.clone(),
+
+            ).await;
+            let account = Arc::new(account);
+            let ac = account.clone();
+            tokio::spawn(async move {
+                EventSink::<Trade>::listen(ac).unwrap();
             });
+            let ac = account.clone();
+            tokio::spawn(async move {
+                EventSink::<TfTrades>::listen(ac).unwrap();
+            });
+            let ac = account.clone();
+            tokio::spawn(async move {
+                EventSink::<OrderStatus>::listen(ac).unwrap();
+            });
+
+
             back_tester
                 .run(
                     pb.clone(),
                     trades_channel.1.deactivate(),
                     tf_trades_channel.0,
-                    orders_channel.0,
-                    executor,
+                    order_statuses_channel.0,
+                    account,
+                    client
                 )
                 .await?;
             pb.finish_with_message(format!(
@@ -323,20 +327,26 @@ async fn async_main() -> anyhow::Result<()> {
                 verbose: main_matches.get_flag("verbose"),
             };
 
-            let executor: Box<Arc<dyn TradeExecutor<Account = SimulatedAccount>>> =
-                Box::new(Arc::new(
-                    executors::simulated::SimulatedExecutor::new(
-                        orders_channel.1.deactivate(),
-                        tf_trades_channel.1.deactivate(),
-                        symbols_i.clone(),
-                        trades_channel.0,
-                    )
-                    .await,
-                ));
-            // let s_e = executor.clone();
-            // tokio::spawn(async move {
-            //     s_e.listen().unwrap();
-            // });
+            let mut account = SimulatedAccount::new(
+                tf_trades_channel.1.deactivate(),
+                order_statuses_channel.1.deactivate(),
+                trades_channel.1.clone().deactivate(),
+                symbols_i,
+                order_statuses_channel.0.clone(),
+                trades_channel.0,
+                client.clone()
+            ).await;
+            let account = Arc::new(account);
+            let ac = account.clone();
+            tokio::spawn(async move {
+                EventSink::<TfTrades>::listen(ac).unwrap();
+            });
+            let ac = account.clone();
+            tokio::spawn(async move {
+                EventSink::<OrderStatus>::listen(ac).unwrap();
+            });
+
+
 
             let back_tester = BackTesterMulti::new(global_config, b_configs);
             let start = std::time::SystemTime::now();
@@ -345,8 +355,9 @@ async fn async_main() -> anyhow::Result<()> {
                     pb.clone(),
                     trades_channel.1.deactivate(),
                     tf_trades_channel.0,
-                    orders_channel.0,
-                    executor,
+                    order_statuses_channel.0,
+                    account,
+                    client
                 )
                 .await?;
 
@@ -449,188 +460,7 @@ async fn async_main() -> anyhow::Result<()> {
         compile_agg_trades_for(&symbol, tf, pb, verbose, client).await;
     }
     if let Some(matches) = main_matches.subcommand_matches("live") {
-        let symbols = matches.get_many::<String>("symbols").unwrap().clone();
-        let ktf = matches.get_one::<String>("ktf").unwrap().clone();
-        let length = *matches.get_one::<u64>("length").unwrap();
-        let tf1 = *matches
-            .get_one::<u64>("timeframe1")
-            .ok_or(anyhow::anyhow!("Invalid tf1"))?;
-
-        let orders_channel: (Sender<(Order, Option<Arc<Notify>>)>, Receiver<(Order, Option<Arc<Notify>>)>) = async_broadcast::broadcast(1000);
-        let tf_trades_channel: (Sender<(TfTrades, Option<Arc<Notify>>)>, Receiver<(TfTrades, Option<Arc<Notify>>)>) =
-            async_broadcast::broadcast(10000);
-        let trades_channel: (Sender<(Trade, Option<Arc<Notify>>)>, Receiver<(Trade, Option<Arc<Notify>>)>) = async_broadcast::broadcast(1000);
-        let from_time = SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-            - length;
-        let mut syms = vec![];
-        let general = FuturesGeneral::new(None, None);
-        for s in symbols.clone() {
-            let asset = general.get_symbol_info(s.clone()).await.unwrap();
-            syms.push(Symbol {
-                symbol: s.clone(),
-                exchange: ExchangeId::Binance,
-                base_asset_precision: asset.quantity_precision as u32,
-                quote_asset_precision: asset.price_precision as u32,
-            });
-        }
-        let executor: Box<Arc<dyn TradeExecutor<Account = BinanceLiveAccount>>> =
-            Box::new(Arc::new(
-                executors::live::BinanceLiveExecutor::new(
-                    KEY.clone(),
-                    orders_channel.1,
-                    tf_trades_channel.1,
-                    syms.clone(),
-                    trades_channel.0,
-                )
-                .await,
-            ));
-        let s_e = executor.clone();
-        std::thread::spawn(move || {
-            s_e.listen().unwrap();
-        });
-
-        let trades_rx = trades_channel.1.deactivate();
-
-        let mut grpc_server = 50011;
-        let mut workers = vec![];
-        let verbose = main_matches.get_flag("verbose");
-        for symbol in syms {
-            let t_r = trades_rx.clone();
-            let t_t = tf_trades_channel.0.clone();
-            let o_t = orders_channel.0.clone();
-            let e = executor.clone();
-            let ktf = ktf.clone();
-            let global_config = GlobalConfig {
-                symbol: symbol.clone(),
-                tf1,
-                tf2: tf1,
-                tf3: tf1,
-                key: KEY.clone(),
-                verbose,
-                mode: Mode::Live,
-            };
-            workers.push(std::thread::spawn(move || {
-                let runtime = tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap();
-                runtime.block_on(async move {
-                    let done = Arc::new(std::sync::RwLock::new(false));
-                    let bd = done.clone();
-                    let s = symbol.symbol.clone();
-                    std::thread::spawn(move || {
-                        println!("[?] live > Launching Signal Generators for {}", s);
-
-                        let mut process = Exec::cmd("python3")
-                            .arg("./python/signals/signal_generator.py")
-                            .arg("--symbol")
-                            .arg(&s)
-                            .arg("--grpc-port")
-                            .arg(grpc_server.to_string())
-                            .arg("--mode")
-                            .arg("Live")
-                            .popen()
-                            .unwrap();
-                        loop {
-                            if *bd.read().unwrap() {
-                                process.kill().unwrap();
-                                break;
-                            }
-                            std::thread::sleep(Duration::from_millis(2000));
-                        }
-                    });
-
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-
-                    let klines_channel = async_broadcast::broadcast(10000);
-                    let execution_commands_channel = async_broadcast::broadcast(100);
-
-                    let inner_account: Box<Arc<dyn ExchangeAccount>> =
-                        Box::new(e.get_account().clone());
-                    println!("[?] live > Initializing Risk Manager for {}", symbol.symbol);
-                    // calculate position size based on risk tolerance and send orders to executors
-                    let mut risk_manager = RiskManager::new(
-                        global_config.clone(),
-                        RiskManagerConfig {
-                            max_daily_losses: 100,
-                            max_risk_per_trade: 0.01,
-                        },
-                        klines_channel.1.clone().deactivate(),
-                        t_r,
-                        execution_commands_channel.1.deactivate(),
-                        inner_account,
-                    );
-
-                    let inner_account: Box<Arc<dyn ExchangeAccount>> =
-                        Box::new(e.get_account().clone());
-
-                    // receive strategy edges from multiple strategies and forward them to risk manager
-                    println!(
-                        "[?] live > Initializing Strategy Manager for {}",
-                        symbol.symbol
-                    );
-                    let mut strategy_manager = StrategyManagerPython::new(
-                        StrategyManagerConfig {
-                            symbol: global_config.symbol.clone(),
-                        },
-                        global_config.clone(),
-                        klines_channel.1.deactivate(),
-                        grpc_server.to_string(),
-                        inner_account,
-                    )
-                    .await;
-
-                    let mut trade_emitter = TfTradeEmitter::new(tf1, global_config.clone());
-
-                    let mut kline_emitter = KlineEmitter::new(ktf.clone(), global_config.clone());
-
-                    trade_emitter.subscribe(t_t).await;
-                    kline_emitter.subscribe(klines_channel.0).await;
-
-
-                    println!("[?] live > Starting Listeners {}", symbol.symbol);
-                    strategy_manager
-                        .subscribe(execution_commands_channel.0)
-                        .await;
-                    let mut r_threads = vec![];
-                    let rc = Arc::new(risk_manager.clone());
-                    r_threads.push(std::thread::spawn(move || {
-                        EventSink::<Trade>::listen(rc).unwrap();
-                    }));
-                    let sm = Arc::new(strategy_manager.clone());
-                    r_threads.push(std::thread::spawn(move || {
-                        EventSink::<Kline>::listen(sm).unwrap();
-                    }));
-                    let rc_1 = Arc::new(risk_manager.clone());
-                    r_threads.push(std::thread::spawn(move || {
-                        EventSink::<Kline>::listen(rc_1).unwrap();
-                    }));
-
-                    let mut futures = FuturesUnordered::new();
-                    // futures.push(start_loader(symbol.clone(), tf1).await);
-                    futures.push(start_kline_loader(symbol.clone(), ktf.clone(), from_time).await);
-                    futures.push(strategy_manager.emit().await.unwrap());
-                    futures.push(e.emit().await.unwrap());
-                    futures.push(trade_emitter.emit().await.unwrap());
-                    futures.push(kline_emitter.emit().await.unwrap());
-
-                    while let Some(_) = futures.next().await {
-                        continue;
-                    }
-                    for t in r_threads {
-                        t.join().unwrap();
-                    }
-                });
-            }));
-
-            grpc_server += 1;
-        }
-        for worker in workers {
-            worker.join().unwrap();
-        }
+        todo!()
     }
 
     Ok(())

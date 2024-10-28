@@ -6,7 +6,7 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::FromPrimitive;
 use sqlx::{FromRow, Decode, SqlitePool, Executor, Type, Row, Error, Acquire, SqliteConnection};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteRow, SqliteSynchronous};
-use crate::types::{Kline, Order, Side, Symbol, TfTrade, TfTrades, Trade, TradeEntry};
+use crate::types::{Kline, Order, OrderType, Side, Symbol, TfTrade, TfTrades, Trade, TradeEntry};
 use serde::{Serialize, Deserialize};
 use sqlx::types::Text;
 use uuid::Uuid;
@@ -64,25 +64,25 @@ pub struct SQLiteTrade {
     pub symbol_data: serde_json::Value,
 
     pub maker: bool,
-    pub price: Decimal,
-    pub commission: Decimal,
+    pub price: String,
+    pub commission: String,
     pub position_side: String,
     pub side: String,
-    pub realized_pnl: Decimal,
+    pub realized_pnl: String,
     pub exit_order_type: serde_json::Value,
-    pub qty: Decimal,
-    pub quote_qty: Decimal,
+    pub qty: String,
+    pub quote_qty: String,
     pub time: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, FromRow, Decode)]
 pub struct SQLiteOrder {
-    pub id: Uuid,
+    pub order_id: serde_json::Value,
     pub symbol: String,
     pub symbol_data: serde_json::Value,
     pub side: String,
-    pub price: Decimal,
-    pub quantity: Decimal,
+    pub price: String,
+    pub quantity: String,
     pub time: u64,
     pub order_type: serde_json::Value,
     pub lifetime: u64,
@@ -167,6 +167,42 @@ impl From<Kline> for SQLiteKline {
     }
 }
 
+impl FromRow<'_, SqliteRow> for Trade {
+
+    fn from_row(row: &SqliteRow) -> Result<Self, Error> {
+        let price: f64 = row.try_get("price")?;
+        let commission: f64 = row.try_get("commission")?;
+        let realized_pnl: f64 = row.try_get("realized_pnl")?;
+        let qty: f64 = row.try_get("qty")?;
+        let quote_qty: f64 = row.try_get("quote_qty")?;
+        let time: u64 = row.try_get("time")?;
+        let side: String = row.try_get("side")?;
+        let position_side: String = row.try_get("position_side")?;
+
+        Ok(Self {
+            id: row.try_get("id")?,
+            order_id: row.try_get("order_id")?,
+            symbol:serde_json::from_value(row.try_get("symbol_data")?).unwrap(),
+            maker: row.try_get("maker")?,
+            price: Decimal::from_f64(price).unwrap(),
+            commission: Decimal::from_f64(commission).unwrap(),
+            position_side: match position_side.as_str() {
+                "Bid" => Side::Bid,
+                _ => Side::Ask,
+            },
+            side: match side.as_str() {
+                "Bid" => Side::Bid,
+                _ => Side::Ask,
+            },
+            realized_pnl:  Decimal::from_f64(realized_pnl).unwrap(),
+            exit_order_type: serde_json::from_value(row.try_get("exit_order_type")?).unwrap(),
+            qty: Decimal::from_f64(qty).unwrap(),
+            quote_qty: Decimal::from_f64(quote_qty).unwrap(),
+            time,
+        })
+    }
+}
+
 impl FromRow<'_, SqliteRow> for Kline {
     fn from_row(row: &'_ SqliteRow) -> Result<Self, Error> {
         let open: f64 = row.try_get("open")?;
@@ -202,14 +238,14 @@ impl From<Trade> for SQLiteTrade {
             symbol_data: serde_json::to_value(&trade.symbol).unwrap(),
             symbol: trade.symbol.symbol,
             maker: trade.maker,
-            price: trade.price,
-            commission: trade.commission,
+            price: trade.price.to_string(),
+            commission: trade.commission.to_string(),
             position_side: format!("{:?}", trade.position_side),  // Store enum as TEXT
             side: format!("{:?}", trade.side),  // Store enum as TEXT
-            realized_pnl: trade.realized_pnl,
+            realized_pnl: trade.realized_pnl.to_string(),
             exit_order_type: serde_json::to_value(trade.exit_order_type).unwrap(),  // Store enum as TEXT
-            qty: trade.qty,
-            quote_qty: trade.quote_qty,
+            qty: trade.qty.to_string(),
+            quote_qty: trade.quote_qty.to_string(),
             time: trade.time,
         }
     }
@@ -217,12 +253,12 @@ impl From<Trade> for SQLiteTrade {
 impl From<Order> for SQLiteOrder {
     fn from(order: Order) -> Self {
         SQLiteOrder {
-            id: order.id,
+            order_id: serde_json::to_value(order.id).unwrap(),
             symbol_data: serde_json::to_value(&order.symbol).unwrap(),
             symbol: order.symbol.symbol,
             side: format!("{:?}", order.side),
-            price: order.price,
-            quantity: order.quantity,
+            price: order.price.to_string(),
+            quantity: order.quantity.to_string(),
             time: order.time,
             order_type:serde_json::to_value(order.order_type).unwrap(),
             lifetime: order.lifetime,
@@ -231,50 +267,27 @@ impl From<Order> for SQLiteOrder {
     }
 }
 
-impl From<SQLiteOrder> for Order {
-    fn from(order: SQLiteOrder) -> Self {
-        Order {
-            id: order.id,
-            symbol:serde_json::from_value(order.symbol_data).unwrap(),
+impl FromRow<'_, SqliteRow> for Order {
+    fn from_row(row: &'_ SqliteRow) -> Result<Self, Error> {
+        let side: String = row.try_get("side")?;
+        let price: f64 = row.try_get("price")?;
+        let quantity: f64 = row.try_get("quantity")?;
+        let time: u64 = row.try_get("time")?;
+        Ok( Order {
+            id: serde_json::from_value( row.try_get("order_id")?).unwrap(),
+            symbol:serde_json::from_value(row.try_get("symbol_data")?).unwrap(),
 
-            side: match order.side.as_str() {
+            side: match side.as_str() {
                 "Bid" => Side::Bid,
                 _ => Side::Ask,
             },
-            price: order.price,
-            quantity: order.quantity,
-            time: order.time,
-            order_type: serde_json::from_value(order.order_type).unwrap(),
-            lifetime: order.lifetime,
-            close_policy: serde_json::from_value(order.close_policy).unwrap(),
-        }
-    }
-}
-
-
-impl From<SQLiteTrade> for Trade {
-    fn from(trade: SQLiteTrade) -> Self {
-        Trade {
-            id: trade.id,
-            order_id: trade.order_id,
-            symbol:serde_json::from_value(trade.symbol_data).unwrap(),
-            maker: trade.maker,
-            price: trade.price,
-            commission: trade.commission,
-            position_side: match trade.position_side.as_str() {
-                "Bid" => Side::Bid,
-                _ => Side::Ask,
-            },
-            side: match trade.side.as_str() {
-                "Bid" => Side::Bid,
-                _ => Side::Ask,
-            },
-            realized_pnl: trade.realized_pnl,
-            exit_order_type:serde_json::from_value(trade.exit_order_type).unwrap(),
-            qty: trade.qty,
-            quote_qty: trade.quote_qty,
-            time: trade.time,
-        }
+            price: Decimal::from_f64(price).unwrap(),
+            quantity: Decimal::from_f64(quantity).unwrap(),
+            time,
+            order_type: serde_json::from_value(row.try_get("order_type")?).unwrap(),
+            lifetime: row.try_get("lifetime")?,
+            close_policy: serde_json::from_value(row.try_get("close_policy")?).unwrap(),
+        })
     }
 }
 
@@ -328,42 +341,23 @@ impl SQLiteClient {
         ).execute(pool).await.unwrap();
 
 
-        // Create the Trade table
-        sqlx::query(
-            r#"
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY,
-            order_id TEXT,
-            symbol TEXT,
-            symbol_data JSON,
-            maker BOOLEAN,
-            price REAL,
-            commission TEXT,
-            position_side TEXT,
-            side TEXT,
-            realized_pnl REAL,
-            exit_order_type TEXT,
-            qty REAL,
-            quote_qty REAL,
-            time INTEGER
-        );
-        "#
-        ).execute(pool).await.unwrap();
+
 
         // Create the Order table
         sqlx::query(
             r#"
         CREATE TABLE IF NOT EXISTS orders (
             id TEXT PRIMARY KEY,
+            order_id JSON,
             symbol TEXT,
             symbol_data JSON,
             side TEXT,
             price REAL,
             quantity REAL,
             time INTEGER,
-            order_type TEXT,
+            order_type JSON,
             lifetime INTEGER,
-            close_policy TEXT
+            close_policy JSON
         );
         "#
         ).execute(pool).await.unwrap();
@@ -389,13 +383,77 @@ impl SQLiteClient {
         );
         "#
         ).execute(pool).await.unwrap();
-        
+
+        // Create the Trade table
+        sqlx::query(
+            r#"
+        CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY,
+            order_id TEXT,
+            symbol TEXT,
+            symbol_data JSON,
+            maker BOOLEAN,
+            price REAL,
+            commission TEXT,
+            position_side TEXT,
+            side TEXT,
+            realized_pnl REAL,
+            exit_order_type JSON,
+            qty REAL,
+            quote_qty REAL,
+            time INTEGER
+        );
+        "#
+        ).execute(pool).await.unwrap();
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS timestamps ON trade_entries(timestamp);"#
         ).execute(pool).await.unwrap();
 
     }
 
+    pub async fn insert_order(pool: &SqlitePool, order: Order) {
+        let s_trade = SQLiteOrder::from(order);
+        sqlx::query(
+            r#"
+                INSERT INTO orders (order_id, symbol, symbol_data, side, price, quantity, time, order_type, lifetime, close_policy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            "#
+        ).bind(&s_trade.order_id)
+            .bind(s_trade.symbol)
+            .bind(s_trade.symbol_data)
+            .bind(s_trade.side)
+            .bind(s_trade.price)
+            .bind(s_trade.quantity)
+            .bind(s_trade.time.to_string())
+            .bind(s_trade.order_type)
+            .bind(s_trade.lifetime.to_string())
+            .bind(s_trade.close_policy)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    pub async fn insert_trade(pool: &SqlitePool, trade: Trade) {
+        let s_trade = SQLiteTrade::from(trade);
+        sqlx::query(
+            r#"
+                INSERT INTO trades (order_id, symbol, symbol_data, maker, price, commission, position_side, side, realized_pnl, exit_order_type, qty, quote_qty, time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            "#
+        ).bind(&s_trade.order_id)
+            .bind(s_trade.symbol)
+            .bind(s_trade.symbol_data)
+            .bind(s_trade.maker)
+            .bind(s_trade.price)
+            .bind(s_trade.commission)
+            .bind(s_trade.position_side)
+            .bind(s_trade.side)
+            .bind(s_trade.realized_pnl)
+            .bind(s_trade.exit_order_type)
+            .bind(s_trade.qty)
+            .bind(s_trade.quote_qty)
+            .bind(s_trade.time.to_string())
+            .execute(pool)
+            .await
+            .unwrap();
+    }
     pub async fn get_trades_count_by_symbol<'a>(pool: &'a SqlitePool, symbol: &'a Symbol) -> u64 {
         sqlx::query_scalar(
             r#"
@@ -571,6 +629,14 @@ impl SQLiteClient {
     // Reset kline data by symbol
     pub async fn reset_kline(&self, symbol: &Symbol) {
         sqlx::query("DELETE FROM klines WHERE symbol = ?")
+            .bind(&symbol.symbol)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+    }
+    // Reset trades data by symbol
+    pub async fn reset_trades(&self, symbol: &Symbol) {
+        sqlx::query("DELETE FROM trades WHERE symbol = ?")
             .bind(&symbol.symbol)
             .execute(&self.pool)
             .await

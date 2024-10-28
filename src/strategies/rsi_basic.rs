@@ -1,4 +1,7 @@
 use std::sync::Arc;
+use async_trait::async_trait;
+use log::debug;
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal_macros::dec;
 use ta::{indicators::RelativeStrengthIndex, Next};
 use ta::indicators::SimpleMovingAverage;
@@ -29,17 +32,20 @@ impl SimpleRSIStrategy {
     }
 }
 
+#[async_trait]
 impl SignalGenerator for SimpleRSIStrategy {
     async fn handle_kline(&mut self, kline: &Kline, account: &Box<Arc<dyn ExchangeAccountInfo>>) -> Option<Vec<Order>> {
-        let rsi = self.rsi.next(kline.close);
+        let close = kline.close.to_f64().unwrap_or(0.0);
+        let rsi = self.rsi.next(close);
 
 
         let position = account.get_position(&kline.symbol).await;
+        let open_orders = account.get_open_orders(&kline.symbol).await;
 
 
-        let s1 = self.sma1.next(kline.close);
-        let s2 = self.sma2.next(kline.close);
-        let s3 = self.sma3.next(kline.close);
+        let s1 = self.sma1.next(close);
+        let s2 = self.sma2.next(close);
+        let s3 = self.sma3.next(close);
         let mut direction = 0;
         if s1 > s2 && s2 > s3 {
             direction = 1
@@ -49,33 +55,47 @@ impl SignalGenerator for SimpleRSIStrategy {
 
         let mut orders = vec![];
         if  direction == -1 {
-            if rsi < 30.0 && position.is_open() {
-                orders.push(Order {
-                    id: Default::default(),
-                    symbol: kline.symbol.clone(),
-                    side: Side::Ask,
-                    price: kline.close,
-                    quantity: position.qty,
-                    time: 0,
-                    order_type: OrderType::Market,
-                    lifetime: 0,
-                    close_policy: ClosePolicy::None,
-                })
+            if rsi < 30.0 && position.is_open() && open_orders.is_empty() {
+                debug!("close price: {:?} {}", position, kline.close);
             }
         }
         if direction == 1{
-                if rsi > 70.0 && !position.is_open() {
+                if rsi > 70.0 && !position.is_open() && open_orders.is_empty() {
+                    debug!("opening price: {}, Target: {} Stop: {}", kline.close, kline.close + kline.close * dec!(0.04), kline.close - kline.close * dec!(0.02));
+
                     orders.push(Order {
-                        id: Default::default(),
+                        id: uuid::Uuid::new_v4(),
                         symbol: kline.symbol.clone(),
                         side: Side::Bid,
+                        price: kline.close - kline.close * dec!(0.04),
+                        quantity: dec!(100),
+                        time: 0,
+                        order_type: OrderType::TakeProfitLimit,
+                        lifetime: 0,
+                        close_policy: ClosePolicy::None,
+                    });
+                    orders.push(Order {
+                        id: uuid::Uuid::new_v4(),
+                        symbol: kline.symbol.clone(),
+                        side: Side::Bid,
+                        price: kline.close + kline.close * dec!(0.04),
+                        quantity: dec!(100),
+                        time: 0,
+                        order_type: OrderType::StopLossLimit,
+                        lifetime: 0,
+                        close_policy: ClosePolicy::None,
+                    });
+                    orders.push(Order {
+                        id: uuid::Uuid::new_v4(),
+                        symbol: kline.symbol.clone(),
+                        side: Side::Ask,
                         price: kline.close,
                         quantity: dec!(100),
                         time: 0,
                         order_type: OrderType::Market,
                         lifetime: 0,
                         close_policy: ClosePolicy::None,
-                    })
+                    });
                 }
 
         }

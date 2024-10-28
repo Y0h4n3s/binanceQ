@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::executors::simulated::SimulatedAccount;
 use crate::executors::{ExchangeAccount, ExchangeAccountInfo, TradeExecutor};
 use crate::mongodb::MongoClient;
-use crate::types::{GlobalConfig, Kline, Order, Symbol, TfTrades, Trade};
+use crate::types::{GlobalConfig, Kline, Order, OrderStatus, Symbol, TfTrades, Trade};
 use async_broadcast::{InactiveReceiver, Sender};
 use async_std::sync::Arc;
 use futures::{stream, StreamExt};
@@ -15,6 +15,7 @@ use crate::db::client::SQLiteClient;
 use crate::events::EventSink;
 use crate::managers::risk_manager::{RiskManager, RiskManagerConfig};
 use crate::managers::strategy_manager::StrategyManager;
+use crate::strategies::rsi_basic::SimpleRSIStrategy;
 
 #[derive(Debug, Clone)]
 pub struct BackTesterConfig {
@@ -51,8 +52,9 @@ impl BackTesterMulti {
         pb: ProgressBar,
         trades_receiver: InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
         tf_trades_tx: Sender<(TfTrades, Option<Arc<Notify>>)>,
-        orders_tx: Sender<(Order, Option<Arc<Notify>>)>,
-        executor: Box<Arc<dyn TradeExecutor<Account = SimulatedAccount>>>,
+        orders_tx: Sender<(OrderStatus, Option<Arc<Notify>>)>,
+        account: Arc<SimulatedAccount>,
+        sqlite_client: Arc<SQLiteClient>
     ) -> anyhow::Result<()> {
         stream::iter(self.config.clone())
             .map(|config| {
@@ -63,9 +65,10 @@ impl BackTesterMulti {
                 let t_r = trades_receiver.clone();
                 let t_t = tf_trades_tx.clone();
                 let o_t = orders_tx.clone();
-                let e = executor.clone();
+                let a = account.clone();
+                let sqlite_client = sqlite_client.clone();
                 async move {
-                    back_tester.run(p, t_r, t_t, o_t, e).await.unwrap()
+                    back_tester.run(p, t_r, t_t, o_t, a, sqlite_client).await.unwrap()
 
                 }
             }).buffer_unordered(20)
@@ -93,16 +96,16 @@ impl BackTester {
         pb: ProgressBar,
         trades_receiver: InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
         tf_trades_tx: Sender<(TfTrades, Option<Arc<Notify>>)>,
-        orders_tx: Sender<(Order, Option<Arc<Notify>>)>,
-        executor: Box<Arc<dyn TradeExecutor<Account = SimulatedAccount>>>,
+        orders_tx: Sender<(OrderStatus, Option<Arc<Notify>>)>,
+        account: Arc<SimulatedAccount>,
+        sqlite_client: Arc<SQLiteClient>
     ) -> anyhow::Result<()> {
-        let mongo_client = MongoClient::new().await;
-        let sqlite_client = SQLiteClient::new().await;
         // Start the python signal generator for this symbol
         let config = self.config.clone();
         let backtest_done = Arc::new(AtomicBool::new(false));
         let bd = backtest_done.clone();
-
+        sqlite_client.reset_trades(&config.symbol).await;
+        sqlite_client.reset_orders(&config.symbol).await;
         // tokio::spawn(async move  {
         //     println!(
         //         "[?] back_tester> Launching Signal Generators for {}",
@@ -130,13 +133,10 @@ impl BackTester {
 
         // wait for the signal generator to start to be safe
 
-        mongo_client.reset_trades(&self.config.symbol).await;
-        mongo_client.reset_orders(&self.config.symbol).await;
 
         let klines_channel = async_broadcast::broadcast(10000);
         let execution_commands_channel = async_broadcast::broadcast(100);
-        //
-        let inner_account: Box<Arc<dyn ExchangeAccount>> = Box::new(executor.get_account().clone());
+        let inner_account: Box<Arc<dyn ExchangeAccountInfo>> = Box::new(account.clone());
         println!(
             "[?] back_tester> Initializing Risk Manager for {}",
             self.config.symbol.symbol
@@ -154,7 +154,7 @@ impl BackTester {
             inner_account,
         );
 
-        let inner_account: Box<Arc<dyn ExchangeAccountInfo>> = Box::new(executor.get_account().clone());
+        let inner_account: Box<Arc<dyn ExchangeAccountInfo>> = Box::new( account.clone());
 
         // receive strategy edges from multiple strategies and forward them to risk manager
         info!(
@@ -169,6 +169,8 @@ impl BackTester {
             risk_manager
 
         );
+        let strategy = SimpleRSIStrategy::new(14);
+        strategy_manager.load_strategy(Box::new(strategy)).await;
         // sends orders to executor
         // risk_manager.subscribe(orders_tx).await;
 

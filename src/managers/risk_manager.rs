@@ -352,7 +352,7 @@ impl RiskManager {
         klines: InactiveReceiver<(Kline, Option<Arc<Notify>>)>,
         trades: InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
         execution_commands: InactiveReceiver<(ExecutionCommand, Option<Arc<Notify>>)>,
-        account: Box<Arc<dyn ExchangeAccount>>,
+        account: Box<Arc<dyn ExchangeAccountInfo>>,
     ) -> Self {
         let key = &global_config.key;
 
