@@ -521,7 +521,217 @@ mod tests {
 
         Ok(())
     }
-    async fn test_simulated_account_cancel_order() -> anyhow::Result<()> {
+    #[tokio::test]
+    async fn test_multiple_market_orders_with_tp_sl() -> anyhow::Result<()> {
+        let symbol = Symbol {
+            symbol: "TST/USDT".to_string(),
+            exchange: ExchangeId::Simulated,
+            base_asset_precision: 1,
+            quote_asset_precision: 2,
+        };
+        let (simulated_account, tf_trades_channel, trades_channel, order_statuses_channel) =
+            setup_simulated_account(symbol.clone()).await;
+
+        // First market order
+        let market_order_1 = Order {
+            id: Uuid::new_v4(),
+            symbol: symbol.clone(),
+            side: Side::Bid,
+            price: Decimal::new(100, 1),
+            quantity: Decimal::new(100, 1),
+            time: 123,
+            order_type: OrderType::Market,
+            lifetime: 0,
+            close_policy: ClosePolicy::None,
+        };
+
+        // Broadcast the first market order
+        let notifier = Arc::new(Notify::new());
+        let n = notifier.notified();
+        order_statuses_channel
+            .0
+            .broadcast((OrderStatus::Pending(market_order_1.clone()), Some(notifier.clone())))
+            .await
+            .unwrap();
+        n.await;
+
+        // First stop-loss order
+        let stop_loss_order_1 = Order {
+            id: Uuid::new_v4(),
+            symbol: symbol.clone(),
+            side: Side::Ask,
+            price: Decimal::new(90, 1), // Stop-loss price
+            quantity: Decimal::new(100, 1),
+            time: 123,
+            order_type: OrderType::StopLossLimit,
+            lifetime: 0,
+            close_policy: ClosePolicy::None,
+        };
+
+        // Broadcast the first stop-loss order
+        let n = notifier.notified();
+        order_statuses_channel
+            .0
+            .broadcast((OrderStatus::Pending(stop_loss_order_1.clone()), Some(notifier.clone())))
+            .await
+            .unwrap();
+        n.await;
+
+        // First take-profit order
+        let take_profit_order_1 = Order {
+            id: Uuid::new_v4(),
+            symbol: symbol.clone(),
+            side: Side::Ask,
+            price: Decimal::new(110, 1), // Take-profit price
+            quantity: Decimal::new(100, 1),
+            time: 123,
+            order_type: OrderType::TakeProfitLimit,
+            lifetime: 0,
+            close_policy: ClosePolicy::None,
+        };
+
+        // Broadcast the first take-profit order
+        let n = notifier.notified();
+        order_statuses_channel
+            .0
+            .broadcast((OrderStatus::Pending(take_profit_order_1.clone()), Some(notifier.clone())))
+            .await
+            .unwrap();
+        n.await;
+
+        // Simulate a trade that does not hit the stop-loss or take-profit
+        let n = notifier.notified();
+        let trade_entry_1 = TradeEntry {
+            trade_id: 1,
+            price: Decimal::new(105, 1), // Price between stop-loss and take-profit
+            qty: Decimal::new(100, 1),
+            timestamp: 0,
+            delta: Decimal::new(0, 0),
+            symbol: symbol.clone(),
+        };
+        tf_trades_channel
+            .0
+            .broadcast((
+                vec![TfTrade {
+                    symbol: symbol.clone(),
+                    tf: 1,
+                    id: 1,
+                    timestamp: 124,
+                    trades: vec![trade_entry_1.clone()],
+                    min_trade_time: 0,
+                    max_trade_time: 0,
+                }],
+                Some(notifier.clone()),
+            ))
+            .await
+            .unwrap();
+        n.await;
+
+        // Second market order
+        let market_order_2 = Order {
+            id: Uuid::new_v4(),
+            symbol: symbol.clone(),
+            side: Side::Bid,
+            price: Decimal::new(100, 1),
+            quantity: Decimal::new(100, 1),
+            time: 125,
+            order_type: OrderType::Market,
+            lifetime: 0,
+            close_policy: ClosePolicy::None,
+        };
+
+        // Broadcast the second market order
+        let n = notifier.notified();
+        order_statuses_channel
+            .0
+            .broadcast((OrderStatus::Pending(market_order_2.clone()), Some(notifier.clone())))
+            .await
+            .unwrap();
+        n.await;
+
+        // Second stop-loss order
+        let stop_loss_order_2 = Order {
+            id: Uuid::new_v4(),
+            symbol: symbol.clone(),
+            side: Side::Ask,
+            price: Decimal::new(95, 1), // Stop-loss price
+            quantity: Decimal::new(100, 1),
+            time: 125,
+            order_type: OrderType::StopLossLimit,
+            lifetime: 0,
+            close_policy: ClosePolicy::None,
+        };
+
+        // Broadcast the second stop-loss order
+        let n = notifier.notified();
+        order_statuses_channel
+            .0
+            .broadcast((OrderStatus::Pending(stop_loss_order_2.clone()), Some(notifier.clone())))
+            .await
+            .unwrap();
+        n.await;
+
+        // Second take-profit order
+        let take_profit_order_2 = Order {
+            id: Uuid::new_v4(),
+            symbol: symbol.clone(),
+            side: Side::Ask,
+            price: Decimal::new(115, 1), // Take-profit price
+            quantity: Decimal::new(100, 1),
+            time: 125,
+            order_type: OrderType::TakeProfitLimit,
+            lifetime: 0,
+            close_policy: ClosePolicy::None,
+        };
+
+        // Broadcast the second take-profit order
+        let n = notifier.notified();
+        order_statuses_channel
+            .0
+            .broadcast((OrderStatus::Pending(take_profit_order_2.clone()), Some(notifier.clone())))
+            .await
+            .unwrap();
+        n.await;
+
+        // Simulate a trade that hits the take-profit of the second order
+        let n = notifier.notified();
+        let trade_entry_2 = TradeEntry {
+            trade_id: 2,
+            price: Decimal::new(120, 1), // Price above take-profit
+            qty: Decimal::new(100, 1),
+            timestamp: 0,
+            delta: Decimal::new(0, 0),
+            symbol: symbol.clone(),
+        };
+        tf_trades_channel
+            .0
+            .broadcast((
+                vec![TfTrade {
+                    symbol: symbol.clone(),
+                    tf: 1,
+                    id: 2,
+                    timestamp: 126,
+                    trades: vec![trade_entry_2.clone()],
+                    min_trade_time: 0,
+                    max_trade_time: 0,
+                }],
+                Some(notifier.clone()),
+            ))
+            .await
+            .unwrap();
+        n.await;
+
+        // Check if the final position is long
+        let position = simulated_account.get_position(&symbol).await;
+        assert!(position.is_long(), "Final position should be long");
+
+        // Check trade history for positive realized PnL
+        let trade_history = simulated_account.get_past_trades(&symbol, None).await;
+        let trade = trade_history.iter().next().unwrap();
+        assert!(trade.realized_pnl > Decimal::ZERO, "Realized PnL should be positive");
+
+        Ok(())
+    }
         let symbol = Symbol {
             symbol: "TST/USDT".to_string(),
             exchange: ExchangeId::Simulated,
