@@ -51,64 +51,6 @@ pub struct SimulatedAccount {
     pub open_orders: ArcMap<Symbol, ArcSet<Order>>,
     pub order_history: ArcMap<Symbol, ArcSet<OrderStatus>>,
     pub trade_history: ArcMap<Symbol, ArcSet<Trade>>,
-    pub trade_subscribers: Arc<RwLock<Sender<(Trade, Option<Arc<Notify>>)>>>,
-    pub positions: ArcMap<Symbol, Position>,
-    tf_trades: InactiveReceiver<(TfTrades, Option<Arc<Notify>>)>,
-    order_statuses: InactiveReceiver<(OrderStatus, Option<Arc<Notify>>)>,
-    new_trades: InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
-    spreads: ArcMap<Symbol, Arc<RwLock<Spread>>>,
-    pub order_status_subscribers: Arc<RwLock<Sender<(OrderStatus, Option<Arc<Notify>>)>>>,
-    sqlite_client: Arc<SQLiteClient>,
-}
-
-impl SimulatedAccount {
-    pub async fn new(
-        tf_trades: InactiveReceiver<(TfTrades, Option<Arc<Notify>>)>,
-        order_statuses: InactiveReceiver<(OrderStatus, Option<Arc<Notify>>)>,
-        trades: InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
-        symbols: Vec<Symbol>,
-        order_status_subscribers: Sender<(OrderStatus, Option<Arc<Notify>>)>,
-        trade_subscribers: Sender<(Trade, Option<Arc<Notify>>)>,
-        sqlite_client: Arc<SQLiteClient>
-    ) -> Self {
-        let symbol_accounts = Arc::new(Mutex::new(HashMap::new()));
-        let open_orders = Arc::new(Mutex::new(HashMap::new()));
-        let order_history = Arc::new(Mutex::new(HashMap::new()));
-        let trade_history = Arc::new(Mutex::new(HashMap::new()));
-        let positions = Arc::new(Mutex::new(HashMap::new()));
-        let spreads = Arc::new(Mutex::new(HashMap::new()));
-
-        for symbol in symbols {
-            let symbol_account = SymbolAccount {
-                symbol: symbol.clone(),
-                base_asset_free: Default::default(),
-                base_asset_locked: Default::default(),
-                quote_asset_free: Decimal::new(100000, 0),
-                quote_asset_locked: Default::default(),
-            };
-            let position = Position::new(Side::Ask, symbol.clone(), Decimal::ZERO, Decimal::ZERO);
-            let spread = Spread::new(symbol.clone());
-            symbol_accounts.lock().await.insert(symbol.clone(), symbol_account);
-            open_orders.lock().await.insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
-            order_history.lock().await.insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
-            trade_history.lock().await.insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
-            positions.lock().await.insert(symbol.clone(), position);
-            spreads.lock().await.insert(symbol.clone(), Arc::new(RwLock::new(spread)));
-        }
-        Self {
-            symbol_accounts,
-            open_orders,
-            order_history,
-            trade_history,
-            positions,
-            spreads,
-            tf_trades,
-            trade_subscribers: Arc::new(RwLock::new(trade_subscribers)),
-            order_statuses,
-            order_status_subscribers: Arc::new(RwLock::new(order_status_subscribers)),
-            new_trades: trades,
-            sqlite_client,
-        }
     }
 
     async fn process_cancel_order(&self, order: &Order, order_search: &mut HashMap<Uuid, Order>, open_orders: &mut HashSet<Order>) {
