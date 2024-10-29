@@ -319,18 +319,17 @@ mod tests {
     };
     use rust_decimal::Decimal;
 
-    #[tokio::test]
-    async fn test_simulated_account_cancel_order() -> anyhow::Result<()> {
+    async fn setup_simulated_account(symbol: Symbol) -> (
+        Arc<SimulatedAccount>,
+        async_broadcast::Sender<(TfTrades, Option<Arc<Notify>>)>,
+        async_broadcast::Sender<(Trade, Option<Arc<Notify>>)>,
+        async_broadcast::Sender<(OrderStatus, Option<Arc<Notify>>)>,
+    ) {
         let tf_trades_channel = async_broadcast::broadcast(100);
         let trades_channel = async_broadcast::broadcast(100);
         let order_statuses_channel = async_broadcast::broadcast(100);
         let sqlite_client = Arc::new(SQLiteClient::new().await);
-        let symbol = Symbol {
-            symbol: "TST/USDT".to_string(),
-            exchange: ExchangeId::Simulated,
-            base_asset_precision: 1,
-            quote_asset_precision: 2,
-        };
+
         let simulated_account = Arc::new(
             SimulatedAccount::new(
                 tf_trades_channel.1.deactivate(),
@@ -339,22 +338,39 @@ mod tests {
                 vec![symbol.clone()],
                 order_statuses_channel.0.clone(),
                 trades_channel.0.clone(),
-                sqlite_client
+                sqlite_client,
             )
             .await,
         );
+
+        let sa_clone = simulated_account.clone();
+        tokio::spawn(async move {
+            EventSink::<OrderStatus>::listen(sa_clone.clone()).unwrap();
+        });
+        tokio::spawn(async move {
+            EventSink::<Trade>::listen(sa_clone.clone()).unwrap();
+        });
+        tokio::spawn(async move {
+            EventSink::<TfTrade>::listen(sa_clone.clone()).unwrap();
+        });
+
+        (
+            simulated_account,
+            tf_trades_channel.0,
+            trades_channel.0,
+            order_statuses_channel.0,
+        )
+    }
+    async fn test_simulated_account_cancel_order() -> anyhow::Result<()> {
+        let symbol = Symbol {
+            symbol: "TST/USDT".to_string(),
+            exchange: ExchangeId::Simulated,
+            base_asset_precision: 1,
+            quote_asset_precision: 2,
+        };
+        let (simulated_account, tf_trades_channel, trades_channel, order_statuses_channel) =
+            setup_simulated_account(symbol.clone()).await;
         let open_orders = simulated_account.get_open_orders(&symbol).await;
-
-        tokio::spawn(async move {
-            EventSink::<OrderStatus>::listen(simulated_account.clone()).unwrap();
-        });
-        tokio::spawn(async move {
-            EventSink::<Trade>::listen(simulated_account.clone()).unwrap();
-        });
-
-        tokio::spawn(async move {
-            EventSink::<TfTrade>::listen(simulated_account.clone()).unwrap();
-        });
 
         // Create a pending order
         let os = OrderStatus::Pending(Order {
