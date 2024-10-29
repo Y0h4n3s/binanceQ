@@ -153,6 +153,12 @@ impl EventSink<TfTrades> for SimulatedAccount {
                 }
             }
         }
+        let trade_history = simulated_account.get_past_trades(&symbol, None).await;
+        assert!(trade_history.iter().any(|t| t.order_id == closing_order.order().id), "Trade history does not contain the emitted trade");
+        
+        let position = simulated_account.get_position(&symbol).await;
+        assert!(!position.is_open(), "Position should be closed after trade emission");
+        
         Ok(())
     }
 }
@@ -414,6 +420,12 @@ mod tests {
         n.await;
 
         assert!(open_orders.is_empty(), "Order was not properly canceled");
+        
+        let order_history = simulated_account.get_order(&symbol, &os.order().id).await;
+        assert!(order_history.contains(&canceled_order), "Order history does not contain the canceled order");
+        
+        let position = simulated_account.get_position(&symbol).await;
+        assert!(!position.is_open(), "Position should remain unchanged after cancellation");
         Ok(())
     }
 
@@ -542,6 +554,10 @@ mod tests {
             open_orders.is_empty(),
             "Stop-loss order was not properly executed"
         );
+        
+        let order_history = simulated_account.get_order(&symbol, &os.order().id).await;
+        assert!(order_history.contains(&os), "Order history does not contain the stop-loss order");
+        
         let position = simulated_account.get_position(&symbol).await;
         assert!(!position.is_open(), "Position is still open");
         Ok(())
@@ -671,6 +687,10 @@ mod tests {
             open_orders.is_empty(),
             "take-profit order was not properly executed"
         );
+        
+        let order_history = simulated_account.get_order(&symbol, &os.order().id).await;
+        assert!(order_history.contains(&os), "Order history does not contain the take-profit order");
+        
         let position = simulated_account.get_position(&symbol).await;
         assert!(!position.is_open(), "Position is still open");
         Ok(())
@@ -709,7 +729,16 @@ mod tests {
 
         let open_orders = simulated_account.get_open_orders(&symbol).await;
         assert_eq!(open_orders.len(), 1);
+        
+        let order_history = simulated_account.get_order(&symbol, &os.order().id).await;
+        assert!(order_history.contains(&OrderStatus::PartiallyFilled(os.order(), dec!(90.0))), "Order history does not contain the partially filled order");
+        
+        let remaining_quantity = open_orders.iter().next().unwrap().quantity;
+        assert_eq!(remaining_quantity, dec!(10.0), "Remaining quantity should be correct after partial fill");
         assert!(open_orders.contains(&os.order()));
+        
+        let order_history = simulated_account.get_order(&symbol, &os.order().id).await;
+        assert!(order_history.contains(&os), "Order history does not contain the pending order");
         Ok(())
     }
 
@@ -774,6 +803,12 @@ mod tests {
 
         let open_orders = simulated_account.get_open_orders(&symbol).await;
         assert_eq!(open_orders.len(), 0);
+        
+        let order_history = simulated_account.get_order(&symbol, &os.order().id).await;
+        assert!(order_history.contains(&OrderStatus::Filled(os.order())), "Order history does not contain the filled order");
+        
+        let position = simulated_account.get_position(&symbol).await;
+        assert!(position.is_long(), "Position should be updated after order fill");
         Ok(())
     }
 
