@@ -1,5 +1,5 @@
 use crate::events::EventSink;
-use crate::executors::{ExchangeAccount, ExchangeAccountInfo, Position, Spread, TradeExecutor, order_state_machine::OrderStateMachine};
+use crate::executors::{broadcast, broadcast_and_wait, ExchangeAccount, ExchangeAccountInfo, Position, Spread, TradeExecutor};
 use crate::mongodb::MongoClient;
 use crate::types::{ExchangeId, Order, OrderStatus, OrderType, Side, Symbol, SymbolAccount, TfTrades, Trade, TradeEntry};
 use async_broadcast::{InactiveReceiver, Receiver, Sender};
@@ -16,34 +16,13 @@ use tokio::task::JoinHandle;
 use tracing::{debug, trace};
 use uuid::Uuid;
 use crate::db::client::SQLiteClient;
+use crate::executors::order_state_machine::OrderStateMachine;
 
 // can't use dashmap because of https://github.com/xacrimon/dashmap/issues/79
 type ArcMap<K, V> = Arc<Mutex<HashMap<K, V>>>;
 type ArcSet<T> = Arc<Mutex<HashSet<T>>>;
 
 
-async fn broadcast_and_wait<T: Clone + Debug>(
-    channel: &Arc<RwLock<Sender<(T, Option<Arc<Notify>>)>>>,
-    value: T,
-) {
-    let notifier = Arc::new(Notify::new());
-    let notified = notifier.notified();
-    let channel = channel.read().await;
-    if let Err(e) = channel.broadcast((value, Some(notifier.clone()))).await {
-        trace!("Failed to broadcast notification: {}", e);
-    }
-    notified.await;
-}
-
-async fn broadcast<T: Clone + Debug>(
-    channel: &Arc<RwLock<Sender<(T, Option<Arc<Notify>>)>>>,
-    value: T,
-) {
-    let channel = channel.read().await;
-    if let Err(e) = channel.broadcast((value, None)).await {
-        trace!("Failed to broadcast notification: {}", e);
-    }
-}
 
 #[derive(Clone)]
 pub struct SimulatedAccount {
@@ -51,161 +30,63 @@ pub struct SimulatedAccount {
     pub open_orders: ArcMap<Symbol, ArcSet<Order>>,
     pub order_history: ArcMap<Symbol, ArcSet<OrderStatus>>,
     pub trade_history: ArcMap<Symbol, ArcSet<Trade>>,
-    }
+    pub trade_subscribers: Arc<RwLock<Sender<(Trade, Option<Arc<Notify>>)>>>,
+    pub positions: ArcMap<Symbol, Position>,
+    tf_trades: InactiveReceiver<(TfTrades, Option<Arc<Notify>>)>,
+    order_statuses: InactiveReceiver<(OrderStatus, Option<Arc<Notify>>)>,
+    new_trades: InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
+    spreads: ArcMap<Symbol, Arc<RwLock<Spread>>>,
+    pub order_status_subscribers: Arc<RwLock<Sender<(OrderStatus, Option<Arc<Notify>>)>>>,
+    sqlite_client: Arc<SQLiteClient>,
+}
 
-    async fn process_cancel_order(&self, order: &Order, order_search: &mut HashMap<Uuid, Order>, open_orders: &mut HashSet<Order>) {
-        if let Some(order1) = order_search.get(&order.id) {
-            open_orders.remove(order1);
-            broadcast(
-                &self.order_status_subscribers,
-                OrderStatus::Canceled(
-                    order1.clone(),
-                    "Cancel Order".to_string(),
-                ),
-            )
-                .await;
-            open_orders.remove(order);
-            broadcast(
-                &self.order_status_subscribers,
-                OrderStatus::Filled(order.clone()),
-            )
-                .await;
-        }
-    }
+impl SimulatedAccount {
+    pub async fn new(
+        tf_trades: InactiveReceiver<(TfTrades, Option<Arc<Notify>>)>,
+        order_statuses: InactiveReceiver<(OrderStatus, Option<Arc<Notify>>)>,
+        trades: InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
+        symbols: Vec<Symbol>,
+        order_status_subscribers: Sender<(OrderStatus, Option<Arc<Notify>>)>,
+        trade_subscribers: Sender<(Trade, Option<Arc<Notify>>)>,
+        sqlite_client: Arc<SQLiteClient>
+    ) -> Self {
+        let symbol_accounts = Arc::new(Mutex::new(HashMap::new()));
+        let open_orders = Arc::new(Mutex::new(HashMap::new()));
+        let order_history = Arc::new(Mutex::new(HashMap::new()));
+        let trade_history = Arc::new(Mutex::new(HashMap::new()));
+        let positions = Arc::new(Mutex::new(HashMap::new()));
+        let spreads = Arc::new(Mutex::new(HashMap::new()));
 
-    async fn process_market_order(&self, order: &Order, positions: &ArcMap<Symbol, Position>, symbol: &Symbol, trade: &TradeEntry, open_orders: &mut HashSet<Order>) {
-        let mut lock = positions.lock().await;
-        let mut position = lock.get_mut(symbol).unwrap();
-        if let Some(trade) = position.apply_order(order, trade.timestamp) {
-            broadcast(&self.trade_subscribers, trade).await;
+        for symbol in symbols {
+            let symbol_account = SymbolAccount {
+                symbol: symbol.clone(),
+                base_asset_free: Default::default(),
+                base_asset_locked: Default::default(),
+                quote_asset_free: Decimal::new(100000, 0),
+                quote_asset_locked: Default::default(),
+            };
+            let position = Position::new(Side::Ask, symbol.clone(), Decimal::ZERO, Decimal::ZERO);
+            let spread = Spread::new(symbol.clone());
+            symbol_accounts.lock().await.insert(symbol.clone(), symbol_account);
+            open_orders.lock().await.insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
+            order_history.lock().await.insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
+            trade_history.lock().await.insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
+            positions.lock().await.insert(symbol.clone(), position);
+            spreads.lock().await.insert(symbol.clone(), Arc::new(RwLock::new(spread)));
         }
-        drop(lock);
-        open_orders.remove(order);
-        broadcast_and_wait(
-            &self.order_status_subscribers,
-            OrderStatus::Filled(order.clone()),
-        )
-            .await;
-    }
-
-    async fn process_limit_order(&self, order: &mut Order, positions: &ArcMap<Symbol, Position>, symbol: &Symbol, trade: &TradeEntry, open_orders: &mut HashSet<Order>) {
-        let mut lock = positions.lock().await;
-        let mut position = lock.get_mut(symbol).unwrap();
-        if order.side == Side::Bid {
-            if trade.price.le(&order.price) {
-                if let Some(trade) = position.apply_order(order, trade.timestamp) {
-                    broadcast(&self.trade_subscribers, trade).await;
-                }
-                drop(lock);
-                open_orders.remove(order);
-                if trade.qty.lt(&order.quantity) {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::PartiallyFilled(order.clone(), trade.qty),
-                    )
-                        .await;
-                } else {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::Filled(order.clone()),
-                    )
-                        .await;
-                }
-            }
-        } else {
-            if trade.price.ge(&order.price) {
-                if let Some(trade) = position.apply_order(order, trade.timestamp) {
-                    broadcast(&self.trade_subscribers, trade).await;
-                }
-                drop(lock);
-                open_orders.remove(order);
-                if trade.qty.lt(&order.quantity) {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::PartiallyFilled(order.clone(), trade.qty),
-                    )
-                        .await;
-                } else {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::Filled(order.clone()),
-                    )
-                        .await;
-                }
-            }
-        }
-    }
-    async fn process_stop_loss_limit_order(&self, order: &mut Order, positions: &ArcMap<Symbol, Position>, symbol: &Symbol, trade: &TradeEntry, open_orders: &mut HashSet<Order>) {
-        let mut lock = positions.lock().await;
-        let mut position = lock.get_mut(symbol).unwrap();
-        if !position.is_open() {
-            open_orders.remove(order);
-            broadcast_and_wait(
-                &self.order_status_subscribers,
-                OrderStatus::Canceled(
-                    order.clone(),
-                    "Stoploss on neutral position".to_string(),
-                ),
-            )
-                .await;
-            return;
-        }
-        if position.is_long() && trade.price.le(&order.price) || !position.is_long() && trade.price.ge(&order.price) {
-            order.quantity = order.quantity.min(position.qty);
-            if let Some(trade) = position.apply_order(order, trade.timestamp) {
-                open_orders.remove(order);
-                if trade.qty.lt(&order.quantity) {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::PartiallyFilled(order.clone(), trade.qty),
-                    )
-                        .await;
-                } else {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::Filled(order.clone()),
-                    )
-                        .await;
-                }
-                broadcast(&self.trade_subscribers, trade).await;
-            }
-        }
-    }
-
-    async fn process_take_profit_limit_order(&self, order: &mut Order, positions: &ArcMap<Symbol, Position>, symbol: &Symbol, trade: &TradeEntry, open_orders: &mut HashSet<Order>) {
-        let mut lock = positions.lock().await;
-        let mut position = lock.get_mut(symbol).unwrap();
-        if !position.is_open() {
-            open_orders.remove(order);
-            broadcast_and_wait(
-                &self.order_status_subscribers,
-                OrderStatus::Canceled(
-                    order.clone(),
-                    "Take profit on neutral position".to_string(),
-                ),
-            )
-                .await;
-            return;
-        }
-        if position.is_long() && trade.price.ge(&order.price) || !position.is_long() && trade.price.le(&order.price) {
-            order.quantity = order.quantity.min(position.qty);
-            if let Some(trade) = position.apply_order(order, trade.timestamp) {
-                open_orders.remove(order);
-                if trade.qty.lt(&order.quantity) {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::PartiallyFilled(order.clone(), trade.qty),
-                    )
-                        .await;
-                } else {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::Filled(order.clone()),
-                    )
-                        .await;
-                }
-                broadcast(&self.trade_subscribers, trade).await;
-            }
+        Self {
+            symbol_accounts,
+            open_orders,
+            order_history,
+            trade_history,
+            positions,
+            spreads,
+            tf_trades,
+            trade_subscribers: Arc::new(RwLock::new(trade_subscribers)),
+            order_statuses,
+            order_status_subscribers: Arc::new(RwLock::new(order_status_subscribers)),
+            new_trades: trades,
+            sqlite_client,
         }
     }
 }
@@ -255,15 +136,16 @@ impl EventSink<TfTrades> for SimulatedAccount {
             // let mut re_add = vec![];
             let positions = self.positions.clone();
             for trade in &tf_trade.trades {
+                // handle cancel orders first
                 for mut order in open_orders.clone() {
-                    let mut state_machine = OrderStateMachine::new(
-                        &mut order,
-                        &self.positions,
-                        &mut open_orders,
-                        &self.trade_subscribers,
-                        &self.order_status_subscribers,
-                    );
-                    state_machine.process_order(trade).await;
+                        let mut state_machine = OrderStateMachine::new(
+                            &mut order,
+                            &self.positions,
+                            &mut open_orders,
+                            &self.trade_subscribers,
+                            &self.order_status_subscribers,
+                        );
+                        state_machine.process_order(trade).await;
                 }
 
                 if open_orders.is_empty() {
@@ -442,7 +324,7 @@ mod tests {
         let tf_trades_channel = async_broadcast::broadcast(100);
         let trades_channel = async_broadcast::broadcast(100);
         let order_statuses_channel = async_broadcast::broadcast(100);
-        let sqlite_client = Arc::new(SQLiteClient::new());
+        let sqlite_client = Arc::new(SQLiteClient::new().await);
         let symbol = Symbol {
             symbol: "TST/USDT".to_string(),
             exchange: ExchangeId::Simulated,
@@ -465,6 +347,13 @@ mod tests {
 
         tokio::spawn(async move {
             EventSink::<OrderStatus>::listen(simulated_account.clone()).unwrap();
+        });
+        tokio::spawn(async move {
+            EventSink::<Trade>::listen(simulated_account.clone()).unwrap();
+        });
+
+        tokio::spawn(async move {
+            EventSink::<TfTrade>::listen(simulated_account.clone()).unwrap();
         });
 
         // Create a pending order
@@ -509,7 +398,7 @@ mod tests {
         let tf_trades_channel = async_broadcast::broadcast(100);
         let trades_channel = async_broadcast::broadcast(100);
         let order_statuses_channel = async_broadcast::broadcast(100);
-        let sqlite_client = Arc::new(SQLiteClient::new());
+        let sqlite_client = Arc::new(SQLiteClient::new().await);
         let symbol = Symbol {
             symbol: "TST/USDT".to_string(),
             exchange: ExchangeId::Simulated,
@@ -532,10 +421,14 @@ mod tests {
         let sa1 = simulated_account.clone();
         let sa2 = simulated_account.clone();
         tokio::spawn(async move {
-            EventSink::<OrderStatus>::listen(sa1).unwrap();
+            EventSink::<OrderStatus>::listen(simulated_account.clone()).unwrap();
         });
         tokio::spawn(async move {
-            EventSink::<TfTrades>::listen(sa2).unwrap();
+            EventSink::<Trade>::listen(simulated_account.clone()).unwrap();
+        });
+
+        tokio::spawn(async move {
+            EventSink::<TfTrade>::listen(simulated_account.clone()).unwrap();
         });
 
         let order_id = Uuid::new_v4();
@@ -661,7 +554,7 @@ mod tests {
         let tf_trades_channel = async_broadcast::broadcast(100);
         let trades_channel = async_broadcast::broadcast(100);
         let order_statuses_channel = async_broadcast::broadcast(100);
-        let sqlite_client = Arc::new(SQLiteClient::new());
+        let sqlite_client = Arc::new(SQLiteClient::new().await);
         let symbol = Symbol {
             symbol: "TST/USDT".to_string(),
             exchange: ExchangeId::Simulated,
@@ -684,10 +577,14 @@ mod tests {
         let sa1 = simulated_account.clone();
         let sa2 = simulated_account.clone();
         tokio::spawn(async move {
-            EventSink::<OrderStatus>::listen(sa1).unwrap();
+            EventSink::<OrderStatus>::listen(simulated_account.clone()).unwrap();
         });
         tokio::spawn(async move {
-            EventSink::<TfTrades>::listen(sa2).unwrap();
+            EventSink::<Trade>::listen(simulated_account.clone()).unwrap();
+        });
+
+        tokio::spawn(async move {
+            EventSink::<TfTrade>::listen(simulated_account.clone()).unwrap();
         });
 
         let order_id = Uuid::new_v4();
@@ -813,7 +710,7 @@ mod tests {
         let tf_trades_channel = async_broadcast::broadcast(100);
         let trades_channel = async_broadcast::broadcast(100);
         let order_statuses_channel = async_broadcast::broadcast(100);
-        let sqlite_client = Arc::new(SQLiteClient::new());
+        let sqlite_client = Arc::new(SQLiteClient::new().await);
         let symbol = Symbol {
             symbol: "TST/USDT".to_string(),
             exchange: ExchangeId::Simulated,
@@ -834,8 +731,16 @@ mod tests {
         );
         let s_a = simulated_account.clone();
         tokio::spawn(async move {
-            EventSink::<OrderStatus>::listen(simulated_account).unwrap();
+            EventSink::<OrderStatus>::listen(simulated_account.clone()).unwrap();
         });
+        tokio::spawn(async move {
+            EventSink::<Trade>::listen(simulated_account.clone()).unwrap();
+        });
+
+        tokio::spawn(async move {
+            EventSink::<TfTrade>::listen(simulated_account.clone()).unwrap();
+        });
+
         let os = OrderStatus::Pending(Order {
             id: Uuid::new_v4(),
             symbol: symbol.clone(),
@@ -867,7 +772,7 @@ mod tests {
         let tf_trades_channel = async_broadcast::broadcast(100);
         let trades_channel = async_broadcast::broadcast(100);
         let order_statuses_channel = async_broadcast::broadcast(100);
-        let sqlite_client = Arc::new(SQLiteClient::new());
+        let sqlite_client = Arc::new(SQLiteClient::new().await);
         let symbol = Symbol {
             symbol: "TST/USDT".to_string(),
             exchange: ExchangeId::Simulated,
@@ -889,11 +794,16 @@ mod tests {
         let s_a1 = simulated_account.clone();
         let s_a = simulated_account.clone();
         tokio::spawn(async move {
-            EventSink::<OrderStatus>::listen(simulated_account).unwrap();
+            EventSink::<OrderStatus>::listen(simulated_account.clone()).unwrap();
         });
         tokio::spawn(async move {
-            EventSink::<TfTrades>::listen(s_a1).unwrap();
+            EventSink::<Trade>::listen(simulated_account.clone()).unwrap();
         });
+
+        tokio::spawn(async move {
+            EventSink::<TfTrade>::listen(simulated_account.clone()).unwrap();
+        });
+
         let os = OrderStatus::Pending(Order {
             id: Uuid::new_v4(),
             symbol: symbol.clone(),
@@ -951,7 +861,7 @@ mod tests {
         let tf_trades_channel = async_broadcast::broadcast(100);
         let trades_channel = async_broadcast::broadcast(100);
         let order_statuses_channel = async_broadcast::broadcast(100);
-        let sqlite_client = Arc::new(SQLiteClient::new());
+        let sqlite_client = Arc::new(SQLiteClient::new().await);
         let symbol = Symbol {
             symbol: "TST/USDT".to_string(),
             exchange: ExchangeId::Simulated,
@@ -973,11 +883,16 @@ mod tests {
         let s_a1 = simulated_account.clone();
         let s_a = simulated_account.clone();
         tokio::spawn(async move {
-            EventSink::<OrderStatus>::listen(simulated_account).unwrap();
+            EventSink::<OrderStatus>::listen(simulated_account.clone()).unwrap();
         });
         tokio::spawn(async move {
-            EventSink::<TfTrades>::listen(s_a1).unwrap();
+            EventSink::<Trade>::listen(simulated_account.clone()).unwrap();
         });
+
+        tokio::spawn(async move {
+            EventSink::<TfTrade>::listen(simulated_account.clone()).unwrap();
+        });
+
         let os = OrderStatus::Pending(Order {
             id: Uuid::new_v4(),
             symbol: symbol.clone(),
@@ -1037,7 +952,7 @@ mod tests {
         let tf_trades_channel = async_broadcast::broadcast(100);
         let trades_channel = async_broadcast::broadcast(100);
         let order_statuses_channel = async_broadcast::broadcast(100);
-        let sqlite_client = Arc::new(SQLiteClient::new());
+        let sqlite_client = Arc::new(SQLiteClient::new().await);
         let symbol = Symbol {
             symbol: "TST/USDT".to_string(),
             exchange: ExchangeId::Simulated,
@@ -1056,15 +971,20 @@ mod tests {
             )
                 .await,
         );
-        let simulated_account = Arc::new(simulated_account);
+        let simulated_account = simulated_account;
         let s_a1 = simulated_account.clone();
         let s_a = simulated_account.clone();
         tokio::spawn(async move {
-            EventSink::<OrderStatus>::listen(simulated_account).unwrap();
+            EventSink::<OrderStatus>::listen(simulated_account.clone()).unwrap();
         });
         tokio::spawn(async move {
-            EventSink::<TfTrades>::listen(s_a1).unwrap();
+            EventSink::<Trade>::listen(simulated_account.clone()).unwrap();
         });
+
+        tokio::spawn(async move {
+            EventSink::<TfTrade>::listen(simulated_account.clone()).unwrap();
+        });
+
         let os = OrderStatus::Filled(Order {
             id: Uuid::new_v4(),
             symbol: symbol.clone(),
