@@ -28,6 +28,7 @@ type ArcSet<T> = Arc<Mutex<HashSet<T>>>;
 pub struct SimulatedAccount {
     pub symbol_accounts: ArcMap<Symbol, SymbolAccount>,
     pub open_orders: ArcMap<Symbol, ArcSet<Order>>,
+    #[cfg(test)]
     pub order_history: ArcMap<Symbol, ArcSet<OrderStatus>>,
     pub trade_history: ArcMap<Symbol, ArcSet<Trade>>,
     pub trade_subscribers: Arc<RwLock<Sender<(Trade, Option<Arc<Notify>>)>>>,
@@ -52,6 +53,7 @@ impl SimulatedAccount {
     ) -> Self {
         let symbol_accounts = Arc::new(Mutex::new(HashMap::new()));
         let open_orders = Arc::new(Mutex::new(HashMap::new()));
+        #[cfg(test)]
         let order_history = Arc::new(Mutex::new(HashMap::new()));
         let trade_history = Arc::new(Mutex::new(HashMap::new()));
         let positions = Arc::new(Mutex::new(HashMap::new()));
@@ -77,6 +79,7 @@ impl SimulatedAccount {
         Self {
             symbol_accounts,
             open_orders,
+            #[cfg(test)]
             order_history,
             trade_history,
             positions,
@@ -134,7 +137,6 @@ impl EventSink<TfTrades> for SimulatedAccount {
             // let mut remove_orders: Vec<OrderStatus> = vec![];
             // let mut remove_for_orders = vec![];
             // let mut re_add = vec![];
-            let positions = self.positions.clone();
             for trade in &tf_trade.trades {
                 // handle cancel orders first
                 for mut order in open_orders.clone() {
@@ -153,12 +155,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
                 }
             }
         }
-        let trade_history = simulated_account.get_past_trades(&symbol, None).await;
-        assert!(trade_history.iter().any(|t| t.order_id == closing_order.order().id), "Trade history does not contain the emitted trade");
-        
-        let position = simulated_account.get_position(&symbol).await;
-        assert!(!position.is_open(), "Position should be closed after trade emission");
-        
+
         Ok(())
     }
 }
@@ -184,6 +181,18 @@ impl EventSink<OrderStatus> for SimulatedAccount {
     }
     async fn handle_event(&self, event_msg: OrderStatus) -> anyhow::Result<()> {
         let open_orders = self.open_orders.clone();
+        #[cfg(test)]
+        {
+            if let Some(orders) = self.order_history.lock().await.get(&event_msg.order().symbol) {
+                let mut lock = orders.lock().await;
+                lock.insert(event_msg.clone());
+            } else {
+                let mut new_set = Arc::new(Mutex::new(HashSet::new()));
+                new_set.lock().await.insert(event_msg.clone());
+
+                self.order_history.lock().await.insert(event_msg.order().symbol.clone(), new_set);
+            }
+        }
         match &event_msg {
             // add to order set
             OrderStatus::Pending(order) => {
@@ -204,6 +213,18 @@ impl EventSink<OrderStatus> for SimulatedAccount {
                 new_order.id = Uuid::new_v4();
                 SQLiteClient::insert_order(&self.sqlite_client.pool, order.clone()).await;
 
+                #[cfg(test)]
+                {
+                    if let Some(orders) = self.order_history.lock().await.get(&order.symbol) {
+                        let mut lock = orders.lock().await;
+                        lock.insert(OrderStatus::Filled(order.clone()));
+                    } else {
+                        let mut new_set = Arc::new(Mutex::new(HashSet::new()));
+                        new_set.lock().await.insert(OrderStatus::Filled(order.clone()));
+
+                        self.order_history.lock().await.insert(order.symbol.clone(), new_set);
+                    }
+                }
                 trace!(
                     "adding new order {:?} for partially filled order: {:?}",
                     new_order,
@@ -224,7 +245,9 @@ impl EventSink<OrderStatus> for SimulatedAccount {
                 trace!("Removing filled order from order set: {:?}", order);
                 if let Some(orders) = open_orders.lock().await.get(&order.symbol) {
                     SQLiteClient::insert_order(&self.sqlite_client.pool, order.clone()).await;
+
                     orders.lock().await.remove(order);
+
                 }
             }
             // log reason and remove
@@ -278,15 +301,12 @@ impl ExchangeAccountInfo for SimulatedAccount {
         let order_history = self.order_history.lock().await.get(symbol).unwrap().clone();
         let mut res = vec![];
         order_history
-            .lock().await.iter().for_each(|o| match &*o {
-                OrderStatus::Filled(or) => {
+            .lock().await.iter().for_each(|o|{
+            let or = o.order();
                     if &or.id == id {
                         res.push(or.clone())
                     }
-                }
-                _ => {},
-            })
-            ;
+                });
         res
     }
 }
@@ -406,9 +426,7 @@ mod tests {
             .broadcast((os.clone(), Some(notifier.clone())))
             .await
             .unwrap();
-        println!("notified: {}", "");
         n.await;
-        println!("notified");
         // Cancel the order
         let canceled_order = OrderStatus::Canceled(os.order(), "Test cancel".into());
         let n = notifier.notified();
@@ -420,9 +438,9 @@ mod tests {
         n.await;
 
         assert!(open_orders.is_empty(), "Order was not properly canceled");
-        
+
         let order_history = simulated_account.get_order(&symbol, &os.order().id).await;
-        assert!(order_history.contains(&canceled_order), "Order history does not contain the canceled order");
+        assert!(order_history.contains(&canceled_order.order()), "Order history does not contain the canceled order");
         
         let position = simulated_account.get_position(&symbol).await;
         assert!(!position.is_open(), "Position should remain unchanged after cancellation");
@@ -556,7 +574,7 @@ mod tests {
         );
         
         let order_history = simulated_account.get_order(&symbol, &os.order().id).await;
-        assert!(order_history.contains(&os), "Order history does not contain the stop-loss order");
+        assert!(order_history.contains(&os.order()), "Order history does not contain the stop-loss order");
         
         let position = simulated_account.get_position(&symbol).await;
         assert!(!position.is_open(), "Position is still open");
@@ -689,7 +707,7 @@ mod tests {
         );
         
         let order_history = simulated_account.get_order(&symbol, &os.order().id).await;
-        assert!(order_history.contains(&os), "Order history does not contain the take-profit order");
+        assert!(order_history.contains(&os.order()), "Order history does not contain the take-profit order");
         
         let position = simulated_account.get_position(&symbol).await;
         assert!(!position.is_open(), "Position is still open");
@@ -730,14 +748,12 @@ mod tests {
         let open_orders = simulated_account.get_open_orders(&symbol).await;
         assert_eq!(open_orders.len(), 1);
         
-        let order_history = simulated_account.get_order(&symbol, &os.order().id).await;
-        assert!(order_history.contains(&OrderStatus::PartiallyFilled(os.order(), dec!(90.0))), "Order history does not contain the partially filled order");
-        
+        let order_history = simulated_account.order_history.lock().await.get(&symbol).unwrap().lock().await.clone();
+
         let remaining_quantity = open_orders.iter().next().unwrap().quantity;
         assert_eq!(remaining_quantity, dec!(10.0), "Remaining quantity should be correct after partial fill");
         assert!(open_orders.contains(&os.order()));
         
-        let order_history = simulated_account.get_order(&symbol, &os.order().id).await;
         assert!(order_history.contains(&os), "Order history does not contain the pending order");
         Ok(())
     }
@@ -803,8 +819,8 @@ mod tests {
 
         let open_orders = simulated_account.get_open_orders(&symbol).await;
         assert_eq!(open_orders.len(), 0);
-        
-        let order_history = simulated_account.get_order(&symbol, &os.order().id).await;
+
+        let order_history = simulated_account.order_history.lock().await.get(&symbol).unwrap().lock().await.clone();
         assert!(order_history.contains(&OrderStatus::Filled(os.order())), "Order history does not contain the filled order");
         
         let position = simulated_account.get_position(&symbol).await;
@@ -871,6 +887,8 @@ mod tests {
             .unwrap();
 
         n.await;
+        let order_history = simulated_account.order_history.lock().await.get(&symbol).unwrap().lock().await.clone();
+        assert!(order_history.contains(&OrderStatus::PartiallyFilled(os.order(), dec!(90.0))), "Order history does not contain the partially filled order");
 
         let open_orders = simulated_account.get_open_orders(&symbol).await;
         assert_eq!(open_orders.len(), 1);
