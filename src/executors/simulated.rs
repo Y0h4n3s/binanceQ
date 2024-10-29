@@ -143,7 +143,6 @@ impl EventSink<TfTrades> for SimulatedAccount {
             for trade in &tf_trade.trades {
                 // handle cancel orders first
                 for mut order in open_orders.clone() {
-                    println!("order: {:?}", order);
 
                         let mut state_machine = OrderStateMachine::new(
                             &mut order,
@@ -172,7 +171,6 @@ impl EventSink<Trade> for SimulatedAccount {
     }
 
     async fn handle_event(&self, event_msg: Trade) -> anyhow::Result<()> {
-        println!("here: {}", "");
         let sqlite_client = &self.sqlite_client;
         #[cfg(test)]
         self.trade_history.lock().await.get(&event_msg.symbol).unwrap().lock().await.insert(event_msg.clone());
@@ -732,6 +730,7 @@ mod tests {
 
         Ok(())
     }
+    async fn test_simulated_account_cancel_order() -> anyhow::Result<()> {
         let symbol = Symbol {
             symbol: "TST/USDT".to_string(),
             exchange: ExchangeId::Simulated,
