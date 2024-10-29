@@ -411,41 +411,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_simulated_account_apply_stop_loss() -> anyhow::Result<()> {
-        let tf_trades_channel = async_broadcast::broadcast(100);
-        let trades_channel = async_broadcast::broadcast(100);
-        let order_statuses_channel = async_broadcast::broadcast(100);
-        let sqlite_client = Arc::new(SQLiteClient::new().await);
         let symbol = Symbol {
             symbol: "TST/USDT".to_string(),
             exchange: ExchangeId::Simulated,
             base_asset_precision: 1,
             quote_asset_precision: 2,
         };
-        let simulated_account = Arc::new(
-            SimulatedAccount::new(
-                tf_trades_channel.1.deactivate(),
-                order_statuses_channel.1.deactivate(),
-                trades_channel.1.deactivate(),
-                vec![symbol.clone()],
-                order_statuses_channel.0.clone(),
-                trades_channel.0.clone(),
-                sqlite_client
-            )
-                .await,
-        );
-
-        let sa1 = simulated_account.clone();
-        let sa2 = simulated_account.clone();
-        tokio::spawn(async move {
-            EventSink::<OrderStatus>::listen(simulated_account.clone()).unwrap();
-        });
-        tokio::spawn(async move {
-            EventSink::<Trade>::listen(simulated_account.clone()).unwrap();
-        });
-
-        tokio::spawn(async move {
-            EventSink::<TfTrade>::listen(simulated_account.clone()).unwrap();
-        });
+        let (simulated_account, tf_trades_channel, trades_channel, order_statuses_channel) =
+            setup_simulated_account(symbol.clone()).await;
 
         let order_id = Uuid::new_v4();
 
