@@ -120,7 +120,79 @@ impl SimulatedAccount {
             }
         }
     }
-    pub async fn new(
+    async fn process_stop_loss_limit_order(&self, order: &mut Order, positions: &ArcMap<Symbol, Position>, symbol: &Symbol, trade: &TradeEntry, open_orders: &mut HashSet<Order>) {
+        let mut lock = positions.lock().await;
+        let mut position = lock.get_mut(symbol).unwrap();
+        if !position.is_open() {
+            open_orders.remove(order);
+            broadcast_and_wait(
+                &self.order_status_subscribers,
+                OrderStatus::Canceled(
+                    order.clone(),
+                    "Stoploss on neutral position".to_string(),
+                ),
+            )
+            .await;
+            return;
+        }
+        if position.is_long() && trade.price.le(&order.price) || !position.is_long() && trade.price.ge(&order.price) {
+            order.quantity = order.quantity.min(position.qty);
+            if let Some(trade) = position.apply_order(order, trade.timestamp) {
+                open_orders.remove(order);
+                if trade.qty.lt(&order.quantity) {
+                    broadcast_and_wait(
+                        &self.order_status_subscribers,
+                        OrderStatus::PartiallyFilled(order.clone(), trade.qty),
+                    )
+                    .await;
+                } else {
+                    broadcast_and_wait(
+                        &self.order_status_subscribers,
+                        OrderStatus::Filled(order.clone()),
+                    )
+                    .await;
+                }
+                broadcast(&self.trade_subscribers, trade).await;
+            }
+        }
+    }
+
+    async fn process_take_profit_limit_order(&self, order: &mut Order, positions: &ArcMap<Symbol, Position>, symbol: &Symbol, trade: &TradeEntry, open_orders: &mut HashSet<Order>) {
+        let mut lock = positions.lock().await;
+        let mut position = lock.get_mut(symbol).unwrap();
+        if !position.is_open() {
+            open_orders.remove(order);
+            broadcast_and_wait(
+                &self.order_status_subscribers,
+                OrderStatus::Canceled(
+                    order.clone(),
+                    "Take profit on neutral position".to_string(),
+                ),
+            )
+            .await;
+            return;
+        }
+        if position.is_long() && trade.price.ge(&order.price) || !position.is_long() && trade.price.le(&order.price) {
+            order.quantity = order.quantity.min(position.qty);
+            if let Some(trade) = position.apply_order(order, trade.timestamp) {
+                open_orders.remove(order);
+                if trade.qty.lt(&order.quantity) {
+                    broadcast_and_wait(
+                        &self.order_status_subscribers,
+                        OrderStatus::PartiallyFilled(order.clone(), trade.qty),
+                    )
+                    .await;
+                } else {
+                    broadcast_and_wait(
+                        &self.order_status_subscribers,
+                        OrderStatus::Filled(order.clone()),
+                    )
+                    .await;
+                }
+                broadcast(&self.trade_subscribers, trade).await;
+            }
+        }
+    }
         tf_trades: InactiveReceiver<(TfTrades, Option<Arc<Notify>>)>,
         order_statuses: InactiveReceiver<(OrderStatus, Option<Arc<Notify>>)>,
         trades: InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
@@ -248,7 +320,12 @@ impl EventSink<TfTrades> for SimulatedAccount {
                         OrderType::Limit => {
                             self.process_limit_order(&mut order, &self.positions, &symbol, trade, &mut open_orders).await;
                         }
-                        _ => continue,
+                        OrderType::StopLossLimit => {
+                            self.process_stop_loss_limit_order(&mut order, &self.positions, &symbol, trade, &mut open_orders).await;
+                        }
+                        OrderType::TakeProfitLimit => {
+                            self.process_take_profit_limit_order(&mut order, &self.positions, &symbol, trade, &mut open_orders).await;
+                        }
                     }
                 }
 
