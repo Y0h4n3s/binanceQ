@@ -1,13 +1,14 @@
-use crate::types::{Order, OrderStatus, OrderType, TradeEntry};
-use crate::executors::{Position, SimulatedAccount};
-use std::collections::HashSet;
+use crate::types::{Order, OrderStatus, OrderType, Side, Symbol, Trade, TradeEntry};
+use crate::executors::{broadcast, broadcast_and_wait, Position};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use async_broadcast::Sender;
+use tokio::sync::{Mutex, Notify, RwLock};
 use uuid::Uuid;
 
 pub struct OrderStateMachine<'a> {
     order: &'a mut Order,
-    positions: &'a Arc<Mutex<HashSet<Position>>>,
+    positions: &'a Arc<Mutex<HashMap<Symbol, Position>>>,
     open_orders: &'a mut HashSet<Order>,
     trade_subscribers: &'a Arc<RwLock<Sender<(Trade, Option<Arc<Notify>>)>>>,
     order_status_subscribers: &'a Arc<RwLock<Sender<(OrderStatus, Option<Arc<Notify>>)>>>,
@@ -16,7 +17,7 @@ pub struct OrderStateMachine<'a> {
 impl<'a> OrderStateMachine<'a> {
     pub fn new(
         order: &'a mut Order,
-        positions: &'a Arc<Mutex<HashSet<Position>>>,
+        positions: &'a Arc<Mutex<HashMap<Symbol, Position>>>,
         open_orders: &'a mut HashSet<Order>,
         trade_subscribers: &'a Arc<RwLock<Sender<(Trade, Option<Arc<Notify>>)>>>,
         order_status_subscribers: &'a Arc<RwLock<Sender<(OrderStatus, Option<Arc<Notify>>)>>>,

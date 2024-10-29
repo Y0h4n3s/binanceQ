@@ -3,10 +3,11 @@
 pub(crate) mod live;
 mod notification;
 mod position;
-pub(crate) mod simulated;
+pub mod simulated;
 
 #[allow(dead_code)]
 mod spread;
+mod order_state_machine;
 
 use crate::events::{EventEmitter, EventSink};
 use crate::types::{ExchangeId, Order, OrderStatus, OrderType, Side, Symbol, SymbolAccount, Trade};
@@ -16,6 +17,10 @@ pub use position::*;
 pub use spread::*;
 use dashmap::DashSet;
 use std::collections::HashSet;
+use std::fmt::Debug;
+use async_broadcast::Sender;
+use tokio::sync::{Notify, RwLock};
+use tracing::trace;
 
 #[async_trait]
 pub trait ExchangeAccountInfo: Send + Sync {
@@ -68,5 +73,27 @@ pub trait TradeExecutor: EventSink<Order> + EventEmitter<OrderStatus> {
         })
         .join()
         .unwrap()
+    }
+}
+pub async fn broadcast_and_wait<T: Clone + Debug>(
+    channel: &Arc<RwLock<Sender<(T, Option<Arc<Notify>>)>>>,
+    value: T,
+) {
+    let notifier = Arc::new(Notify::new());
+    let notified = notifier.notified();
+    let channel = channel.read().await;
+    if let Err(e) = channel.broadcast((value, Some(notifier.clone()))).await {
+        trace!("Failed to broadcast notification: {}", e);
+    }
+    notified.await;
+}
+
+pub async fn broadcast<T: Clone + Debug>(
+    channel: &Arc<RwLock<Sender<(T, Option<Arc<Notify>>)>>>,
+    value: T,
+) {
+    let channel = channel.read().await;
+    if let Err(e) = channel.broadcast((value, None)).await {
+        trace!("Failed to broadcast notification: {}", e);
     }
 }

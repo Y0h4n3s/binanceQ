@@ -321,9 +321,9 @@ mod tests {
 
     async fn setup_simulated_account(symbol: Symbol) -> (
         Arc<SimulatedAccount>,
-        async_broadcast::Sender<(TfTrades, Option<Arc<Notify>>)>,
-        async_broadcast::Sender<(Trade, Option<Arc<Notify>>)>,
-        async_broadcast::Sender<(OrderStatus, Option<Arc<Notify>>)>,
+        (Sender<(TfTrades, Option<Arc<Notify>>)>, Receiver<(TfTrades, Option<Arc<Notify>>)>),
+        (Sender<(Trade, Option<Arc<Notify>>)>, Receiver<(Trade, Option<Arc<Notify>>)>),
+        (Sender<(OrderStatus, Option<Arc<Notify>>)>, Receiver<(OrderStatus, Option<Arc<Notify>>)>),
     ) {
         let tf_trades_channel = async_broadcast::broadcast(100);
         let trades_channel = async_broadcast::broadcast(100);
@@ -356,9 +356,9 @@ mod tests {
 
         (
             simulated_account,
-            tf_trades_channel.0,
-            trades_channel.0,
-            order_statuses_channel.0,
+            tf_trades_channel,
+            trades_channel,
+            order_statuses_channel
         )
     }
     async fn test_simulated_account_cancel_order() -> anyhow::Result<()> {
