@@ -1,5 +1,5 @@
 use crate::events::EventSink;
-use crate::executors::{ExchangeAccount, ExchangeAccountInfo, Position, Spread, TradeExecutor};
+use crate::executors::{ExchangeAccount, ExchangeAccountInfo, Position, Spread, TradeExecutor, order_state_machine::OrderStateMachine};
 use crate::mongodb::MongoClient;
 use crate::types::{ExchangeId, Order, OrderStatus, OrderType, Side, Symbol, SymbolAccount, TfTrades, Trade, TradeEntry};
 use async_broadcast::{InactiveReceiver, Receiver, Sender};
@@ -255,26 +255,15 @@ impl EventSink<TfTrades> for SimulatedAccount {
             // let mut re_add = vec![];
             let positions = self.positions.clone();
             for trade in &tf_trade.trades {
-                // handle cancel orders first
                 for mut order in open_orders.clone() {
-                    match order.order_type {
-                        OrderType::Cancel(_) => {
-                            self.process_cancel_order(&order, &mut order_search, &mut open_orders).await;
-                        }
-                        OrderType::Market => {
-                            self.process_market_order(&order, &self.positions, &symbol, trade, &mut open_orders).await;
-                        }
-                        OrderType::Limit => {
-                            self.process_limit_order(&mut order, &self.positions, &symbol, trade, &mut open_orders).await;
-                        }
-                        OrderType::StopLossLimit => {
-                            self.process_stop_loss_limit_order(&mut order, &self.positions, &symbol, trade, &mut open_orders).await;
-                        }
-                        OrderType::TakeProfitLimit => {
-                            self.process_take_profit_limit_order(&mut order, &self.positions, &symbol, trade, &mut open_orders).await;
-                        }
-                        _ => continue
-                    }
+                    let mut state_machine = OrderStateMachine::new(
+                        &mut order,
+                        &self.positions,
+                        &mut open_orders,
+                        &self.trade_subscribers,
+                        &self.order_status_subscribers,
+                    );
+                    state_machine.process_order(trade).await;
                 }
 
                 if open_orders.is_empty() {
