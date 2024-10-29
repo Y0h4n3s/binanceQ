@@ -326,7 +326,36 @@ impl OrderStatus {
     }
 }
 
-impl PartialEq for Order {
+impl PartialOrd for Order {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Order {
+    fn cmp(&self, other: &Self) -> Ordering {
+        use OrderType::*;
+        let self_priority = match self.order_type {
+            Cancel(_) => 0,
+            Market => 1,
+            Limit => 2,
+            TakeProfitLimit => 3,
+            StopLossLimit => 4,
+            _ => 5,
+        };
+
+        let other_priority = match other.order_type {
+            Cancel(_) => 0,
+            Market => 1,
+            Limit => 2,
+            TakeProfitLimit => 3,
+            StopLossLimit => 4,
+            _ => 5,
+        };
+
+        self_priority.cmp(&other_priority)
+    }
+}
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.order_type == other.order_type && self.side == other.side
     }
