@@ -1,9 +1,7 @@
 use crate::events::{EventEmitter, EventSink};
 use crate::executors::{ExchangeAccount, ExchangeAccountInfo, Position, Spread, TradeExecutor};
 use crate::mongodb::MongoClient;
-use crate::types::{
-    ExchangeId, Order, OrderStatus, OrderType, Side, Symbol, SymbolAccount, TfTrades, Trade,
-};
+use crate::types::{ExchangeId, Order, OrderStatus, OrderType, Side, Symbol, SymbolAccount, TfTrades, Trade, TradeEntry};
 use async_broadcast::{InactiveReceiver, Receiver, Sender};
 use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
@@ -60,7 +58,7 @@ impl SimulatedAccount {
         }
     }
 
-    async fn process_market_order(&self, order: &Order, positions: &ArcMap<Symbol, Position>, symbol: &Symbol, trade: &Trade, open_orders: &mut HashSet<Order>) {
+    async fn process_market_order(&self, order: &Order, positions: &ArcMap<Symbol, Position>, symbol: &Symbol, trade: &TradeEntry, open_orders: &mut HashSet<Order>) {
         let mut lock = positions.lock().await;
         let mut position = lock.get_mut(symbol).unwrap();
         if let Some(trade) = position.apply_order(order, trade.timestamp) {
@@ -75,7 +73,7 @@ impl SimulatedAccount {
         .await;
     }
 
-    async fn process_limit_order(&self, order: &mut Order, positions: &ArcMap<Symbol, Position>, symbol: &Symbol, trade: &Trade, open_orders: &mut HashSet<Order>) {
+    async fn process_limit_order(&self, order: &mut Order, positions: &ArcMap<Symbol, Position>, symbol: &Symbol, trade: &TradeEntry, open_orders: &mut HashSet<Order>) {
         let mut lock = positions.lock().await;
         let mut position = lock.get_mut(symbol).unwrap();
         if order.side == Side::Bid {
@@ -239,7 +237,7 @@ impl EventSink<TfTrades> for SimulatedAccount {
             let positions = self.positions.clone();
             for trade in &tf_trade.trades {
                 // handle cancel orders first
-                for order in open_orders.clone() {
+                for mut order in open_orders.clone() {
                     match order.order_type {
                         OrderType::Cancel(_) => {
                             self.process_cancel_order(&order, &mut order_search, &mut open_orders).await;
