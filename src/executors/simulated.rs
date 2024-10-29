@@ -730,7 +730,121 @@ mod tests {
 
         Ok(())
     }
-    async fn test_simulated_account_cancel_order() -> anyhow::Result<()> {
+    #[tokio::test]
+    async fn test_empty_trade_list() -> anyhow::Result<()> {
+        let symbol = Symbol {
+            symbol: "TST/USDT".to_string(),
+            exchange: ExchangeId::Simulated,
+            base_asset_precision: 1,
+            quote_asset_precision: 2,
+        };
+        let (simulated_account, tf_trades_channel, _, _) = setup_simulated_account(symbol.clone()).await;
+
+        // Simulate an empty trade list
+        let notifier = Arc::new(Notify::new());
+        let n = notifier.notified();
+        tf_trades_channel
+            .0
+            .broadcast((vec![], Some(notifier.clone())))
+            .await
+            .unwrap();
+        n.await;
+
+        let open_orders = simulated_account.get_open_orders(&symbol).await;
+        assert!(open_orders.is_empty(), "Open orders should remain unchanged with empty trade list");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_trade_with_zero_quantity() -> anyhow::Result<()> {
+        let symbol = Symbol {
+            symbol: "TST/USDT".to_string(),
+            exchange: ExchangeId::Simulated,
+            base_asset_precision: 1,
+            quote_asset_precision: 2,
+        };
+        let (simulated_account, tf_trades_channel, _, _) = setup_simulated_account(symbol.clone()).await;
+
+        // Simulate a trade with zero quantity
+        let notifier = Arc::new(Notify::new());
+        let n = notifier.notified();
+        let trade_entry = TradeEntry {
+            trade_id: 1,
+            price: Decimal::new(100, 1),
+            qty: Decimal::ZERO,
+            timestamp: 0,
+            delta: Decimal::ZERO,
+            symbol: symbol.clone(),
+        };
+        tf_trades_channel
+            .0
+            .broadcast((
+                vec![TfTrade {
+                    symbol: symbol.clone(),
+                    tf: 1,
+                    id: 1,
+                    timestamp: 124,
+                    trades: vec![trade_entry.clone()],
+                    min_trade_time: 0,
+                    max_trade_time: 0,
+                }],
+                Some(notifier.clone()),
+            ))
+            .await
+            .unwrap();
+        n.await;
+
+        let open_orders = simulated_account.get_open_orders(&symbol).await;
+        assert!(open_orders.is_empty(), "Open orders should remain unchanged with zero quantity trade");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_trade_with_negative_price() -> anyhow::Result<()> {
+        let symbol = Symbol {
+            symbol: "TST/USDT".to_string(),
+            exchange: ExchangeId::Simulated,
+            base_asset_precision: 1,
+            quote_asset_precision: 2,
+        };
+        let (simulated_account, tf_trades_channel, _, _) = setup_simulated_account(symbol.clone()).await;
+
+        // Simulate a trade with a negative price
+        let notifier = Arc::new(Notify::new());
+        let n = notifier.notified();
+        let trade_entry = TradeEntry {
+            trade_id: 1,
+            price: Decimal::new(-100, 1),
+            qty: Decimal::new(100, 1),
+            timestamp: 0,
+            delta: Decimal::ZERO,
+            symbol: symbol.clone(),
+        };
+        tf_trades_channel
+            .0
+            .broadcast((
+                vec![TfTrade {
+                    symbol: symbol.clone(),
+                    tf: 1,
+                    id: 1,
+                    timestamp: 124,
+                    trades: vec![trade_entry.clone()],
+                    min_trade_time: 0,
+                    max_trade_time: 0,
+                }],
+                Some(notifier.clone()),
+            ))
+            .await
+            .unwrap();
+        n.await;
+
+        let open_orders = simulated_account.get_open_orders(&symbol).await;
+        assert!(open_orders.is_empty(), "Open orders should remain unchanged with negative price trade");
+
+        Ok(())
+    }
         let symbol = Symbol {
             symbol: "TST/USDT".to_string(),
             exchange: ExchangeId::Simulated,
