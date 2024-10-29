@@ -41,13 +41,17 @@ impl<'a> OrderStateMachine<'a> {
     /// Processes the order based on its type and the given trade entry.
     /// Updates the order state and notifies subscribers of any changes.
     pub async fn process_order(&mut self, trade: &TradeEntry) {
-        match self.order.order_type {
-            OrderType::Cancel(_) => self.process_cancel_order().await,
-            OrderType::Market => self.process_market_order(trade).await,
-            OrderType::Limit => self.process_limit_order(trade).await,
-            OrderType::StopLossLimit => self.process_stop_loss_limit_order(trade).await,
-            OrderType::TakeProfitLimit => self.process_take_profit_limit_order(trade).await,
-            _ => {}
+        // Prioritize market orders
+        if self.order.order_type == OrderType::Market {
+            self.process_market_order(trade).await;
+        } else {
+            match self.order.order_type {
+                OrderType::Cancel(_) => self.process_cancel_order().await,
+                OrderType::Limit => self.process_limit_order(trade).await,
+                OrderType::StopLossLimit => self.process_stop_loss_limit_order(trade).await,
+                OrderType::TakeProfitLimit => self.process_take_profit_limit_order(trade).await,
+                _ => {}
+            }
         }
     }
 
