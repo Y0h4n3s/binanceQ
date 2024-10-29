@@ -37,6 +37,19 @@ pub struct SimulatedAccount {
     sqlite_client: Arc<SQLiteClient>,
 }
 
+async fn broadcast_and_wait<T: Clone + Debug>(
+    channel: &Arc<RwLock<Sender<(T, Option<Arc<Notify>>)>>>,
+    value: T,
+) {
+    let notifier = Arc::new(Notify::new());
+    let notified = notifier.notified();
+    let channel = channel.read().await;
+    if let Err(e) = channel.broadcast((value, Some(notifier.clone()))).await {
+        trace!("Failed to broadcast notification: {}", e);
+    }
+    notified.await;
+}
+
 impl SimulatedAccount {
     async fn process_cancel_order(&self, order: &Order, order_search: &mut HashMap<Uuid, Order>, open_orders: &mut HashSet<Order>) {
         if let Some(order1) = order_search.get(&order.id) {
@@ -193,6 +206,10 @@ impl SimulatedAccount {
             }
         }
     }
+}
+
+impl SimulatedAccount {
+    pub async fn new(
         tf_trades: InactiveReceiver<(TfTrades, Option<Arc<Notify>>)>,
         order_statuses: InactiveReceiver<(OrderStatus, Option<Arc<Notify>>)>,
         trades: InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
