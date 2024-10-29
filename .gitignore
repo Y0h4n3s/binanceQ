@@ -3,3 +3,5 @@
 Cargo.lock
 **/yarn.lock/**
 /venv
+.aider*
+.env

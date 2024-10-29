@@ -397,7 +397,7 @@ async fn async_main() -> anyhow::Result<()> {
         );
 
         let mut threads = vec![];
-        let client = Arc::new(db::client::SQLiteClient::new().await);
+        let client = Arc::new(std::sync::Mutex::new(db::client::SQLiteClient::new().await));
         for s in symbols.into_iter() {
             let symbol = Symbol {
                 symbol: s.clone(),

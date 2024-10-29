@@ -25,7 +25,7 @@ use tracing::{debug, info, warn};
 pub async fn insert_trade_entries(
     trades: Vec<AggTrade>,
     symbol: &Symbol,
-    client: Arc<SQLiteClient>,
+    client: Arc<std::sync::Mutex<SQLiteClient>>,
     tf: Arc<u64>,
 ) -> anyhow::Result<()> {
     if trades.is_empty() {
@@ -47,7 +47,7 @@ pub async fn insert_trade_entries(
         entries.push(entry);
     }
     drop(trades);
-    SQLiteClient::insert_trade_entries(&client.conn, &entries);
+    SQLiteClient::insert_trade_entries(&client.lock().unwrap().conn, &entries);
 
     
 
@@ -189,10 +189,10 @@ pub async fn load_klines_from_archive(
     fetch_history_span: i64,
     pb: ProgressBar,
     verbose: bool,
-    sqlite_client: Arc<SQLiteClient>
+    sqlite_client: Arc<std::sync::Mutex<SQLiteClient>>
 )
 {
-    sqlite_client.reset_kline(&symbol).await;
+    sqlite_client.lock().unwrap().reset_kline(&symbol).await;
     let today = chrono::DateTime::<Utc>::from(SystemTime::now());
     let tf = Arc::new(tf);
     let symbol = Arc::new(symbol);
@@ -283,7 +283,7 @@ pub async fn load_klines_from_archive(
                         if trades.is_empty() {
                             info!("[-] No Kline found");
                         } else {
-                            SQLiteClient::insert_klines(&sqlite_client.conn, trades);
+                            SQLiteClient::insert_klines(&sqlite_client.lock().unwrap().conn, trades);
                         }
                     } else if verbose {
                         warn!("[-] failed to deserialize {}", url);
@@ -306,11 +306,12 @@ pub fn load_history_from_archive(
     tf: u64,
     pb: ProgressBar,
     verbose: bool,
-    sqlite_client: Arc<SQLiteClient>,
+    sqlite_client: Arc<std::sync::Mutex<SQLiteClient>>,
     rt: Arc<Handle>
     
 )  {
     rt.block_on(async {
+        let sqlite_client = sqlite_client.lock().unwrap();
         sqlite_client.reset_trade_entries(&symbol).await;
         sqlite_client.reset_tf_trades(&symbol).await;
     });
