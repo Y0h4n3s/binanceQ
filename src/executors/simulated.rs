@@ -845,6 +845,8 @@ mod tests {
 
         Ok(())
     }
+    #[tokio::test]
+    async fn test_simulated_account_cancel_order() -> anyhow::Result<()> {
         let symbol = Symbol {
             symbol: "TST/USDT".to_string(),
             exchange: ExchangeId::Simulated,

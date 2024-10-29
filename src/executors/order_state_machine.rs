@@ -145,7 +145,7 @@ impl<'a> OrderStateMachine<'a> {
                     )
                     .await;
                 }
-                broadcast(&self.trade_subscribers, trade).await;
+                broadcast_and_wait(&self.trade_subscribers, trade).await;
             }
         }
     }
