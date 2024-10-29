@@ -40,6 +40,88 @@ pub struct SimulatedAccount {
 }
 
 impl SimulatedAccount {
+    async fn process_cancel_order(&self, order: &Order, order_search: &mut HashMap<Uuid, Order>, open_orders: &mut HashSet<Order>) {
+        if let Some(order1) = order_search.get(&order.id) {
+            open_orders.remove(order1);
+            broadcast(
+                &self.order_status_subscribers,
+                OrderStatus::Canceled(
+                    order1.clone(),
+                    "Cancel Order".to_string(),
+                ),
+            )
+            .await;
+            open_orders.remove(order);
+            broadcast(
+                &self.order_status_subscribers,
+                OrderStatus::Filled(order.clone()),
+            )
+            .await;
+        }
+    }
+
+    async fn process_market_order(&self, order: &Order, positions: &ArcMap<Symbol, Position>, symbol: &Symbol, trade: &Trade, open_orders: &mut HashSet<Order>) {
+        let mut lock = positions.lock().await;
+        let mut position = lock.get_mut(symbol).unwrap();
+        if let Some(trade) = position.apply_order(order, trade.timestamp) {
+            broadcast(&self.trade_subscribers, trade).await;
+        }
+        drop(lock);
+        open_orders.remove(order);
+        broadcast_and_wait(
+            &self.order_status_subscribers,
+            OrderStatus::Filled(order.clone()),
+        )
+        .await;
+    }
+
+    async fn process_limit_order(&self, order: &mut Order, positions: &ArcMap<Symbol, Position>, symbol: &Symbol, trade: &Trade, open_orders: &mut HashSet<Order>) {
+        let mut lock = positions.lock().await;
+        let mut position = lock.get_mut(symbol).unwrap();
+        if order.side == Side::Bid {
+            if trade.price.le(&order.price) {
+                if let Some(trade) = position.apply_order(order, trade.timestamp) {
+                    broadcast(&self.trade_subscribers, trade).await;
+                }
+                drop(lock);
+                open_orders.remove(order);
+                if trade.qty.lt(&order.quantity) {
+                    broadcast_and_wait(
+                        &self.order_status_subscribers,
+                        OrderStatus::PartiallyFilled(order.clone(), trade.qty),
+                    )
+                    .await;
+                } else {
+                    broadcast_and_wait(
+                        &self.order_status_subscribers,
+                        OrderStatus::Filled(order.clone()),
+                    )
+                    .await;
+                }
+            }
+        } else {
+            if trade.price.ge(&order.price) {
+                if let Some(trade) = position.apply_order(order, trade.timestamp) {
+                    broadcast(&self.trade_subscribers, trade).await;
+                }
+                drop(lock);
+                open_orders.remove(order);
+                if trade.qty.lt(&order.quantity) {
+                    broadcast_and_wait(
+                        &self.order_status_subscribers,
+                        OrderStatus::PartiallyFilled(order.clone(), trade.qty),
+                    )
+                    .await;
+                } else {
+                    broadcast_and_wait(
+                        &self.order_status_subscribers,
+                        OrderStatus::Filled(order.clone()),
+                    )
+                    .await;
+                }
+            }
+        }
+    }
     pub async fn new(
         tf_trades: InactiveReceiver<(TfTrades, Option<Arc<Notify>>)>,
         order_statuses: InactiveReceiver<(OrderStatus, Option<Arc<Notify>>)>,
@@ -159,269 +241,16 @@ impl EventSink<TfTrades> for SimulatedAccount {
                 // handle cancel orders first
                 for order in open_orders.clone() {
                     match order.order_type {
-                        // check if order is in pending openorders list and send a
-                        // cancelled order status if it exists and a filled orderstatus
-                        // for this order
-                        OrderType::Cancel(order_id) => {
-                            if let Some(order1) = order_search.get(&order_id) {
-                                open_orders.remove(order1);
-                                broadcast(
-                                    &self.order_status_subscribers,
-                                    OrderStatus::Canceled(
-                                        order1.clone(),
-                                        "Cancel Order".to_string(),
-                                    ),
-                                )
-                                    .await;
-                                open_orders.remove(&order);
-                                broadcast(
-                                    &self.order_status_subscribers,
-                                    OrderStatus::Filled(order),
-                                )
-                                    .await;
-                                continue;
-                            }
+                        OrderType::Cancel(_) => {
+                            self.process_cancel_order(&order, &mut order_search, &mut open_orders).await;
                         }
-                        _ => continue
-                    }
-
-                }
-                // handle market orders second
-                for order in open_orders.clone() {
-                    if order.order_type != OrderType::Market {
-                        continue
-                    }
-                    // maybe should mutate position in order statuses sink?
-                    let mut lock = positions.lock().await;
-                    let mut position = lock.get_mut(&symbol).unwrap();
-                    if let Some(trade) = position.apply_order(&order, trade.timestamp) {
-                        broadcast(&self.trade_subscribers, trade).await;
-
-                    }
-                    drop(lock);
-                    open_orders.remove(&order);
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::Filled(order),
-                    )
-                        .await;
-                }
-
-                // then limit orders
-                for mut order in open_orders.clone() {
-                    match order.order_type {
-                        OrderType::StopLossLimit => {
-                            let mut lock = positions.lock().await;
-
-                            let mut position = lock.get_mut(&symbol).unwrap();
-                            if !position.is_open() {
-                                open_orders.remove(&order);
-                                broadcast_and_wait(
-                                    &self.order_status_subscribers,
-                                    OrderStatus::Canceled(
-                                        order,
-                                        "Stoploss on neutral position".to_string(),
-                                    ),
-                                )
-                                    .await;
-                                continue;
-                            }
-                            // fill long stop if stop price is above trade price
-                            if position.is_long() {
-                                if trade.price.le(&order.price) {
-                                    // if order size is greater than position size update order size
-                                    // to a size that will close the position
-                                    order.quantity = order.quantity.min(position.qty);
-                                    if let Some(trade) =
-                                        position.apply_order(&order, trade.timestamp)
-                                    {
-                                        open_orders.remove(&order);
-                                        if trade.qty.lt(&order.quantity) {
-                                            broadcast_and_wait(
-                                                &self.order_status_subscribers,
-                                                OrderStatus::PartiallyFilled(order, trade.qty),
-                                            )
-                                                .await;
-                                        } else {
-                                            broadcast_and_wait(
-                                                &self.order_status_subscribers,
-                                                OrderStatus::Filled(order),
-                                            )
-                                                .await;
-                                        }
-                                        broadcast(&self.trade_subscribers, trade).await;
-                                    }
-                                    drop(lock);
-
-
-                                }
-                            } else {
-                                // fill short stop if stop price is below trade price
-                                if trade.price.ge(&order.price) {
-                                    // if order size is greater than position size update order size
-                                    // to a size that will close the position
-                                    order.quantity = order.quantity.min(position.qty);
-                                    if let Some(trade) =
-                                        position.apply_order(&order, trade.timestamp)
-                                    {
-                                        open_orders.remove(&order);
-                                        if trade.qty.lt(&order.quantity) {
-                                            broadcast_and_wait(
-                                                &self.order_status_subscribers,
-                                                OrderStatus::PartiallyFilled(order, trade.qty),
-                                            )
-                                                .await;
-                                        } else {
-                                            broadcast_and_wait(
-                                                &self.order_status_subscribers,
-                                                OrderStatus::Filled(order),
-                                            )
-                                                .await;
-                                        }
-                                        broadcast(&self.trade_subscribers, trade).await;
-                                    }
-                                    drop(lock);
-
-                                }
-                            }
+                        OrderType::Market => {
+                            self.process_market_order(&order, &self.positions, &symbol, trade, &mut open_orders).await;
                         }
-
-                        OrderType::TakeProfitLimit => {
-                            let mut lock = positions.lock().await;
-
-                            let mut position = lock.get_mut(&symbol).unwrap();
-                            if !position.is_open() {
-                                broadcast_and_wait(
-                                    &self.order_status_subscribers,
-                                    OrderStatus::Canceled(
-                                        order.clone(),
-                                        "Take profit on neutral position".to_string(),
-                                    ),
-                                )
-                                    .await;
-                                open_orders.remove(&order);
-                                continue;
-                            }
-                            // fill long if target price is above trade price
-                            if position.is_long() {
-                                if trade.price.ge(&order.price) {
-                                    // if order size is greater than position size update order size
-                                    // to a size that will close the position
-                                    order.quantity = order.quantity.min(position.qty);
-                                    if let Some(trade) =
-                                        position.apply_order(&order, trade.timestamp)
-                                    {
-                                        open_orders.remove(&order);
-                                        if trade.qty.lt(&order.quantity) {
-                                            broadcast_and_wait(
-                                                &self.order_status_subscribers,
-                                                OrderStatus::PartiallyFilled(order, trade.qty),
-                                            )
-                                                .await;
-                                        } else {
-                                            broadcast_and_wait(
-                                                &self.order_status_subscribers,
-                                                OrderStatus::Filled(order),
-                                            )
-                                                .await;
-                                        }
-                                        broadcast(&self.trade_subscribers, trade).await;
-                                    }
-                                    drop(lock);
-
-                                }
-                            } else {
-                                // fill short if stop price is below trade price
-                                if trade.price.le(&order.price) {
-                                    // if order size is greater than position size update order size
-                                    // to a size that will close the position
-                                    order.quantity = order.quantity.min(position.qty);
-                                    if let Some(trade) =
-                                        position.apply_order(&order, trade.timestamp)
-                                    {
-                                        open_orders.remove(&order);
-                                        if trade.qty.lt(&order.quantity) {
-                                            broadcast_and_wait(
-                                                &self.order_status_subscribers,
-                                                OrderStatus::PartiallyFilled(order, trade.qty),
-                                            )
-                                                .await;
-                                        } else {
-                                            broadcast_and_wait(
-                                                &self.order_status_subscribers,
-                                                OrderStatus::Filled(order),
-                                            )
-                                                .await;
-                                        }
-                                        broadcast(&self.trade_subscribers, trade).await;
-
-                                    }
-                                    drop(lock);
-
-                                }
-                            }
-                        }
-
                         OrderType::Limit => {
-                            let mut lock = positions.lock().await;
-                            let mut position = lock.get_mut(&symbol).unwrap();
-                            if order.side == Side::Bid {
-                                if trade.price.le(&order.price) {
-                                    if let Some(trade) =
-                                        position.apply_order(&order, trade.timestamp)
-                                    {
-                                        broadcast(&self.trade_subscribers, trade).await;
-                                    }
-                                    drop(lock);
-                                    open_orders.remove(&order);
-                                    if trade.qty.lt(&order.quantity) {
-                                        broadcast_and_wait(
-                                            &self.order_status_subscribers,
-                                            OrderStatus::PartiallyFilled(order, trade.qty),
-                                        )
-                                            .await;
-                                    } else {
-                                        broadcast_and_wait(
-                                            &self.order_status_subscribers,
-                                            OrderStatus::Filled(order),
-                                        )
-                                            .await;
-                                    }
-                                }
-                            } else {
-                                if trade.price.ge(&order.price) {
-                                        if let Some(trade) =
-                                            position.apply_order(&order, trade.timestamp)
-                                        {
-                                            broadcast(&self.trade_subscribers, trade).await;
-                                        }
-                                    drop(lock);
-                                    open_orders.remove(&order);
-                                    if trade.qty.lt(&order.quantity) {
-                                        broadcast_and_wait(
-                                            &self.order_status_subscribers,
-                                            OrderStatus::PartiallyFilled(order, trade.qty),
-                                        )
-                                            .await;
-                                    } else {
-                                        broadcast_and_wait(
-                                            &self.order_status_subscribers,
-                                            OrderStatus::Filled(order),
-                                        )
-                                            .await;
-                                    }
-                                }
-                            }
+                            self.process_limit_order(&mut order, &self.positions, &symbol, trade, &mut open_orders).await;
                         }
-                        OrderType::StopLoss(limit_order_id) => {
-                            // first we check if the limit order is filled
-                            // if it's not and is still an open order ignore and continue
-                            // if it's filled we try to fill this order
-                            // if it's not still an open order and doesn't exist in order history
-                            // cancel this order
-                        }
-                        _ => continue
-
+                        _ => continue,
                     }
                 }
 
