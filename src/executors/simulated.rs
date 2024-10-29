@@ -30,6 +30,7 @@ pub struct SimulatedAccount {
     pub open_orders: ArcMap<Symbol, ArcSet<Order>>,
     #[cfg(test)]
     pub order_history: ArcMap<Symbol, ArcSet<OrderStatus>>,
+    #[cfg(test)]
     pub trade_history: ArcMap<Symbol, ArcSet<Trade>>,
     pub trade_subscribers: Arc<RwLock<Sender<(Trade, Option<Arc<Notify>>)>>>,
     pub positions: ArcMap<Symbol, Position>,
@@ -55,6 +56,7 @@ impl SimulatedAccount {
         let open_orders = Arc::new(Mutex::new(HashMap::new()));
         #[cfg(test)]
         let order_history = Arc::new(Mutex::new(HashMap::new()));
+        #[cfg(test)]
         let trade_history = Arc::new(Mutex::new(HashMap::new()));
         let positions = Arc::new(Mutex::new(HashMap::new()));
         let spreads = Arc::new(Mutex::new(HashMap::new()));
@@ -81,6 +83,7 @@ impl SimulatedAccount {
             open_orders,
             #[cfg(test)]
             order_history,
+            #[cfg(test)]
             trade_history,
             positions,
             spreads,
@@ -140,6 +143,8 @@ impl EventSink<TfTrades> for SimulatedAccount {
             for trade in &tf_trade.trades {
                 // handle cancel orders first
                 for mut order in open_orders.clone() {
+                    println!("order: {:?}", order);
+
                         let mut state_machine = OrderStateMachine::new(
                             &mut order,
                             &self.positions,
@@ -167,7 +172,10 @@ impl EventSink<Trade> for SimulatedAccount {
     }
 
     async fn handle_event(&self, event_msg: Trade) -> anyhow::Result<()> {
+        println!("here: {}", "");
         let sqlite_client = &self.sqlite_client;
+        #[cfg(test)]
+        self.trade_history.lock().await.get(&event_msg.symbol).unwrap().lock().await.insert(event_msg.clone());
         SQLiteClient::insert_trade(&sqlite_client.pool, event_msg).await;
         Ok(())
     }
@@ -401,8 +409,8 @@ mod tests {
             base_asset_precision: 1,
             quote_asset_precision: 2,
         };
-        let (simulated_account, tf_trades_channel, order_statuses_channel) =
-            setup_test_environment(symbol.clone()).await;
+        let (simulated_account, tf_trades_channel, trades_channel, order_statuses_channel) =
+            setup_simulated_account(symbol.clone()).await;
 
         // Create a market long order
         let market_order = Order {
@@ -421,7 +429,8 @@ mod tests {
         let notifier = Arc::new(Notify::new());
         let n = notifier.notified();
         order_statuses_channel
-            .broadcast((OrderStatus::Filled(market_order.clone()), Some(notifier.clone())))
+            .0
+            .broadcast((OrderStatus::Pending(market_order.clone()), Some(notifier.clone())))
             .await
             .unwrap();
         n.await;
@@ -442,6 +451,7 @@ mod tests {
         // Broadcast the stop-loss order
         let n = notifier.notified();
         order_statuses_channel
+            .0
             .broadcast((OrderStatus::Pending(stop_loss_order.clone()), Some(notifier.clone())))
             .await
             .unwrap();
@@ -463,6 +473,7 @@ mod tests {
         // Broadcast the take-profit order
         let n = notifier.notified();
         order_statuses_channel
+            .0
             .broadcast((OrderStatus::Pending(take_profit_order.clone()), Some(notifier.clone())))
             .await
             .unwrap();
@@ -479,6 +490,7 @@ mod tests {
             symbol: symbol.clone(),
         };
         tf_trades_channel
+            .0
             .broadcast((
                 vec![TfTrade {
                     symbol: symbol.clone(),
