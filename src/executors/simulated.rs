@@ -1,4 +1,4 @@
-use crate::events::{EventEmitter, EventSink};
+use crate::events::EventSink;
 use crate::executors::{ExchangeAccount, ExchangeAccountInfo, Position, Spread, TradeExecutor};
 use crate::mongodb::MongoClient;
 use crate::types::{ExchangeId, Order, OrderStatus, OrderType, Side, Symbol, SymbolAccount, TfTrades, Trade, TradeEntry};
