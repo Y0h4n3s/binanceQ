@@ -1,3 +1,7 @@
+/// This module defines the `EventSink` trait, which is used to handle events
+/// asynchronously. It provides a mechanism to listen for events and process
+/// them using the `handle_event` method.
+
 use async_broadcast::Receiver;
 use async_std::sync::Arc;
 use std::fmt::Debug;
@@ -6,11 +10,19 @@ use async_trait::async_trait;
 use tokio::sync::Notify;
 use tracing::error;
 
-#[async_trait]
+#[async_trait] 
+/// The `EventSink` trait defines the interface for handling events of type `EventType`.
+/// It requires implementing the `get_receiver` and `handle_event` methods, and provides
+/// a default implementation for the `listen` method to continuously process incoming events.
 pub trait EventSink<EventType: Clone + Debug + Send + Sync + 'static>: Send + Sync + 'static {
+    /// Returns a receiver for the event channel, allowing the sink to receive events.
     fn get_receiver(&self) -> Receiver<(EventType, Option<Arc<Notify>>)>;
+    /// Handles an incoming event of type `EventType`.
+    /// Implementations should define how to process the event.
     async fn handle_event(&self, event_msg: EventType) -> anyhow::Result<()>;
 
+    /// Listens for incoming events and processes them using the `handle_event` method.
+    /// This method runs in an asynchronous loop and handles errors that occur during event processing.
     fn listen(self: Arc<Self>) -> Result<(), Error> {
         let runtime = tokio::runtime::Handle::current();
         let mut receiver = self.get_receiver();

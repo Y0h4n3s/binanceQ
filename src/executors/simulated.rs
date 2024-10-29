@@ -1,3 +1,6 @@
+/// This module implements a simulated trading account that processes trades and orders.
+/// It uses the `EventSink` trait to handle incoming trade and order events.
+
 use crate::events::EventSink;
 use crate::executors::{broadcast, broadcast_and_wait, ExchangeAccount, ExchangeAccountInfo, Position, Spread, TradeExecutor};
 use crate::mongodb::MongoClient;
@@ -25,6 +28,8 @@ type ArcSet<T> = Arc<Mutex<HashSet<T>>>;
 
 
 #[derive(Clone)]
+/// Represents a simulated trading account, which manages positions, orders, and trades.
+/// It provides methods to create new accounts, handle events, and retrieve account information.
 pub struct SimulatedAccount {
     pub symbol_accounts: ArcMap<Symbol, SymbolAccount>,
     pub open_orders: ArcMap<Symbol, ArcSet<Order>>,
@@ -43,6 +48,8 @@ pub struct SimulatedAccount {
 }
 
 impl SimulatedAccount {
+    /// Creates a new `SimulatedAccount` with the specified parameters.
+    /// Initializes symbol accounts, open orders, positions, and spreads for the given symbols.
     pub async fn new(
         tf_trades: InactiveReceiver<(TfTrades, Option<Arc<Notify>>)>,
         order_statuses: InactiveReceiver<(OrderStatus, Option<Arc<Notify>>)>,
@@ -103,6 +110,8 @@ impl EventSink<TfTrades> for SimulatedAccount {
     fn get_receiver(&self) -> Receiver<(TfTrades, Option<Arc<Notify>>)> {
         self.tf_trades.clone().activate()
     }
+    /// Handles an incoming trade event by updating open orders and positions.
+    /// Processes each trade in the event message and updates the account state accordingly.
     async fn handle_event(&self, event_msg: TfTrades) -> anyhow::Result<()> {
         if event_msg.is_empty() {
             return Ok(());

@@ -1,3 +1,6 @@
+/// This module defines the `OrderStateMachine` struct, which manages the state of an order.
+/// It processes different types of orders, such as market, limit, stop-loss, and take-profit orders.
+
 use crate::types::{Order, OrderStatus, OrderType, Side, Symbol, Trade, TradeEntry};
 use crate::executors::{broadcast, broadcast_and_wait, Position};
 use std::collections::{HashMap, HashSet};
@@ -7,6 +10,8 @@ use tokio::sync::{Mutex, Notify, RwLock};
 use uuid::Uuid;
 
 pub struct OrderStateMachine<'a> {
+    /// Manages the state of an order and processes it based on its type.
+    /// Updates positions, open orders, and notifies subscribers of order status changes.
     order: &'a mut Order,
     positions: &'a Arc<Mutex<HashMap<Symbol, Position>>>,
     open_orders: &'a mut HashSet<Order>,
@@ -15,6 +20,8 @@ pub struct OrderStateMachine<'a> {
 }
 
 impl<'a> OrderStateMachine<'a> {
+    /// Creates a new `OrderStateMachine` for the given order and account state.
+    /// Initializes the state machine with references to positions, open orders, and subscribers.
     pub fn new(
         order: &'a mut Order,
         positions: &'a Arc<Mutex<HashMap<Symbol, Position>>>,
@@ -31,6 +38,8 @@ impl<'a> OrderStateMachine<'a> {
         }
     }
 
+    /// Processes the order based on its type and the given trade entry.
+    /// Updates the order state and notifies subscribers of any changes.
     pub async fn process_order(&mut self, trade: &TradeEntry) {
         match self.order.order_type {
             OrderType::Cancel(_) => self.process_cancel_order().await,
