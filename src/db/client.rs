@@ -300,7 +300,7 @@ impl SQLiteClient {
 
         SQLiteClient::create_tables(&pool).await;
         let connection = rusqlite::Connection::open("./binance_studies.db").unwrap();
-        connection.execute("PRAGMA temp_store = FILE;", ()).unwrap();
+        connection.execute("PRAGMA temp_store = MEMORY;", ()).unwrap();
         connection.execute("PRAGMA shrink_memory;", ()).unwrap();
         connection.execute("PRAGMA synchronous = OFF;", ()).unwrap();
         SQLiteClient {
@@ -408,6 +408,21 @@ impl SQLiteClient {
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS timestamps ON trade_entries(timestamp);"#
         ).execute(pool).await.unwrap();
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS tf_timestamps ON tf_trades(timestamp);"#
+        ).execute(pool).await.unwrap();
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS tf_symbols ON tf_trades(symbol);"#
+        ).execute(pool).await.unwrap();
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS tf_symbols_timestamps ON tf_trades(symbol, timestamp);"#
+        ).execute(pool).await.unwrap();
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS kline_symbols ON klines(symbol);"#
+        ).execute(pool).await.unwrap();
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS kline_close_times ON klines(close_time);"#
+        ).execute(pool).await.unwrap();
 
     }
 
@@ -487,22 +502,24 @@ impl SQLiteClient {
 
     }
 
-    pub fn get_kline_stream<'a>(pool: &'a SqlitePool, symbol: &'a Symbol) -> BoxStream<'a, Result<Kline, Error>> {
+    pub fn get_kline_stream<'a>(pool: &'a SqlitePool, symbol: Symbol, until: String) -> BoxStream<'a, Result<Kline, Error>> {
         sqlx::query_as(
             r#"
-                SELECT * FROM klines WHERE symbol = ? ORDER BY close_time ASC
+                SELECT * FROM klines WHERE symbol = ? AND close_time > ? ORDER BY close_time ASC
             "#
-        ).bind(&symbol.symbol)
+        ).bind(symbol.symbol)
+            .bind(until)
             .fetch(pool)
 
     }
 
-    pub fn get_tf_trades_stream<'a>(pool: &'a SqlitePool, symbol: &'a Symbol) -> BoxStream<'a, Result<TfTrade, Error>> {
+    pub fn get_tf_trades_stream<'a>(pool: &'a SqlitePool, symbol: &'a Symbol, until: String) -> BoxStream<'a, Result<TfTrade, Error>> {
         sqlx::query_as(
             r#"
-                SELECT * FROM tf_trades WHERE symbol = ? ORDER BY timestamp ASC
+                SELECT * FROM tf_trades WHERE symbol = ? AND timestamp > ? ORDER BY timestamp ASC
             "#
         ).bind(&symbol.symbol)
+            .bind(until)
             .fetch(pool)
 
     }
@@ -672,6 +689,12 @@ impl SQLiteClient {
         sqlx::query("DELETE FROM tf_trades WHERE symbol = ? AND tf = ?")
             .bind(&symbol.symbol)
             .bind(tf.to_string())
+            .execute(&self.pool)
+            .await
+            .unwrap();
+    }// vacuum
+    pub async fn vacuum(&self) {
+        sqlx::query("VACUUM;")
             .execute(&self.pool)
             .await
             .unwrap();

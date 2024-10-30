@@ -28,9 +28,12 @@ pub trait ExchangeAccountInfo: Send + Sync {
     fn get_exchange_id(&self) -> ExchangeId;
     async fn get_open_orders(&self, symbol: &Symbol) -> Arc<HashSet<Order>>;
     async fn get_symbol_account(&self, symbol: &Symbol) -> SymbolAccount;
+
+    #[cfg(test)]
     async fn get_past_trades(&self, symbol: &Symbol, length: Option<usize>) -> Arc<HashSet<Trade>>;
     async fn get_position(&self, symbol: &Symbol) -> Arc<Position>;
     async fn get_spread(&self, symbol: &Symbol) -> Arc<Spread>;
+    #[cfg(test)]
     async fn get_order(&self, symbol: &Symbol, id: &uuid::Uuid) -> Vec<Order>;
 }
 

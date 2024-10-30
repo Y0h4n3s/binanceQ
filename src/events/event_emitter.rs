@@ -105,6 +105,11 @@ mod tests {
         fn get_receiver(&self) -> Receiver<(DummyEvent, Option<Arc<Notify>>)> {
             self.receiver.clone().activate()
         }
+
+        async fn name(&self) -> String {
+            "DummySink".to_string()
+        }
+
         async fn handle_event(
             &self,
             event_msg: DummyEvent,
@@ -124,6 +129,9 @@ mod tests {
     impl EventSink<DummyEvent> for DummySinkTwo {
         fn get_receiver(&self) -> Receiver<(DummyEvent, Option<Arc<Notify>>)> {
             self.receiver.clone().activate()
+        }
+        async fn name(&self) -> String {
+            "DummySinkTwo".to_string()
         }
 
         async fn handle_event(

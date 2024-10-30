@@ -105,7 +105,6 @@ fig.update_layout(
 fig.show()
 
 # Calculate cumulative PnL
-trades_df['cumulative_pnl'] = trades_df['realized_pnl'].cumsum()
 
 # Plot cumulative PnL over time
 import matplotlib.pyplot as plt

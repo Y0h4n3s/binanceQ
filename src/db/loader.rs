@@ -298,6 +298,8 @@ pub async fn load_klines_from_archive(
         }).buffer_unordered(concurrency_limit)
         .collect::<Vec<_>>()
         .await;
+    info!("Cleaning up...");
+    // sqlite_client.lock().unwrap().vacuum().await;
 }
 
 pub fn load_history_from_archive(
@@ -408,6 +410,10 @@ pub fn load_history_from_archive(
 
     });
 
+    info!("Cleaning up...");
+    rt.block_on(async {
+        // sqlite_client.lock().unwrap().vacuum().await;
+    });
 }
 #[derive(Deserialize)]
 struct ArchiveAggTrade {

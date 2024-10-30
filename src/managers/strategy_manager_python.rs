@@ -264,6 +264,9 @@ impl EventSink<Kline> for StrategyManagerPython {
     fn get_receiver(&self) -> Receiver<(Kline, Option<Arc<Notify>>)> {
         self.klines.clone().activate()
     }
+    async fn name(&self) -> String {
+        "StrategyManagerPython Kline Sink".to_string()
+    }
     async fn handle_event(&self, event_msg: Kline) -> anyhow::Result<()> {
         let sock = self.backtest_sock.clone();
             // TODO: make sure socket is open

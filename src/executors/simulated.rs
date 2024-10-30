@@ -14,6 +14,7 @@ use rust_decimal_macros::dec;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
 use std::sync::Arc;
+use rayon::prelude::*;
 use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, trace};
@@ -80,8 +81,11 @@ impl SimulatedAccount {
             let spread = Spread::new(symbol.clone());
             symbol_accounts.lock().await.insert(symbol.clone(), symbol_account);
             open_orders.lock().await.insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
-            order_history.lock().await.insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
-            trade_history.lock().await.insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
+            #[cfg(test)]
+            {
+                order_history.lock().await.insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
+                trade_history.lock().await.insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
+            }
             positions.lock().await.insert(symbol.clone(), position);
             spreads.lock().await.insert(symbol.clone(), Arc::new(RwLock::new(spread)));
         }
@@ -110,6 +114,10 @@ impl EventSink<TfTrades> for SimulatedAccount {
     fn get_receiver(&self) -> Receiver<(TfTrades, Option<Arc<Notify>>)> {
         self.tf_trades.clone().activate()
     }
+    async fn name(&self) -> String {
+        "SimulatedAccount TfTrades Sink".to_string()
+    }
+
     /// Handles an incoming trade event by updating open orders and positions.
     /// Processes each trade in the event message and updates the account state accordingly.
     async fn handle_event(&self, event_msg: TfTrades) -> anyhow::Result<()> {
@@ -141,29 +149,27 @@ impl EventSink<TfTrades> for SimulatedAccount {
             if open_orders.is_empty() {
                 continue;
             }
-
-            let mut order_search: HashMap<Uuid, Order> = open_orders.iter()
-                .map(|o| (o.id, o.clone()))
-                .collect();
-
-            // let mut remove_orders: Vec<OrderStatus> = vec![];
-            // let mut remove_for_orders = vec![];
-            // let mut re_add = vec![];
+            let mut oo: Vec<_> = open_orders.iter().cloned().collect();
+            drop(open_orders);
+            oo.sort();
             for trade in &tf_trade.trades {
-                // handle cancel orders first
-                for mut order in open_orders.clone() {
+                let len = oo.len();
 
-                        let mut state_machine = OrderStateMachine::new(
-                            &mut order,
-                            &self.positions,
-                            &mut open_orders,
-                            &self.trade_subscribers,
-                            &self.order_status_subscribers,
-                        );
-                        state_machine.process_order(trade).await;
+                for (index, mut order) in oo.clone().into_iter().enumerate() {
+
+                    let mut state_machine = OrderStateMachine::new(
+                        &mut order,
+                        // account for orders removed on previous iterations
+                        index - (len - oo.len()),
+                        &self.positions,
+                        &mut oo,
+                        &self.trade_subscribers,
+                        &self.order_status_subscribers,
+                    );
+                    state_machine.process_order(trade).await;
                 }
 
-                if open_orders.is_empty() {
+                if oo.is_empty() {
                     break;
                 }
             }
@@ -178,7 +184,9 @@ impl EventSink<Trade> for SimulatedAccount {
     fn get_receiver(&self) -> Receiver<(Trade, Option<Arc<Notify>>)> {
         self.new_trades.activate_cloned()
     }
-
+    async fn name(&self) -> String {
+        "SimulatedAccount Trade Sink".to_string()
+    }
     async fn handle_event(&self, event_msg: Trade) -> anyhow::Result<()> {
         let sqlite_client = &self.sqlite_client;
         #[cfg(test)]
@@ -193,6 +201,9 @@ impl EventSink<Trade> for SimulatedAccount {
 impl EventSink<OrderStatus> for SimulatedAccount {
     fn get_receiver(&self) -> Receiver<(OrderStatus, Option<Arc<Notify>>)> {
         self.order_statuses.clone().activate()
+    }
+    async fn name(&self) -> String {
+        "SimulatedAccount OrderStatus Sink".to_string()
     }
     async fn handle_event(&self, event_msg: OrderStatus) -> anyhow::Result<()> {
         let open_orders = self.open_orders.clone();
@@ -295,6 +306,7 @@ impl ExchangeAccountInfo for SimulatedAccount {
         self.symbol_accounts.lock().await.get(symbol).unwrap().clone()
     }
 
+    #[cfg(test)]
     async fn get_past_trades(&self, symbol: &Symbol, length: Option<usize>) -> Arc<HashSet<Trade>> {
             Arc::new(self.trade_history.lock().await.get(symbol).unwrap().lock().await.clone())
     }
@@ -312,6 +324,7 @@ impl ExchangeAccountInfo for SimulatedAccount {
         Arc::new(spread)
     }
 
+    #[cfg(test)]
     async fn get_order(&self, symbol: &Symbol, id: &Uuid) -> Vec<Order> {
         let order_history = self.order_history.lock().await.get(symbol).unwrap().clone();
         let mut res = vec![];

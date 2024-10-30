@@ -7,14 +7,16 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use async_broadcast::Sender;
 use tokio::sync::{Mutex, Notify, RwLock};
+use tracing::debug;
 use uuid::Uuid;
 
 pub struct OrderStateMachine<'a> {
     /// Manages the state of an order and processes it based on its type.
     /// Updates positions, open orders, and notifies subscribers of order status changes.
     order: &'a mut Order,
+    index: usize,
     positions: &'a Arc<Mutex<HashMap<Symbol, Position>>>,
-    open_orders: &'a mut HashSet<Order>,
+    open_orders: &'a mut Vec<Order>,
     trade_subscribers: &'a Arc<RwLock<Sender<(Trade, Option<Arc<Notify>>)>>>,
     order_status_subscribers: &'a Arc<RwLock<Sender<(OrderStatus, Option<Arc<Notify>>)>>>,
 }
@@ -24,13 +26,15 @@ impl<'a> OrderStateMachine<'a> {
     /// Initializes the state machine with references to positions, open orders, and subscribers.
     pub fn new(
         order: &'a mut Order,
+        index: usize,
         positions: &'a Arc<Mutex<HashMap<Symbol, Position>>>,
-        open_orders: &'a mut HashSet<Order>,
+        open_orders: &'a mut Vec<Order>,
         trade_subscribers: &'a Arc<RwLock<Sender<(Trade, Option<Arc<Notify>>)>>>,
         order_status_subscribers: &'a Arc<RwLock<Sender<(OrderStatus, Option<Arc<Notify>>)>>>,
     ) -> Self {
         Self {
             order,
+            index,
             positions,
             open_orders,
             trade_subscribers,
@@ -56,8 +60,8 @@ impl<'a> OrderStateMachine<'a> {
     }
 
     async fn process_cancel_order(&mut self) {
-        self.open_orders.remove(self.order);
-        broadcast(
+        self.open_orders.remove(self.index);
+        broadcast_and_wait(
             &self.order_status_subscribers,
             OrderStatus::Canceled(self.order.clone(), "Cancel Order".to_string()),
         )
@@ -71,7 +75,7 @@ impl<'a> OrderStateMachine<'a> {
             broadcast(&self.trade_subscribers, trade).await;
         }
         drop(lock);
-        self.open_orders.remove(self.order);
+        self.open_orders.remove(self.index);
         broadcast_and_wait(
             &self.order_status_subscribers,
             OrderStatus::Filled(self.order.clone()),
@@ -88,7 +92,7 @@ impl<'a> OrderStateMachine<'a> {
                     broadcast(&self.trade_subscribers, trade).await;
                 }
                 drop(lock);
-                self.open_orders.remove(self.order);
+                self.open_orders.remove(self.index);
                 if trade.qty.lt(&self.order.quantity) {
                     broadcast_and_wait(
                         &self.order_status_subscribers,
@@ -109,7 +113,7 @@ impl<'a> OrderStateMachine<'a> {
                     broadcast(&self.trade_subscribers, trade).await;
                 }
                 drop(lock);
-                self.open_orders.remove(self.order);
+                self.open_orders.remove(self.index);
                 if trade.qty.lt(&self.order.quantity) {
                     broadcast_and_wait(
                         &self.order_status_subscribers,
@@ -131,7 +135,7 @@ impl<'a> OrderStateMachine<'a> {
         let mut lock = self.positions.lock().await;
         let mut position = lock.get_mut(&self.order.symbol).unwrap();
         if !position.is_open() {
-            self.open_orders.remove(self.order);
+            self.open_orders.remove(self.index);
             broadcast_and_wait(
                 &self.order_status_subscribers,
                 OrderStatus::Canceled(self.order.clone(), "Stoploss on neutral position".to_string()),
@@ -144,7 +148,7 @@ impl<'a> OrderStateMachine<'a> {
         {
             self.order.quantity = self.order.quantity.min(position.qty);
             if let Some(trade) = position.apply_order(self.order, trade.timestamp) {
-                self.open_orders.remove(self.order);
+                self.open_orders.remove(self.index);
                 if trade.qty.lt(&self.order.quantity) {
                     broadcast_and_wait(
                         &self.order_status_subscribers,
@@ -158,7 +162,10 @@ impl<'a> OrderStateMachine<'a> {
                     )
                     .await;
                 }
-                broadcast_and_wait(&self.trade_subscribers, trade).await;
+                let lock = self.trade_subscribers.read().await;
+                drop(lock);
+                broadcast(&self.trade_subscribers, trade).await;
+
             }
         }
     }
@@ -167,7 +174,7 @@ impl<'a> OrderStateMachine<'a> {
         let mut lock = self.positions.lock().await;
         let mut position = lock.get_mut(&self.order.symbol).unwrap();
         if !position.is_open() {
-            self.open_orders.remove(self.order);
+            self.open_orders.remove(self.index);
             broadcast_and_wait(
                 &self.order_status_subscribers,
                 OrderStatus::Canceled(self.order.clone(), "Take profit on neutral position".to_string()),
@@ -180,7 +187,7 @@ impl<'a> OrderStateMachine<'a> {
         {
             self.order.quantity = self.order.quantity.min(position.qty);
             if let Some(trade) = position.apply_order(self.order, trade.timestamp) {
-                self.open_orders.remove(self.order);
+                self.open_orders.remove(self.index);
                 if trade.qty.lt(&self.order.quantity) {
                     broadcast_and_wait(
                         &self.order_status_subscribers,

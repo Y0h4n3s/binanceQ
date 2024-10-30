@@ -33,6 +33,7 @@ use std::env;
 use std::fmt::Write;
 use std::time::{Duration, SystemTime};
 use tokio::sync::Notify;
+use tracing::info;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 use types::{
@@ -57,14 +58,7 @@ static KEY: Lazy<AccessKey> = Lazy::new(|| {
 fn main() -> Result<(), anyhow::Error> {
     // console_subscriber::init();
     // or as an allow list (INFO, but drill into my crate's logs)
-    let filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::DEBUG.into())
-        .parse("binance_q=trace")?;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .compact()
-        .init();
     let cpus = num_cpus::get_physical() / 3;
     rayon::ThreadPoolBuilder::new().num_threads(cpus).build_global()?;
 
@@ -193,6 +187,16 @@ async fn async_main() -> anyhow::Result<()> {
         )
         .get_matches();
 
+    let log_level = if main_matches.get_flag("verbose") {"binance_q=debug"} else {"binance_q=info"};
+    let filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::DEBUG.into())
+        .parse(log_level)?;
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .compact()
+        .init();
+
     if let Some(matches) = main_matches.subcommand_matches("backtest") {
         let mode = matches.get_one::<String>("mode").unwrap();
         let ktf = matches.get_one::<String>("ktf").unwrap();
@@ -212,7 +216,7 @@ async fn async_main() -> anyhow::Result<()> {
         let pb = ProgressBar::new(0);
         pb.set_style(
             ProgressStyle::with_template(
-                "[?] [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}%}",
+                "[?] [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}%|[ETA: {eta_precise}]",
             )
             .unwrap()
             .with_key("eta", |state: &ProgressState, w: &mut dyn Write| {
@@ -290,10 +294,12 @@ async fn async_main() -> anyhow::Result<()> {
                     client
                 )
                 .await?;
-            pb.finish_with_message(format!(
-                "[+] back_tester > Back-test finished in {:?} seconds",
-                start.elapsed().unwrap()
-            ));
+
+
+            info!(
+                "Back-test finished in {:?} seconds",
+                start.elapsed()?
+            );
         } else if mode == "multi" {
             let mut b_configs = vec![];
             let mut symbols_i: Vec<Symbol> = vec![];
@@ -339,15 +345,16 @@ async fn async_main() -> anyhow::Result<()> {
             let account = Arc::new(account);
             let ac = account.clone();
             tokio::spawn(async move {
+                EventSink::<Trade>::listen(ac).unwrap();
+            });
+            let ac = account.clone();
+            tokio::spawn(async move {
                 EventSink::<TfTrades>::listen(ac).unwrap();
             });
             let ac = account.clone();
             tokio::spawn(async move {
                 EventSink::<OrderStatus>::listen(ac).unwrap();
             });
-
-
-
             let back_tester = BackTesterMulti::new(global_config, b_configs);
             let start = std::time::SystemTime::now();
             back_tester
@@ -361,10 +368,10 @@ async fn async_main() -> anyhow::Result<()> {
                 )
                 .await?;
 
-            pb.finish_with_message(format!(
-                "[+] back_tester > Back-test finished in {:?} seconds",
-                start.elapsed().unwrap()
-            ));
+            info!(
+                "Back-test finished in {:?} seconds",
+                start.elapsed()?
+            );
         }
     }
 

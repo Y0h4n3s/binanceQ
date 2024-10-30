@@ -326,10 +326,9 @@ impl OrderStatus {
     }
 }
 
-impl PartialOrd for Order {
+impl PartialOrd<Self> for Order {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
+        Some(self.cmp(other))                                                                                                                                                    }
 }
 
 impl Ord for Order {
@@ -356,6 +355,8 @@ impl Ord for Order {
         self_priority.cmp(&other_priority)
     }
 }
+
+impl PartialEq for Order {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id && self.order_type == other.order_type && self.side == other.side
     }
@@ -422,7 +423,7 @@ impl From<i32> for ClosePolicy {
     }
 }
 
-#[derive(Clone, Eq, Ord, PartialOrd, Debug, Serialize, Deserialize)]
+#[derive(Clone, Eq, Debug, Serialize, Deserialize)]
 pub struct Order {
     pub id: uuid::Uuid,
     pub symbol: Symbol,

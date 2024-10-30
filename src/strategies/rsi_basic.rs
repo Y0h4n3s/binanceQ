@@ -56,20 +56,18 @@ impl SignalGenerator for SimpleRSIStrategy {
         let mut orders = vec![];
         if  direction == -1 {
             if rsi < 30.0 && position.is_open() && open_orders.is_empty() {
-                debug!("close price: {:?} {}", position, kline.close);
             }
         }
         if direction == 1{
                 if rsi > 70.0 && !position.is_open() && open_orders.is_empty() {
-                    debug!("opening price: {}, Target: {} Stop: {}", kline.close, kline.close + kline.close * dec!(0.04), kline.close - kline.close * dec!(0.02));
 
                     orders.push(Order {
                         id: uuid::Uuid::new_v4(),
                         symbol: kline.symbol.clone(),
                         side: Side::Bid,
-                        price: kline.close - kline.close * dec!(0.04),
+                        price: kline.close - kline.close * dec!(0.1),
                         quantity: dec!(100),
-                        time: 0,
+                        time: kline.close_time,
                         order_type: OrderType::TakeProfitLimit,
                         lifetime: 0,
                         close_policy: ClosePolicy::None,
@@ -78,9 +76,9 @@ impl SignalGenerator for SimpleRSIStrategy {
                         id: uuid::Uuid::new_v4(),
                         symbol: kline.symbol.clone(),
                         side: Side::Bid,
-                        price: kline.close + kline.close * dec!(0.04),
+                        price: kline.close + kline.close * dec!(0.1),
                         quantity: dec!(100),
-                        time: 0,
+                        time: kline.close_time,
                         order_type: OrderType::StopLossLimit,
                         lifetime: 0,
                         close_policy: ClosePolicy::None,
@@ -91,7 +89,7 @@ impl SignalGenerator for SimpleRSIStrategy {
                         side: Side::Ask,
                         price: kline.close,
                         quantity: dec!(100),
-                        time: 0,
+                        time: kline.close_time,
                         order_type: OrderType::Market,
                         lifetime: 0,
                         close_policy: ClosePolicy::None,

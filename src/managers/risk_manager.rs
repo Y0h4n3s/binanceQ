@@ -34,22 +34,14 @@ pub struct RiskManager {
 
 
 
-#[async_trait]
-impl EventSink<Trade> for RiskManager {
-    fn get_receiver(&self) -> Receiver<(Trade, Option<Arc<Notify>>)> {
-        self.trades.clone().activate()
-    }
-    // Act on trade events for risk manager
-    async fn handle_event(&self, event: Trade) -> anyhow::Result<()> {
-        let global_config = self.global_config.clone();
-        let account = self.account.clone();
-        Ok(())
-    }
-}
+
 #[async_trait]
 impl EventSink<Kline> for RiskManager {
     fn get_receiver(&self) -> Receiver<(Kline, Option<Arc<Notify>>)> {
         self.klines.clone().activate()
+    }
+    async fn name(&self) -> String {
+        "RiskManager Kline Sink".to_string()
     }
     // Act on trade events for risk manager
     // deal with expired lifetime orders

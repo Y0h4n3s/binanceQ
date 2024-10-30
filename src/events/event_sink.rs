@@ -7,8 +7,9 @@ use async_std::sync::Arc;
 use std::fmt::Debug;
 use anyhow::Error;
 use async_trait::async_trait;
+use log::info;
 use tokio::sync::Notify;
-use tracing::error;
+use tracing::{debug, error};
 
 #[async_trait] 
 /// The `EventSink` trait defines the interface for handling events of type `EventType`.
@@ -17,6 +18,8 @@ use tracing::error;
 pub trait EventSink<EventType: Clone + Debug + Send + Sync + 'static>: Send + Sync + 'static {
     /// Returns a receiver for the event channel, allowing the sink to receive events.
     fn get_receiver(&self) -> Receiver<(EventType, Option<Arc<Notify>>)>;
+
+    async fn name(&self) -> String;
     /// Handles an incoming event of type `EventType`.
     /// Implementations should define how to process the event.
     async fn handle_event(&self, event_msg: EventType) -> anyhow::Result<()>;
@@ -27,19 +30,22 @@ pub trait EventSink<EventType: Clone + Debug + Send + Sync + 'static>: Send + Sy
         let runtime = tokio::runtime::Handle::current();
         let mut receiver = self.get_receiver();
         runtime.spawn(async move {
+            let name = self.name().await;
+
             loop {
                 match receiver.recv().await {
                     Err(async_broadcast::RecvError::Closed) => {
-                        error!("[-] Broadcast error: Sender closed");
+                        debug!("[-] Sender closed on {}. Shutting down", &name);
+                        receiver.close();
                         break
                     }
                     Err(async_broadcast::RecvError::Overflowed(e)) => {
-                        error!("[-] Broadcast error: Overflowed {}", e);
+                        error!("[-] Broadcast error: Overflowed {} on {}", e, &name);
                         continue;
                     }
                     Ok((event, notify)) => {
                         if let Err(e) = self.handle_event(event).await {
-                            error!("[-] Error handling event: {}", e);
+                            error!("[-] Error handling event: {} on {}", e, &name);
                         }
                         if let Some(n) = notify {
                             n.notify_one()
@@ -96,6 +102,9 @@ mod tests {
     impl EventSink<MockEvent> for MockEventSink {
         fn get_receiver(&self) -> Receiver<(MockEvent, Option<Arc<Notify>>)> {
             self.receiver.clone()
+        }
+        async fn name(&self) -> String {
+            "MockEventSink".to_string()
         }
 
         async fn handle_event(&self, event_msg: MockEvent) -> anyhow::Result<()> {

@@ -48,7 +48,9 @@ impl<RiskManager:  Send + Sync + 'static> EventSink<Kline> for StrategyManager<R
     fn get_receiver(&self) -> Receiver<(Kline, Option<Arc<Notify>>)> {
         self.klines.activate_cloned()
     }
-
+    async fn name(&self) -> String {
+        format!("{}: StrategyManager Kline Sink", self.global_config.symbol.symbol)
+    }
     async fn handle_event(&self, event_msg: Kline) -> anyhow::Result<()> {
         for mut strategy in self.strategies.lock().await.iter_mut() {
             if let Some(orders) = strategy.handle_kline(&event_msg, &self.account).await {
