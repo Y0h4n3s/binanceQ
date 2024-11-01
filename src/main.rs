@@ -1,47 +1,52 @@
 
 #![feature(iterator_try_collect)]
 #![feature(async_closure)]
+#[allow(unused)]
+
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-
+#[allow(unused)]
 mod back_tester;
-mod executors;
 
+#[allow(unused)]
+mod executors;
+#[allow(unused)]
 mod events;
+#[allow(unused)]
 mod managers;
+#[allow(unused)]
 mod mongodb;
 
-#[allow(dead_code)]
+#[allow(dead_code, unused)]
 mod types;
+#[allow(unused)]
 mod utils;
+#[allow(unused)]
 mod db;
+#[allow(unused)]
 mod strategies;
 
 use crate::back_tester::{BackTester, BackTesterConfig, BackTesterMulti};
 use async_broadcast::{Receiver, Sender};
 use async_std::sync::Arc;
-use binance::api::Binance;
 use clap::{arg, command, value_parser, Command};
-use events::{EventEmitter, EventSink};
+use events::{EventSink};
 use executors::simulated::SimulatedAccount;
-use executors::{ExchangeAccount, TradeExecutor};
-use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use once_cell::sync::Lazy;
 use std::env;
 use std::fmt::Write;
-use std::time::{Duration, SystemTime};
+use std::time::{SystemTime};
 use tokio::sync::Notify;
 use tracing::info;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 use types::{
-    AccessKey, ExchangeId, ExecutionCommand, GlobalConfig, Kline, Mode, Order, Symbol, TfTrades,
+    AccessKey, ExchangeId, GlobalConfig, Mode, Symbol, TfTrades,
     Trade,
 };
-use crate::db::loader::compile_agg_trades_for;
-use crate::executors::ExchangeAccountInfo;
+use crate::db::loader::{compile_agg_trades_for};
 use crate::types::OrderStatus;
 
 static KEY: Lazy<AccessKey> = Lazy::new(|| {
@@ -55,12 +60,12 @@ static KEY: Lazy<AccessKey> = Lazy::new(|| {
     }
 });
 
+
 fn main() -> Result<(), anyhow::Error> {
     // console_subscriber::init();
     // or as an allow list (INFO, but drill into my crate's logs)
 
-    let cpus = num_cpus::get_physical() / 3;
-    rayon::ThreadPoolBuilder::new().num_threads(cpus).build_global()?;
+
 
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -91,17 +96,7 @@ async fn async_main() -> anyhow::Result<()> {
                         .value_parser(value_parser!(u64)),
                 )
                 .arg(
-                    arg!(--timeframe1 <SECONDS> "The first timeframe to use")
-                        .required(true)
-                        .value_parser(value_parser!(u64)),
-                )
-                .arg(
-                    arg!(--timeframe2 <SECONDS> "The second timeframe to use")
-                        .required(true)
-                        .value_parser(value_parser!(u64)),
-                )
-                .arg(
-                    arg!(--timeframe3 <SECONDS> "The third timeframe to use")
+                    arg!(--timeframe <SECONDS> "The compiled timeframe chunk to use")
                         .required(true)
                         .value_parser(value_parser!(u64)),
                 )
@@ -124,12 +119,6 @@ async fn async_main() -> anyhow::Result<()> {
                     arg!(--ktf <KLINE_TF> "Kline timeframe")
                         .required(false)
                         .default_value("5m"),
-                )
-                .arg(
-                    arg!(--tf <TF> "Chunk timeframe in seconds")
-                        .required(false)
-                        .default_value("30")
-                        .value_parser(value_parser!(u64)),
                 )
                 .arg(
                     arg!(-s --symbols <SYMBOLS> "The instruments to download")
@@ -158,6 +147,12 @@ async fn async_main() -> anyhow::Result<()> {
                     arg!(-s --symbol <SYMBOLS> "The instrument to compile for")
                         .required(true)
                         .num_args(1)
+                )
+                .arg(
+                    arg!(-s --symbols <SYMBOLS> "The instruments to compile")
+                        .required(false)
+                        .num_args(1..)
+                        .default_value("BTCUSDT"),
                 )
         )
         .subcommand(
@@ -204,15 +199,9 @@ async fn async_main() -> anyhow::Result<()> {
         let backtest_span = *matches
             .get_one::<u64>("length")
             .ok_or(anyhow::anyhow!("Invalid span"))?;
-        let tf1 = *matches
-            .get_one::<u64>("timeframe1")
-            .ok_or(anyhow::anyhow!("Invalid tf1"))?;
-        let tf2 = *matches
-            .get_one::<u64>("timeframe2")
-            .ok_or(anyhow::anyhow!("Invalid tf2"))?;
-        let tf3 = *matches
-            .get_one::<u64>("timeframe3")
-            .ok_or(anyhow::anyhow!("Invalid tf3"))?;
+        let tf = *matches
+            .get_one::<u64>("timeframe")
+            .ok_or(anyhow::anyhow!("Invalid tf"))?;
         let pb = ProgressBar::new(0);
         pb.set_style(
             ProgressStyle::with_template(
@@ -235,14 +224,12 @@ async fn async_main() -> anyhow::Result<()> {
             let symbol = Symbol {
                 symbol: symbols.next().unwrap().clone(),
                 exchange: ExchangeId::Simulated,
-                base_asset_precision: 1,
-                quote_asset_precision: 2,
+                base_asset_precision: 0,
+                quote_asset_precision: 0,
             };
             let global_config = GlobalConfig {
                 symbol: symbol.clone(),
-                tf1,
-                tf2,
-                tf3,
+                tf1: tf,
                 key: KEY.clone(),
                 verbose: main_matches.get_flag("verbose"),
                 mode: Mode::Backtest,
@@ -259,7 +246,7 @@ async fn async_main() -> anyhow::Result<()> {
                 BackTester::new(global_config, back_tester_config);
 
             let start = SystemTime::now();
-            let mut account = SimulatedAccount::new(
+            let account = SimulatedAccount::new(
                 tf_trades_channel.1.deactivate(),
                 order_statuses_channel.1.deactivate(),
                 trades_channel.1.clone().deactivate(),
@@ -308,8 +295,8 @@ async fn async_main() -> anyhow::Result<()> {
                 let symbol = Symbol {
                     symbol: symbol.clone(),
                     exchange: ExchangeId::Simulated,
-                    base_asset_precision: 1,
-                    quote_asset_precision: 2,
+                    base_asset_precision: 0,
+                    quote_asset_precision: 0,
                 };
                 symbols_i.push(symbol.clone());
                 let back_tester_config = BackTesterConfig {
@@ -325,15 +312,13 @@ async fn async_main() -> anyhow::Result<()> {
 
             let global_config = GlobalConfig {
                 symbol: b_configs.first().unwrap().symbol.clone(),
-                tf1,
-                tf2,
-                tf3,
+                tf1: tf,
                 key: KEY.clone(),
                 mode: Mode::Backtest,
                 verbose: main_matches.get_flag("verbose"),
             };
 
-            let mut account = SimulatedAccount::new(
+            let account = SimulatedAccount::new(
                 tf_trades_channel.1.deactivate(),
                 order_statuses_channel.1.deactivate(),
                 trades_channel.1.clone().deactivate(),
@@ -376,14 +361,13 @@ async fn async_main() -> anyhow::Result<()> {
     }
 
     if let Some(matches) = main_matches.subcommand_matches("download") {
+        let cpus = num_cpus::get_physical();
+        rayon::ThreadPoolBuilder::new().num_threads(cpus).build_global()?;
         let symbols = matches.get_many::<String>("symbols").unwrap().clone();
         let tf1 = matches
             .get_one::<String>("ktf")
             .ok_or(anyhow::anyhow!("Invalid timeframe"))?
             .clone();
-        let tf = *matches
-            .get_one::<u64>("tf")
-            .ok_or(anyhow::anyhow!("Invalid timeframe"))?;
         let l = *matches
             .get_one::<i64>("length")
             .ok_or(anyhow::anyhow!("Invalid timeframe"))?;
@@ -405,6 +389,8 @@ async fn async_main() -> anyhow::Result<()> {
 
         let mut threads = vec![];
         let client = Arc::new(std::sync::Mutex::new(db::client::SQLiteClient::new().await));
+
+        info!("[?] Downloading...");
         for s in symbols.into_iter() {
             let symbol = Symbol {
                 symbol: s.clone(),
@@ -428,18 +414,26 @@ async fn async_main() -> anyhow::Result<()> {
                let client = client.clone();
                let s = symbol.clone();
                 if download_trades {
-                        db::loader::load_history_from_archive(s, l, tf, lpb1, verbose, client, rt_handle);
+                    rt_handle.block_on(async move {
+                        db::loader::load_history_from_archive(s, l, lpb1, verbose, client).await;
+
+                    });
                 }
-                println!("[+] download > {} data downloaded", symbol.symbol.clone());
+                info!("{} data downloaded", symbol.symbol.clone());
             }));
         }
         for t in threads.into_iter() {
             t.join().unwrap();
         }
+
+        info!("Cleaning up...");
+        client.lock().unwrap().vacuum().await;
     }
 
     if let Some(matches) = main_matches.subcommand_matches("compile") {
-        let symbol = matches.get_one::<String>("symbol").unwrap().clone();
+        let cpus = num_cpus::get() * 2;
+        rayon::ThreadPoolBuilder::new().num_threads(cpus).build_global()?;
+        let symbols = matches.get_many::<String>("symbols").unwrap().clone();
         let tf = *matches
             .get_one::<u64>("tf")
             .ok_or(anyhow::anyhow!("Invalid timeframe"))?;
@@ -458,15 +452,31 @@ async fn async_main() -> anyhow::Result<()> {
         );
 
         let client = Arc::new(db::client::SQLiteClient::new().await);
-        let symbol = Symbol {
-            symbol,
-            exchange: ExchangeId::Simulated,
-            base_asset_precision: 1,
-            quote_asset_precision: 2,
-        };
-        compile_agg_trades_for(&symbol, tf, pb, verbose, client).await;
+
+        let mut threads = vec![];
+        let permits = 5;
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(permits));
+        for symbol in symbols {
+            let symbol = Symbol {
+                symbol: symbol.clone(),
+                exchange: ExchangeId::Simulated,
+                base_asset_precision: 0,
+                quote_asset_precision: 0,
+            };
+            let pb = pb.clone();
+            let client = client.clone();
+            let semaphore = semaphore.clone();
+            threads.push(tokio::spawn(async move  {
+                    let _ = semaphore.acquire().await.unwrap();
+                    compile_agg_trades_for(&symbol, tf, pb, verbose, client.clone()).await;
+            }));
+        }
+        for thread in threads {
+            let _ = thread.await;
+        }
+
     }
-    if let Some(matches) = main_matches.subcommand_matches("live") {
+    if let Some(_matches) = main_matches.subcommand_matches("live") {
         todo!()
     }
 

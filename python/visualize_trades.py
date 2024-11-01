@@ -67,12 +67,8 @@ def main():
 
     # Sort trades by time and select the specified number of trades
     trades_df.sort_values('trade_time', inplace=True)
-    selected_trades = trades_df.head(num_trades)
+    selected_trades = trades_df.sample(num_trades)
     print(f"Selected {len(selected_trades)} trades for visualization.")
-    # Create subplots
-    num_plots = len(selected_trades)
-    fig = make_subplots(rows=num_plots, cols=3, horizontal_spacing=0.1, vertical_spacing=0.1)
-    col = 1
     for idx, trade in selected_trades.iterrows():
         # Prepare data for each trade
         trade_time = trade['trade_time']
@@ -82,8 +78,8 @@ def main():
         side = trade['side'].upper()
 
         # Define time window around the trade
-        start_time = entry_time - 2*span[0]
-        end_time = trade_time + 2*span[0]
+        start_time = entry_time - 15*span[0]
+        end_time = trade_time + 15*span[0]
         # Filter klines data for this time window
         klines_subset = klines_df[(klines_df['open_time'] >= start_time) & (klines_df['open_time'] <= end_time)]
         figure = go.Figure(data=[go.Candlestick(
@@ -96,12 +92,7 @@ def main():
         )])
 
         fig = figure.update_layout(xaxis_rangeslider_visible=False)
-        # Add candlestick chart to subplot
-        # fig.add_trace(figure['data'][0],
-        #     row=idx+1,
-        #     col=col
-        # )
-        # Add entry and exit markers
+
         fig.add_trace(
             go.Scatter(
                 x=[entry_time],
@@ -132,22 +123,13 @@ def main():
 
         # Set title for each subplot
         fig.update_yaxes(title_text=f"Trade {idx+1}: {side}")
+
         fig.show()
 
-        col = 1 if col > 2 else col + 1
 
-    # Update layout
-    fig.update_layout(
-        autosize=True,
-        height=600 * (num_plots / 3)    ,
-        title_text=f"Visualization of {num_plots} Trades for {symbol}",
-        xaxis_rangeslider_visible=False,
-        showlegend=True,
 
-    )
 
     # Show the figure
-    fig.show()
     plt.show()
 
 

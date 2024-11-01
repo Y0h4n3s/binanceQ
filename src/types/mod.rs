@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 use rust_decimal::prelude::ToPrimitive;
 use rust_decimal_macros::dec;
+use uuid::Uuid;
 use yata::core::{ValueType, OHLCV};
 pub type TfTrades = Vec<TfTrade>;
 
@@ -35,31 +36,6 @@ impl OHLCV for Candle {
 
     fn volume(&self) -> ValueType {
         self.volume.to_f64().unwrap()
-    }
-}
-
-impl From<Vec<TradeEntry>> for Candle {
-    fn from(trades: Vec<TradeEntry>) -> Self {
-        if trades.is_empty() {
-            return Self::default();
-        }
-        let mut trades = trades;
-        let min = trades.iter().max_by(|x, y| if x.price > y.price {Ordering::Less} else {Ordering::Greater}).unwrap().clone();
-        let max = trades.iter().max_by(|x, y|  if x.price > y.price {Ordering::Greater} else {Ordering::Less}).unwrap().clone();
-        let tf_trade_entry = TfTrade {
-            symbol: trades.first().unwrap().symbol.clone(),
-            tf: 1,
-            id: 1,
-            timestamp: trades
-                .iter()
-                .map(|trade| trade.timestamp)
-                .min()
-                .unwrap_or(0),
-            min_trade_time: min.timestamp,
-            max_trade_time: max.timestamp,
-            trades,
-        };
-        Self::from(&tf_trade_entry)
     }
 }
 
@@ -117,8 +93,6 @@ pub enum Mode {
 #[derive(Debug, Clone, Default)]
 pub struct GlobalConfig {
     pub tf1: u64,
-    pub tf2: u64,
-    pub tf3: u64,
     pub key: AccessKey,
     pub verbose: bool,
     pub symbol: Symbol,
@@ -177,19 +151,19 @@ pub struct BookSideEntry {
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TradeEntry {
-    pub trade_id: u64,
+    pub id: String,
     pub price: Decimal,
     pub qty: Decimal,
     pub timestamp: u64,
     pub delta: Decimal,
-    pub symbol: Symbol,
+    pub symbol: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TfTrade {
     pub symbol: Symbol,
     pub tf: u64,
-    pub id: u64,
+    pub id: String,
     pub timestamp: u64,
     pub min_trade_time: u64,
     pub max_trade_time: u64,

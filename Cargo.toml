@@ -53,9 +53,9 @@ tempdir = "0.3.7"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 petgraph = "0.6.5"
-sqlx = { version = "0.8.2", features = ["runtime-tokio-native-tls", "sqlite", "rust_decimal", "uuid", "bigdecimal"] }
+sqlx = { version = "0.8.2", features = ["runtime-tokio-native-tls", "sqlite", "rust_decimal", "uuid", "bigdecimal", "json"] }
 serde_json = "1.0.128"
-rusqlite = "0.32.1"
+rusqlite = {  version = "0.32.1", default-features = false  }
 ta = "0.5.0"
 log = "0.4.22"
 scc = { version = "2.2.4"}

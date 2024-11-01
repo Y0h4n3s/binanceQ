@@ -502,12 +502,12 @@ mod tests {
         // Simulate a trade that hits the stop-loss
         let n = notifier.notified();
         let trade_entry = TradeEntry {
-            trade_id: 1,
+            id: 1,
             price: Decimal::new(85, 1), // Price below stop-loss
             qty: Decimal::new(100, 1),
             timestamp: 0,
             delta: Decimal::new(0, 0),
-            symbol: symbol.clone(),
+            symbol: symbol.symbol.clone(),
         };
         tf_trades_channel
             .0
@@ -526,6 +526,9 @@ mod tests {
             .await
             .unwrap();
         n.await;
+
+        // wait because we don't wait for notify when broadcasting trades
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
         // Check if stop-loss is executed and take-profit is removed
         let open_orders = simulated_account.get_open_orders(&symbol).await;
@@ -622,12 +625,12 @@ mod tests {
         // Simulate a trade that does not hit the stop-loss or take-profit
         let n = notifier.notified();
         let trade_entry_1 = TradeEntry {
-            trade_id: 1,
+            id: uuid::Uuid::new_v4().to_string(),
             price: Decimal::new(105, 1), // Price between stop-loss and take-profit
             qty: Decimal::new(100, 1),
             timestamp: 0,
             delta: Decimal::new(0, 0),
-            symbol: symbol.clone(),
+            symbol: symbol.symbol.clone(),
         };
         tf_trades_channel
             .0
@@ -635,7 +638,7 @@ mod tests {
                 vec![TfTrade {
                     symbol: symbol.clone(),
                     tf: 1,
-                    id: 1,
+                    id: uuid::Uuid::new_v4().to_string(),
                     timestamp: 124,
                     trades: vec![trade_entry_1.clone()],
                     min_trade_time: 0,
@@ -716,7 +719,7 @@ mod tests {
         // Simulate a trade that hits the take-profit of the second order
         let n = notifier.notified();
         let trade_entry_2 = TradeEntry {
-            trade_id: 2,
+            id: 2,
             price: Decimal::new(120, 1), // Price above take-profit
             qty: Decimal::new(100, 1),
             timestamp: 0,
@@ -792,7 +795,7 @@ mod tests {
         let notifier = Arc::new(Notify::new());
         let n = notifier.notified();
         let trade_entry = TradeEntry {
-            trade_id: 1,
+            id: uuid::Uuid::new_v4().to_string(),
             price: Decimal::new(100, 1),
             qty: Decimal::ZERO,
             timestamp: 0,
@@ -805,7 +808,7 @@ mod tests {
                 vec![TfTrade {
                     symbol: symbol.clone(),
                     tf: 1,
-                    id: 1,
+                    id: uuid::Uuid::new_v4().to_string(),
                     timestamp: 124,
                     trades: vec![trade_entry.clone()],
                     min_trade_time: 0,
@@ -837,7 +840,7 @@ mod tests {
         let notifier = Arc::new(Notify::new());
         let n = notifier.notified();
         let trade_entry = TradeEntry {
-            trade_id: 1,
+            id: uuid::Uuid::new_v4().to_string(),
             price: Decimal::new(-100, 1),
             qty: Decimal::new(100, 1),
             timestamp: 0,
@@ -850,7 +853,7 @@ mod tests {
                 vec![TfTrade {
                     symbol: symbol.clone(),
                     tf: 1,
-                    id: 1,
+                    id: uuid::Uuid::new_v4().to_string(),
                     timestamp: 124,
                     trades: vec![trade_entry.clone()],
                     min_trade_time: 0,
@@ -959,7 +962,7 @@ mod tests {
 
         let n = notifier.notified();
         let entry = TradeEntry {
-            trade_id: 1,
+            id: uuid::Uuid::new_v4().to_string(),
             price: dec!(11.0),
             qty: dec!(100.0),
             timestamp: 0,
@@ -972,7 +975,7 @@ mod tests {
                 vec![TfTrade {
                     symbol: symbol.clone(),
                     tf: 1,
-                    id: 1,
+                    id: uuid::Uuid::new_v4().to_string(),
                     timestamp: 124,
                     trades: vec![entry.clone()],
                     min_trade_time: 0,
@@ -1016,7 +1019,7 @@ mod tests {
         // Simulate a trade that triggers the stop-loss
         let n = notifier.notified();
         let entry = TradeEntry {
-            trade_id: 1,
+            id: uuid::Uuid::new_v4().to_string(),
             price: dec!(8.0),
             qty: dec!(100.0),
             timestamp: 0,
@@ -1029,7 +1032,7 @@ mod tests {
                 vec![TfTrade {
                     symbol: symbol.clone(),
                     tf: 1,
-                    id: 1,
+                    id: uuid::Uuid::new_v4().to_string(),
                     timestamp: 124,
                     trades: vec![entry.clone()],
                     min_trade_time: 0,
@@ -1092,7 +1095,7 @@ mod tests {
 
         let n = notifier.notified();
         let entry = TradeEntry {
-            trade_id: 1,
+            id: uuid::Uuid::new_v4().to_string(),
             price: dec!(11.0),
             qty: dec!(100.0),
             timestamp: 0,
@@ -1105,7 +1108,7 @@ mod tests {
                 vec![TfTrade {
                     symbol: symbol.clone(),
                     tf: 1,
-                    id: 1,
+                    id: uuid::Uuid::new_v4().to_string(),
                     timestamp: 124,
                     trades: vec![entry.clone()],
                     min_trade_time: 0,
@@ -1149,7 +1152,7 @@ mod tests {
         // Simulate a trade that triggers the stop-loss
         let n = notifier.notified();
         let entry = TradeEntry {
-            trade_id: 1,
+            id: uuid::Uuid::new_v4().to_string(),
             price: dec!(19.0),
             qty: dec!(100.0),
             timestamp: 0,
@@ -1162,7 +1165,7 @@ mod tests {
                 vec![TfTrade {
                     symbol: symbol.clone(),
                     tf: 1,
-                    id: 1,
+                    id: uuid::Uuid::new_v4().to_string(),
                     timestamp: 124,
                     trades: vec![entry.clone()],
                     min_trade_time: 0,
@@ -1266,7 +1269,7 @@ mod tests {
         n.await;
         let n = notifier.notified();
         let entry = TradeEntry {
-            trade_id: 1,
+            id: uuid::Uuid::new_v4().to_string(),
             price: dec!(9.0),
             qty: dec!(100.0),
             timestamp: 0,
@@ -1279,7 +1282,7 @@ mod tests {
                 vec![TfTrade {
                     symbol: symbol.clone(),
                     tf: 1,
-                    id: 1,
+                    id: uuid::Uuid::new_v4().to_string(),
                     timestamp: 124,
                     trades: vec![entry.clone()],
                     min_trade_time: 0,
@@ -1336,7 +1339,7 @@ mod tests {
         let notifier = Arc::new(Notify::new());
         let n = notifier.notified();
         let entry = TradeEntry {
-            trade_id: 1,
+            id: uuid::Uuid::new_v4().to_string(),
             price: dec!(10.0),
             qty: dec!(90.0),
             timestamp: 0,
@@ -1349,7 +1352,7 @@ mod tests {
                 vec![TfTrade {
                     symbol: symbol.clone(),
                     tf: 1,
-                    id: 1,
+                    id: uuid::Uuid::new_v4().to_string(),
                     timestamp: 124,
                     trades: vec![entry.clone()],
                     min_trade_time: 0,
@@ -1425,20 +1428,20 @@ mod tests {
         let notifier = Arc::new(Notify::new());
         let n = notifier.notified();
         let entry = TradeEntry {
-            trade_id: 1,
+            id: uuid::Uuid::new_v4().to_string(),
             price: dec!(10.0),
             qty: dec!(90.0),
             timestamp: 0,
             delta: dec!(0.0),
-            symbol: symbol.clone(),
+            symbol: symbol.symbol.clone(),
         };
         tf_trades_channel
             .0
             .broadcast((
                 vec![TfTrade {
-                    symbol: symbol.clone(),
+                    symbol: symbol.symbol.clone(),
                     tf: 1,
-                    id: 1,
+                    id: uuid::Uuid::new_v4().to_string(),
                     timestamp: 124,
                     trades: vec![entry.clone()],
                     min_trade_time: 0,

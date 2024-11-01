@@ -191,48 +191,45 @@ impl BackTester {
         }
 
         // preload tf_trades on another thread
-        let mut load_notifier = Arc::new(Notify::new());
         let mut tf_trades_que = Arc::new(Mutex::new(VecDeque::new()));
-        let load_window = 1000;
+        let load_window = 10000;
         let symbol = self.config.symbol.clone();
         let symbol1 = self.config.symbol.clone();
         let sqlite_client = sqlite_client.clone();
         let sqlite_client1 = sqlite_client.clone();
         let trades_q = tf_trades_que.clone();
-        let notifier = load_notifier.clone();
         let no_more_trades = Arc::new(AtomicBool::new(false));
         let no_more_trades1 = no_more_trades.clone();
         let verbose = self.global_config.verbose;
         let sm = Arc::new(strategy_manager.clone());
 
-        tokio::join!(
+        let (res1, res2, res3) = tokio::join!(
             tokio::spawn(async move {
                 if let Err(e) = EventSink::<Kline>::listen(sm) {
                     eprintln!("Error in Kline listener: {}", e);
                 }
             }),
             tokio::spawn(async move {
-                let mut tf_trade_steps = SQLiteClient::get_tf_trades_stream(
+                let mut tf_trade_steps = SQLiteClient::get_tf_trades_stream_new(
                     &sqlite_client.pool,
                     &symbol,
                     until.to_string(),
                 );
 
                 'loader: loop {
-                    let notified = notifier.notified();
-                    notified.await;
-                    for _ in 0..load_window {
-                        if let Some(Ok(trade)) = tf_trade_steps.next().await {
-                            let mut w = tf_trades_que.lock().await;
-                            w.push_back(trade);
-                            if w.len() > load_window {
-                                break;
-                            }
-                        } else {
-                            no_more_trades.store(true, Ordering::Relaxed);
-                            break 'loader;
+                    if let Some(Ok(trade)) = tf_trade_steps.next().await {
+                        let mut w = tf_trades_que.lock().await;
+                        if w.len() > load_window {
+                            drop(w);
+                            // tokio::time::sleep(Duration::from_millis(200)).await;
+                            break;
                         }
-                    }
+                        w.push_back(trade);
+
+                    } else {
+                        no_more_trades.store(true, Ordering::Relaxed);
+                        break 'loader;
+                }
 
                 }
             }),
@@ -286,15 +283,12 @@ impl BackTester {
                                 }
                             }
                         } else {
+                            drop(w);
                             if no_more_trades1.load(Ordering::Relaxed) {
                                 break 'i;
                             }
-                            load_notifier.notify_one();
 
                         }
-
-
-
                     }
                     if !verbose {
                             pb.inc(1);
@@ -302,7 +296,9 @@ impl BackTester {
                 }
             })
         );
-
+        res1.unwrap();
+        res2.unwrap();
+        res3.unwrap();
         info!("{} Backtest done", self.config.symbol.symbol);
         Ok(())
     }

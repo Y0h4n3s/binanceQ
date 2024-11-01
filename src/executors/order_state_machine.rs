@@ -70,7 +70,7 @@ impl<'a> OrderStateMachine<'a> {
 
     async fn process_market_order(&mut self, trade: &TradeEntry) {
         let mut lock = self.positions.lock().await;
-        let mut position = lock.get_mut(&self.order.symbol).unwrap();
+        let position = lock.get_mut(&self.order.symbol).unwrap();
         if let Some(trade) = position.apply_order(self.order, trade.timestamp) {
             broadcast(&self.trade_subscribers, trade).await;
         }
@@ -85,7 +85,7 @@ impl<'a> OrderStateMachine<'a> {
 
     async fn process_limit_order(&mut self, trade: &TradeEntry) {
         let mut lock = self.positions.lock().await;
-        let mut position = lock.get_mut(&self.order.symbol).unwrap();
+        let position = lock.get_mut(&self.order.symbol).unwrap();
         if self.order.side == Side::Bid {
             if trade.price.le(&self.order.price) {
                 if let Some(trade) = position.apply_order(self.order, trade.timestamp) {
