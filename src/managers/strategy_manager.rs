@@ -1,20 +1,23 @@
-use std::collections::VecDeque;
-use std::sync::Arc;
+use crate::events::EventSink;
+use crate::executors::ExchangeAccountInfo;
+use crate::managers::risk_manager::RiskManager;
+use crate::types::{ExecutionCommand, GlobalConfig, Kline, Order, OrderStatus};
 use async_broadcast::{InactiveReceiver, Receiver, Sender};
 use async_trait::async_trait;
 use futures::SinkExt;
 use rayon::prelude::IntoParallelRefIterator;
+use std::collections::VecDeque;
+use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, RwLock};
 use tracing::debug;
-use crate::events::EventSink;
-use crate::executors::{ ExchangeAccountInfo};
-use crate::managers::risk_manager::RiskManager;
-use crate::types::{ExecutionCommand, GlobalConfig, Kline, Order, OrderStatus};
-
 
 #[async_trait]
-pub trait SignalGenerator:  Send + Sync + 'static {
-    async fn handle_kline(&mut self, kline: &Kline, account: &Box<Arc<dyn ExchangeAccountInfo>>) -> Option<Vec<Order>>;
+pub trait SignalGenerator: Send + Sync + 'static {
+    async fn handle_kline(
+        &mut self,
+        kline: &Kline,
+        account: &Box<Arc<dyn ExchangeAccountInfo>>,
+    ) -> Option<Vec<Order>>;
 }
 #[derive(Clone)]
 pub struct StrategyManager<RiskManager: Send + Sync + 'static> {
@@ -26,15 +29,21 @@ pub struct StrategyManager<RiskManager: Send + Sync + 'static> {
     pub account: Box<Arc<dyn ExchangeAccountInfo>>,
 }
 
-impl<RiskManager:  Send + Sync + 'static> StrategyManager<RiskManager> {
-    pub fn new(global_config: GlobalConfig, command_subscribers: Sender<(OrderStatus, Option<Arc<Notify>>)>, account: Box<Arc<dyn ExchangeAccountInfo>>, klines: InactiveReceiver<(Kline, Option<Arc<Notify>>)>, risk_manager: RiskManager) -> Self {
+impl<RiskManager: Send + Sync + 'static> StrategyManager<RiskManager> {
+    pub fn new(
+        global_config: GlobalConfig,
+        command_subscribers: Sender<(OrderStatus, Option<Arc<Notify>>)>,
+        account: Box<Arc<dyn ExchangeAccountInfo>>,
+        klines: InactiveReceiver<(Kline, Option<Arc<Notify>>)>,
+        risk_manager: RiskManager,
+    ) -> Self {
         Self {
             global_config,
             command_subscribers: Arc::new(Mutex::new(command_subscribers)),
             strategies: Arc::new(Default::default()),
             klines,
             risk_manager,
-            account
+            account,
         }
     }
     pub async fn load_strategy(&mut self, strategy: Box<dyn SignalGenerator>) {
@@ -42,14 +51,16 @@ impl<RiskManager:  Send + Sync + 'static> StrategyManager<RiskManager> {
     }
 }
 
-
 #[async_trait]
-impl<RiskManager:  Send + Sync + 'static> EventSink<Kline> for StrategyManager<RiskManager> {
+impl<RiskManager: Send + Sync + 'static> EventSink<Kline> for StrategyManager<RiskManager> {
     fn get_receiver(&self) -> Receiver<(Kline, Option<Arc<Notify>>)> {
         self.klines.activate_cloned()
     }
     async fn name(&self) -> String {
-        format!("{}: StrategyManager Kline Sink", self.global_config.symbol.symbol)
+        format!(
+            "{}: StrategyManager Kline Sink",
+            self.global_config.symbol.symbol
+        )
     }
     async fn handle_event(&self, event_msg: Kline) -> anyhow::Result<()> {
         for mut strategy in self.strategies.lock().await.iter_mut() {
@@ -60,14 +71,13 @@ impl<RiskManager:  Send + Sync + 'static> EventSink<Kline> for StrategyManager<R
                     // should wait for in case risk management depends on open orders
                     let notify = Arc::new(Notify::new());
                     let notified = notify.notified();
-                    broadcast.broadcast((OrderStatus::Pending(order), Some(notify.clone()))).await?;
+                    broadcast
+                        .broadcast((OrderStatus::Pending(order), Some(notify.clone())))
+                        .await?;
                     notified.await;
-
                 }
             }
         }
         Ok(())
     }
-
-
 }

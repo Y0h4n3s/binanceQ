@@ -21,7 +21,6 @@ pub struct MongoClientSync {
     pub past_trades: mongodb::sync::Collection<Trade>,
 }
 
-
 impl MongoClientSync {
     pub fn new() -> Self {
         let mut mongodb_url = "mongodb://localhost:27017/binance-studies".to_string();
@@ -62,7 +61,6 @@ impl MongoClientSync {
             .unwrap();
     }
 }
-
 
 impl MongoClient {
     pub async fn new() -> Self {

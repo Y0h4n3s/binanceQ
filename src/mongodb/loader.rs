@@ -1,5 +1,5 @@
-use std::cmp::Ordering;
 use crate::events::EventEmitter;
+use crate::mongodb::client::MongoClientSync;
 use crate::mongodb::MongoClient;
 use crate::types::{AccessKey, GlobalConfig, Kline, TfTrade, TfTrades};
 use crate::types::{Symbol, TradeEntry};
@@ -13,24 +13,24 @@ use binance::futures::model::AggTrades::AllAggTrades;
 use binance::model::KlineSummaries::AllKlineSummaries;
 use chrono::prelude::*;
 use csv::StringRecord;
+use futures::stream::{self, StreamExt};
 use futures::TryStreamExt;
 use indicatif::ProgressBar;
 use mongodb::bson;
 use mongodb::bson::doc;
 use mongodb::options::{FindOneOptions, FindOptions, InsertManyOptions};
+use rayon::prelude::*;
 use rust_decimal::prelude::*;
 use serde::Deserialize;
-use std::io::{Read};
+use std::cmp::Ordering;
+use std::io::Read;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tempdir::TempDir;
 use tokio::sync::{Notify, RwLock};
 use tokio::task::JoinHandle;
-use futures::stream::{self, StreamExt};
-use tokio_retry::RetryIf;
 use tokio_retry::strategy::ExponentialBackoff;
-use rayon::prelude::*;
-use tempdir::TempDir;
+use tokio_retry::RetryIf;
 use tracing::{debug, error, info, warn};
-use crate::mongodb::client::MongoClientSync;
 
 pub fn to_tf_chunks(tf: u64, data: &Vec<TradeEntry>) -> Vec<&[TradeEntry]> {
     if data.len() <= 0 {
@@ -64,7 +64,7 @@ pub fn insert_trade_entries(
     tf: Arc<u64>,
 ) -> anyhow::Result<()> {
     if trades.is_empty() {
-        return Ok(())
+        return Ok(());
     }
     let mut entries = Vec::with_capacity(trades.len() - 1);
     for (i, t) in trades.iter().enumerate().skip(1) {
@@ -84,8 +84,28 @@ pub fn insert_trade_entries(
 
     let mut tf_trades = Vec::with_capacity(chunks.len());
     for chunk in chunks {
-        let min = chunk.iter().max_by(|x, y| if x.price > y.price {Ordering::Less} else {Ordering::Greater}).unwrap().clone();
-        let max = chunk.iter().max_by(|x, y|  if x.price > y.price {Ordering::Greater} else {Ordering::Less}).unwrap().clone();
+        let min = chunk
+            .iter()
+            .max_by(|x, y| {
+                if x.price > y.price {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            })
+            .unwrap()
+            .clone();
+        let max = chunk
+            .iter()
+            .max_by(|x, y| {
+                if x.price > y.price {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                }
+            })
+            .unwrap()
+            .clone();
 
         let tf_trade = TfTrade {
             symbol: symbol.clone(),
@@ -94,15 +114,22 @@ pub fn insert_trade_entries(
             timestamp: chunk[0].timestamp,
             trades: chunk.to_vec(),
             max_trade_time: max.timestamp,
-            min_trade_time: min.timestamp
+            min_trade_time: min.timestamp,
         };
         tf_trades.push(tf_trade);
     }
 
     for chunk in tf_trades.chunks(4000) {
-        client.tf_trades.insert_many(chunk, Some(InsertManyOptions::builder().ordered(false).bypass_document_validation(Some(true)).build()))?;
+        client.tf_trades.insert_many(
+            chunk,
+            Some(
+                InsertManyOptions::builder()
+                    .ordered(false)
+                    .bypass_document_validation(Some(true))
+                    .build(),
+            ),
+        )?;
     }
-
 
     Ok(())
 }
@@ -170,8 +197,7 @@ pub async fn load_klines_from_archive(
     fetch_history_span: i64,
     pb: ProgressBar,
     verbose: bool,
-)
-{
+) {
     let client = MongoClient::new().await;
     client
         .kline
@@ -212,20 +238,19 @@ pub async fn load_klines_from_archive(
                 let month_str = month.format("%Y-%m").to_string();
                 let url = format!(
                     "https://data.binance.vision/data/spot/monthly/klines/{}/{}/{}-{}-{}.zip",
-                    symbol.symbol,
-                    tf,
-                    symbol.symbol,
-                    tf,
-                    month_str
+                    symbol.symbol, tf, symbol.symbol, tf, month_str
                 );
                 if verbose {
                     debug!("[+] fetching {}", url);
                 }
                 let retry_strategy = ExponentialBackoff::from_millis(100).take(3);
 
-                let res = RetryIf::spawn(retry_strategy, || reqwest::get(&url), |e: &reqwest::Error| {
-                    e.is_connect() || e.is_timeout()
-                }).await;
+                let res = RetryIf::spawn(
+                    retry_strategy,
+                    || reqwest::get(&url),
+                    |e: &reqwest::Error| e.is_connect() || e.is_timeout(),
+                )
+                .await;
                 if let Ok(res) = res {
                     if !res.status().is_success() {
                         warn!("[-] Failed to fetch {}. Reason: {}", url, res.status());
@@ -239,17 +264,30 @@ pub async fn load_klines_from_archive(
                         archive
                             .by_index(0)
                             .unwrap()
-                            .read_to_string(&mut file_contents).expect("failed to read archive contents");
+                            .read_to_string(&mut file_contents)
+                            .expect("failed to read archive contents");
                         let mut reader = csv::Reader::from_reader(file_contents.as_bytes());
 
-                        reader.set_headers(
-                            StringRecord::from(vec!["open_time", "open", "high", "low", "close", "volume", "close_time", "quote_volume", "count", "taker_buy_volume", "taker_buy_quote_volume", "ignore"])
-                        );
+                        reader.set_headers(StringRecord::from(vec![
+                            "open_time",
+                            "open",
+                            "high",
+                            "low",
+                            "close",
+                            "volume",
+                            "close_time",
+                            "quote_volume",
+                            "count",
+                            "taker_buy_volume",
+                            "taker_buy_quote_volume",
+                            "ignore",
+                        ]));
                         let mut trades = vec![];
 
-                        for record in  reader
+                        for record in reader
                             .deserialize::<ArchiveKline>()
-                            .filter_map(|result| result.ok()) {
+                            .filter_map(|result| result.ok())
+                        {
                             let symbol: Symbol = (*symbol).clone();
                             let r = Kline {
                                 open_time: record.open_time,
@@ -284,7 +322,8 @@ pub async fn load_klines_from_archive(
                     pb.inc(1);
                 }
             }
-        }).buffer_unordered(concurrency_limit)
+        })
+        .buffer_unordered(concurrency_limit)
         .collect::<Vec<_>>()
         .await;
 }
@@ -295,7 +334,7 @@ pub fn load_history_from_archive(
     tf: u64,
     pb: ProgressBar,
     verbose: bool,
-)  {
+) {
     let client = MongoClientSync::new();
     client
         .trades
@@ -321,14 +360,12 @@ pub fn load_history_from_archive(
         (0..(12 * 20))
             .map(|i| today - chrono::Duration::weeks(4 * i))
             .collect::<Vec<_>>()
-    }
-    else {
+    } else {
         let span = ((fetch_history_span as f64) / (4.0 * 7.0 * 24.0 * 3600.0)).ceil() as i64;
         (0..span)
             .map(|i| today - chrono::Duration::weeks(4 * i))
             .collect::<Vec<_>>()
     };
-
 
     if !verbose {
         pb.inc_length(months.len() as u64);
@@ -341,18 +378,13 @@ pub fn load_history_from_archive(
         let month_str = month.format("%Y-%m").to_string();
         let url = format!(
             "https://data.binance.vision/data/spot/monthly/aggTrades/{}/{}-aggTrades-{}.zip",
-            symbol.symbol,
-            symbol.symbol,
-            month_str
+            symbol.symbol, symbol.symbol, month_str
         );
         if verbose {
-
             debug!("[+] fetching {}", url);
         }
-        if let Ok(res) = ripunzip::UnzipEngine::for_uri(&url, None, || {
-
-        }) {
-            if let Err(e) = res.unzip(ripunzip::UnzipOptions{
+        if let Ok(res) = ripunzip::UnzipEngine::for_uri(&url, None, || {}) {
+            if let Err(e) = res.unzip(ripunzip::UnzipOptions {
                 output_directory: Some(tmp_dir.path().to_path_buf()),
                 password: None,
                 single_threaded: false,
@@ -364,22 +396,29 @@ pub fn load_history_from_archive(
             }
 
             let tmp_dir = tmp_dir.path();
-            let file_name = format!("{}-aggTrades-{}.csv",
-                                    symbol.symbol,
-                                    month_str);
+            let file_name = format!("{}-aggTrades-{}.csv", symbol.symbol, month_str);
             let file_path = tmp_dir.join(file_name);
-
 
             let reader = csv::Reader::from_path(file_path.clone());
 
-            if let Ok( mut reader) = reader {
-
-                reader.set_headers(
-                    StringRecord::from(vec!["agg_trade_id", "price", "quantity", "first_trade_id", "last_trade_id", "transact_time", "is_buyer_maker", "was_best_price"])
-                );
-                let trades =  reader
+            if let Ok(mut reader) = reader {
+                reader.set_headers(StringRecord::from(vec![
+                    "agg_trade_id",
+                    "price",
+                    "quantity",
+                    "first_trade_id",
+                    "last_trade_id",
+                    "transact_time",
+                    "is_buyer_maker",
+                    "was_best_price",
+                ]));
+                let trades = reader
                     .deserialize::<ArchiveAggTrade>()
-                    .filter_map(|result| result.ok()).collect::<Vec<_>>().into_par_iter().map(AggTrade::from).collect::<Vec<_>>();
+                    .filter_map(|result| result.ok())
+                    .collect::<Vec<_>>()
+                    .into_par_iter()
+                    .map(AggTrade::from)
+                    .collect::<Vec<_>>();
 
                 drop(reader);
                 let symbol = Symbol {
@@ -392,18 +431,16 @@ pub fn load_history_from_archive(
                 if trades.is_empty() {
                     warn!("[-] No agg trades found");
                 } else {
-                    insert_trade_entries(&trades, &symbol, mongo_client.clone(), tf.clone()).expect("error inserting trade entries");
+                    insert_trade_entries(&trades, &symbol, mongo_client.clone(), tf.clone())
+                        .expect("error inserting trade entries");
                 }
-
             } else if verbose {
-
                 warn!("[-] failed to deserialize {}", file_path.display());
             }
             if !verbose {
                 pb.inc(1);
             }
         }
-
     });
 }
 #[derive(Deserialize)]
@@ -433,7 +470,12 @@ impl From<ArchiveAggTrade> for AggTrade {
 }
 
 // TODO: need to get recent history also for when we were loading
-pub async fn load_history(key: AccessKey, symbol: Symbol, fetch_history_span: u64, _zip_only: bool) {
+pub async fn load_history(
+    key: AccessKey,
+    symbol: Symbol,
+    fetch_history_span: u64,
+    _zip_only: bool,
+) {
     let market = FuturesMarket::new(Some(key.api_key.clone()), Some(key.secret_key.clone()));
     let span = fetch_history_span;
 
@@ -506,10 +548,12 @@ pub async fn start_loader(symbol: Symbol, tf1: u64) -> JoinHandle<()> {
                         if trades.len() <= 2 {
                             continue;
                         }
-                        if let Ok(_) =
-                            insert_trade_entries(&trades, &symbol, mongo_client.clone(), Arc::new(tf1))
-
-                        {
+                        if let Ok(_) = insert_trade_entries(
+                            &trades,
+                            &symbol,
+                            mongo_client.clone(),
+                            Arc::new(tf1),
+                        ) {
                             last_id = Some(trades.last().unwrap().agg_id + 1);
                             // println!("{}: {} {:?}", tf1, first_id.agg_id,  last_id.unwrap());
                         }
@@ -581,7 +625,7 @@ pub async fn start_kline_loader(symbol: Symbol, tf: String, _from: u64) -> JoinH
 }
 
 pub struct TfTradeEmitter {
-    subscribers: Arc<RwLock<Sender<(TfTrades,Option<Arc<Notify>>)>>>,
+    subscribers: Arc<RwLock<Sender<(TfTrades, Option<Arc<Notify>>)>>>,
     pub tf: u64,
     global_config: GlobalConfig,
 }
@@ -708,33 +752,39 @@ impl EventEmitter<TfTrades> for TfTradeEmitter {
                     .tf_trades
                     .find(
                         doc! {"tf": bson::to_bson(&tf).unwrap(), "timestamp": {
-                                "$gt": bson::to_bson(&last_timestamp).unwrap()
-                            }},
+                            "$gt": bson::to_bson(&last_timestamp).unwrap()
+                        }},
                         Some(FindOptions::builder().sort(doc! {"id": -1}).build()),
                     )
                     .await
                 {
                     let tf_trades = t.try_collect().await.unwrap_or_else(|_| vec![]);
-                    debug!("last_timestamp: {} trades_len: {}", last_timestamp, tf_trades.len());
+                    debug!(
+                        "last_timestamp: {} trades_len: {}",
+                        last_timestamp,
+                        tf_trades.len()
+                    );
                     let notify = Arc::new(Notify::new());
                     let sm_notifer = notify.notified();
                     last_timestamp = tf_trades.last().unwrap().trades.last().unwrap().timestamp;
 
-                    match subscribers.read().await.broadcast((tf_trades, Some(notify.clone()))).await {
+                    match subscribers
+                        .read()
+                        .await
+                        .broadcast((tf_trades, Some(notify.clone())))
+                        .await
+                    {
                         Ok(_) => {
                             sm_notifer.await;
-
                         }
                         Err(e) => {
                             error!("Error broadcasting tf trades {:?}", e)
                         }
                     }
                 } else {
-                    debug!("no trades last_timestamp: {} trades_len: ", last_timestamp, );
-
+                    debug!("no trades last_timestamp: {} trades_len: ", last_timestamp,);
                 }
             }
         }))
     }
 }
-

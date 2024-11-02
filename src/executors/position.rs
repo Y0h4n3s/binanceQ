@@ -54,13 +54,15 @@ impl Position {
             match order.side {
                 Side::Ask => {
                     if self.side == Side::Ask {
-                        self.avg_price = ((self.avg_price * self.qty) + (order.price * order.quantity)) / (order.quantity + self.qty);
+                        self.avg_price = ((self.avg_price * self.qty)
+                            + (order.price * order.quantity))
+                            / (order.quantity + self.qty);
                         self.qty += order.quantity;
                         self.quote_qty += order.quantity * order.price;
                         None
                     } else {
                         let realized_pnl = if order.quantity >= self.qty {
-                            ( order.price - prev_avg_price ) * self.qty
+                            (order.price - prev_avg_price) * self.qty
                         } else {
                             (order.price - prev_avg_price) * order.quantity
                         };
@@ -93,7 +95,9 @@ impl Position {
                 }
                 Side::Bid => {
                     if self.side == Side::Bid {
-                        self.avg_price = ((self.avg_price * self.qty) + (order.price * order.quantity)) / (order.quantity + self.qty);
+                        self.avg_price = ((self.avg_price * self.qty)
+                            + (order.price * order.quantity))
+                            / (order.quantity + self.qty);
 
                         self.qty += order.quantity;
                         self.quote_qty += order.quantity * order.price;
@@ -127,7 +131,6 @@ impl Position {
                             self.quote_qty = order.quantity * order.price - self.quote_qty;
                             self.side = Side::Bid;
                             self.avg_price = order.price;
-
                         }
                         Some(trade)
                     }
@@ -525,7 +528,7 @@ mod tests {
             symbol: symbol.clone(),
             side: Side::Ask,
             price: dec!(20),
-            quantity:dec!(2),
+            quantity: dec!(2),
             time: 1,
             order_type: OrderType::Limit,
             lifetime: 0,
@@ -554,7 +557,7 @@ mod tests {
 
     #[test]
     fn test_open_new_position() {
-                let symbol = Symbol {
+        let symbol = Symbol {
             symbol: "TST/USDT".to_string(),
             exchange: ExchangeId::Simulated,
             base_asset_precision: 1,
@@ -583,7 +586,7 @@ mod tests {
 
     #[test]
     fn test_increase_existing_position_same_side() {
-                let symbol = Symbol {
+        let symbol = Symbol {
             symbol: "TST/USDT".to_string(),
             exchange: ExchangeId::Simulated,
             base_asset_precision: 1,
@@ -836,7 +839,7 @@ mod tests {
 
         // Realized PnL for closing existing position
         assert_eq!(trade.realized_pnl, dec!(10000.0)); // (50000 - 45000) * 2
-        // Remaining position is long with qty = 1.0
+                                                       // Remaining position is long with qty = 1.0
         assert_eq!(position.qty, dec!(1.0));
         assert_eq!(position.side, Side::Bid);
         assert_eq!(position.avg_price, dec!(45000.0));

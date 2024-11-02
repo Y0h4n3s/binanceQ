@@ -6,8 +6,7 @@ use crate::events::{EventEmitter, EventSink};
 use crate::executors::{ExchangeAccount, ExchangeAccountInfo};
 use crate::managers::Manager;
 use crate::types::{
-    ClosePolicy, ExecutionCommand, GlobalConfig, Kline, Order, OrderStatus, OrderType, Side
-    , Trade,
+    ClosePolicy, ExecutionCommand, GlobalConfig, Kline, Order, OrderStatus, OrderType, Side, Trade,
 };
 use async_broadcast::{InactiveReceiver, Receiver, Sender};
 use async_trait::async_trait;
@@ -30,10 +29,6 @@ pub struct RiskManager {
     trades: InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
     subscribers: Arc<RwLock<Sender<(Order, Option<Arc<Notify>>)>>>,
 }
-
-
-
-
 
 #[async_trait]
 impl EventSink<Kline> for RiskManager {
@@ -68,13 +63,13 @@ impl EventSink<Kline> for RiskManager {
         //                             if handled_orders.iter().any(|x| x == &order.id) {
         //                                 continue;
         //                             }
-        // 
+        //
         //                             let for_orders =
         //                                 account.get_order(&global_config.symbol, &for_id).await;
         //                             let position =
         //                                 account.get_position(&global_config.symbol).await;
         //                             let mut oq = order_q.write().await;
-        // 
+        //
         //                             // if position is neutral and there are no limit orders with the same id
         //                             if !position.is_open()
         //                                 && o1
@@ -112,7 +107,7 @@ impl EventSink<Kline> for RiskManager {
         //                             match order.close_policy {
         //                                 ClosePolicy::ImmediateMarket => {
         //                                     // println!("Target/Stop order expired for order {} Handling with policy {:?} {:?}", for_id, order.close_policy, order.side);
-        // 
+        //
         //                                     // cancel the take profit or stop loss order
         //                                     oq.push_back(Order {
         //                                         id: for_id,
@@ -313,28 +308,27 @@ impl EventSink<Kline> for RiskManager {
         //                                         }
         //                                         handled_orders.push(order.id);
         //                                     }
-        // 
+        //
         //                                 },
         //                                 _ => {
         //                                     todo!()
         //                                 }
         //                             }
         //                         }
-        // 
+        //
         //                         _ => {}
         //                     }
         //                     return Ok(());
         //                 }
         //             }
-        // 
+        //
         //             _ => {}
-        // 
+        //
         //             _ => {}
         //         }
         //     }
-            Ok(())
+        Ok(())
     }
-
 }
 
 impl RiskManager {
@@ -377,31 +371,39 @@ impl RiskManager {
             match position.side {
                 Side::Bid => {
                     let mut oq = oq.write().await;
-                    oq.broadcast((Order {
-                        id: uuid::Uuid::new_v4(),
-                        symbol: self.global_config.symbol.clone(),
-                        side: Side::Ask,
-                        price: Default::default(),
-                        quantity: position.qty,
-                        time: 0,
-                        order_type: OrderType::Market,
-                        lifetime: 30 * 60 * 1000,
-                        close_policy: ClosePolicy::ImmediateMarket,
-                    }, None)).await;
+                    oq.broadcast((
+                        Order {
+                            id: uuid::Uuid::new_v4(),
+                            symbol: self.global_config.symbol.clone(),
+                            side: Side::Ask,
+                            price: Default::default(),
+                            quantity: position.qty,
+                            time: 0,
+                            order_type: OrderType::Market,
+                            lifetime: 30 * 60 * 1000,
+                            close_policy: ClosePolicy::ImmediateMarket,
+                        },
+                        None,
+                    ))
+                    .await;
                 }
                 Side::Ask => {
                     let mut oq = oq.write().await;
-                    oq.broadcast((Order {
-                        id: uuid::Uuid::new_v4(),
-                        symbol: self.global_config.symbol.clone(),
-                        side: Side::Bid,
-                        price: Default::default(),
-                        quantity: position.qty,
-                        time: 0,
-                        order_type: OrderType::Market,
-                        lifetime: 30 * 60 * 1000,
-                        close_policy: ClosePolicy::ImmediateMarket,
-                    }, None)).await;
+                    oq.broadcast((
+                        Order {
+                            id: uuid::Uuid::new_v4(),
+                            symbol: self.global_config.symbol.clone(),
+                            side: Side::Bid,
+                            price: Default::default(),
+                            quantity: position.qty,
+                            time: 0,
+                            order_type: OrderType::Market,
+                            lifetime: 30 * 60 * 1000,
+                            close_policy: ClosePolicy::ImmediateMarket,
+                        },
+                        None,
+                    ))
+                    .await;
                 }
             }
         }

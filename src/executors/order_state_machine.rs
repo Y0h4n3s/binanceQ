@@ -1,11 +1,10 @@
+use crate::executors::{broadcast, broadcast_and_wait, Position};
 /// This module defines the `OrderStateMachine` struct, which manages the state of an order.
 /// It processes different types of orders, such as market, limit, stop-loss, and take-profit orders.
-
 use crate::types::{Order, OrderStatus, OrderType, Side, Symbol, Trade, TradeEntry};
-use crate::executors::{broadcast, broadcast_and_wait, Position};
+use async_broadcast::Sender;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use async_broadcast::Sender;
 use tokio::sync::{Mutex, Notify, RwLock};
 use tracing::debug;
 use uuid::Uuid;
@@ -138,7 +137,10 @@ impl<'a> OrderStateMachine<'a> {
             self.open_orders.remove(self.index);
             broadcast_and_wait(
                 &self.order_status_subscribers,
-                OrderStatus::Canceled(self.order.clone(), "Stoploss on neutral position".to_string()),
+                OrderStatus::Canceled(
+                    self.order.clone(),
+                    "Stoploss on neutral position".to_string(),
+                ),
             )
             .await;
             return;
@@ -165,7 +167,6 @@ impl<'a> OrderStateMachine<'a> {
                 let lock = self.trade_subscribers.read().await;
                 drop(lock);
                 broadcast(&self.trade_subscribers, trade).await;
-
             }
         }
     }
@@ -177,7 +178,10 @@ impl<'a> OrderStateMachine<'a> {
             self.open_orders.remove(self.index);
             broadcast_and_wait(
                 &self.order_status_subscribers,
-                OrderStatus::Canceled(self.order.clone(), "Take profit on neutral position".to_string()),
+                OrderStatus::Canceled(
+                    self.order.clone(),
+                    "Take profit on neutral position".to_string(),
+                ),
             )
             .await;
             return;

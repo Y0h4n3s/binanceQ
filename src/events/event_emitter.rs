@@ -110,19 +110,15 @@ mod tests {
             "DummySink".to_string()
         }
 
-        async fn handle_event(
-            &self,
-            event_msg: DummyEvent,
-        ) -> anyhow::Result<()> {
+        async fn handle_event(&self, event_msg: DummyEvent) -> anyhow::Result<()> {
             let final_event = self.final_event.clone();
 
-                let mut f = final_event.write().await;
+            let mut f = final_event.write().await;
 
-                f.dummy_count = event_msg.dummy_count;
-                Ok(())
-                // println!("Fina?l event: {:?}", f.dummy_count);
+            f.dummy_count = event_msg.dummy_count;
+            Ok(())
+            // println!("Fina?l event: {:?}", f.dummy_count);
         }
-
     }
 
     #[async_trait]
@@ -134,10 +130,7 @@ mod tests {
             "DummySinkTwo".to_string()
         }
 
-        async fn handle_event(
-            &self,
-            event_msg: DummyEvent,
-        ) -> anyhow::Result<()> {
+        async fn handle_event(&self, event_msg: DummyEvent) -> anyhow::Result<()> {
             let final_event = self.final_event.clone();
             let mut f = final_event.write().await;
 
@@ -150,7 +143,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_events_throughput() -> anyhow::Result<()> {
-        let (sender, receiver) = async_broadcast::broadcast::<(DummyEvent, Option<Arc<Notify>>)>(100);
+        let (sender, receiver) =
+            async_broadcast::broadcast::<(DummyEvent, Option<Arc<Notify>>)>(100);
 
         let dummy_sink = Arc::new(DummySink::new(sender.new_receiver().deactivate()));
         let dummy_sink_two = Arc::new(DummySinkTwo::new(receiver.deactivate()));
@@ -159,7 +153,7 @@ mod tests {
         let mut emitter = DummyEmitter::new();
         emitter.subscribe(sender.clone()).await;
 
-        tokio::spawn(async move{
+        tokio::spawn(async move {
             dummy_sink.listen().unwrap();
             println!("Sink 1 done");
         });

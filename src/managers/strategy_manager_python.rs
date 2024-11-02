@@ -193,7 +193,7 @@ impl SignalGenerator for SignalGeneratorService {
         //             | OrderType::StopLossTrailing(id, _) => {
         //                 for_id = id.to_string();
         //             }
-        // 
+        //
         //             _ => {}
         //         }
         //         let p_order = POrder {
@@ -269,35 +269,35 @@ impl EventSink<Kline> for StrategyManagerPython {
     }
     async fn handle_event(&self, event_msg: Kline) -> anyhow::Result<()> {
         let sock = self.backtest_sock.clone();
-            // TODO: make sure socket is open
+        // TODO: make sure socket is open
 
-            // this is only run during backtest mode,
-            // send the kline over to python via socket and wait for any signals
-            let mut socket = sock.write().await;
-            let mut serialized = vec![];
-            serde_pickle::to_writer(&mut serialized, &event_msg, Default::default())?;
-            match socket.write(serialized.as_slice()).await {
-                Ok(_) => {
-                    // wait for confirmation
-                    // stop after 2 seconds if no confirmation
-                    select! {
-                        _ = tokio::time::sleep(Duration::from_secs(2)) => {
+        // this is only run during backtest mode,
+        // send the kline over to python via socket and wait for any signals
+        let mut socket = sock.write().await;
+        let mut serialized = vec![];
+        serde_pickle::to_writer(&mut serialized, &event_msg, Default::default())?;
+        match socket.write(serialized.as_slice()).await {
+            Ok(_) => {
+                // wait for confirmation
+                // stop after 2 seconds if no confirmation
+                select! {
+                    _ = tokio::time::sleep(Duration::from_secs(2)) => {
+                        Ok(())
+                    }
+                    _ = socket.readable() => {
+                        let mut buf = [0; 1024];
+                        let n = socket.read(&mut buf).await?;
+                        let response = serde_pickle::from_slice::<SocketMessage>(&buf[..n], DeOptions::default())?;
+                        if &response.msg == "OK" {
                             Ok(())
-                        }
-                        _ = socket.readable() => {
-                            let mut buf = [0; 1024];
-                            let n = socket.read(&mut buf).await?;
-                            let response = serde_pickle::from_slice::<SocketMessage>(&buf[..n], DeOptions::default())?;
-                            if &response.msg == "OK" {
-                                Ok(())
-                            } else {
-                                Err(Error::msg("Invalid confirmation received from backtest"))
-                            }
+                        } else {
+                            Err(Error::msg("Invalid confirmation received from backtest"))
                         }
                     }
                 }
-                Err(e) => Err(Error::new(e)),
             }
+            Err(e) => Err(Error::new(e)),
+        }
     }
 }
 

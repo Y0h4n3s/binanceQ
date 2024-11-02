@@ -23,7 +23,7 @@ use tokio_retry::strategy::ExponentialBackoff;
 use tokio_retry::RetryIf;
 use tracing::{debug, error, info, warn};
 
-pub fn insert_trade_entries(
+fn insert_trade_entries(
     trades: Vec<ArchiveAggTrade>,
     symbol: &Symbol,
     client: Arc<std::sync::Mutex<SQLiteClient>>,
@@ -513,56 +513,58 @@ pub async fn load_history_from_archive(
                 threads.push(tokio::spawn(async move {
                     let permit = semaphore.acquire().await;
                     if let Err(e) = permit {
-                        error!("Failed to get permit while extracting {}: {}", symbol.symbol, e);
-                    }
-                    else if let Ok(permit) = permit {
+                        error!(
+                            "Failed to get permit while extracting {}: {}",
+                            symbol.symbol, e
+                        );
+                    } else if let Ok(permit) = permit {
                         let start_time = Instant::now();
                         let file_name = format!("{}-aggTrades-{}.csv", symbol.symbol, month_str);
                         let file_path = path.join(file_name);
                         let mut rdr = csv::ReaderBuilder::new();
-                        rdr
-        .has_headers(false);
+                        rdr.has_headers(false);
                         let buf_reader = BufReader::new(File::open(file_path).unwrap());
                         let mut reader = rdr.from_reader(buf_reader);
 
-                            reader.set_headers(StringRecord::from(vec![
-                                "agg_trade_id",
-                                "price",
-                                "quantity",
-                                "first_trade_id",
-                                "last_trade_id",
-                                "transact_time",
-                                "is_buyer_maker",
-                                "was_best_price",
-                            ]));
+                        reader.set_headers(StringRecord::from(vec![
+                            "agg_trade_id",
+                            "price",
+                            "quantity",
+                            "first_trade_id",
+                            "last_trade_id",
+                            "transact_time",
+                            "is_buyer_maker",
+                            "was_best_price",
+                        ]));
 
-                            // let mut raw_record = csv::ByteRecord::new();
-                            // let headers = reader.byte_headers().unwrap().clone();
-                            //
-                            // let mut trades = vec![];
-                            // while let Ok(_) =  reader.read_byte_record(&mut raw_record) {
-                            //     if let Ok(record) = raw_record.deserialize::<ArchiveAggTrade>(Some(&headers)) {
-                            //      trades.push(record);
-                            //
-                            //     }
-                            // }
-                        let trades =  reader
-                    .deserialize::<ArchiveAggTrade>()
-                    .filter_map(|result| result.ok()).collect::<Vec<_>>();
-                            drop(reader);
-                            let symbol = Symbol {
-                                symbol: symbol.symbol.clone(),
-                                exchange: symbol.exchange.clone(),
-                                base_asset_precision: symbol.base_asset_precision,
-                                quote_asset_precision: symbol.quote_asset_precision,
-                            };
+                        // let mut raw_record = csv::ByteRecord::new();
+                        // let headers = reader.byte_headers().unwrap().clone();
+                        //
+                        // let mut trades = vec![];
+                        // while let Ok(_) =  reader.read_byte_record(&mut raw_record) {
+                        //     if let Ok(record) = raw_record.deserialize::<ArchiveAggTrade>(Some(&headers)) {
+                        //      trades.push(record);
+                        //
+                        //     }
+                        // }
+                        let trades = reader
+                            .deserialize::<ArchiveAggTrade>()
+                            .filter_map(|result| result.ok())
+                            .collect::<Vec<_>>();
+                        drop(reader);
+                        let symbol = Symbol {
+                            symbol: symbol.symbol.clone(),
+                            exchange: symbol.exchange.clone(),
+                            base_asset_precision: symbol.base_asset_precision,
+                            quote_asset_precision: symbol.quote_asset_precision,
+                        };
 
-                            if trades.is_empty() {
-                                warn!("[-] No agg trades found");
-                            } else {
-                                insert_trade_entries(trades, &symbol, sqlite_client.clone())
-                                    .expect("error inserting trade entries");
-                            }
+                        if trades.is_empty() {
+                            warn!("[-] No agg trades found");
+                        } else {
+                            insert_trade_entries(trades, &symbol, sqlite_client.clone())
+                                .expect("error inserting trade entries");
+                        }
 
                         if !verbose {
                             pb.inc(1);
@@ -579,10 +581,9 @@ pub async fn load_history_from_archive(
             wait_channel.0.send(1).await.unwrap();
         })
     );
-
 }
 #[derive(Deserialize)]
-struct ArchiveAggTrade {
+pub(crate) struct ArchiveAggTrade {
     agg_trade_id: u64,
     price: f64,
     quantity: f64,

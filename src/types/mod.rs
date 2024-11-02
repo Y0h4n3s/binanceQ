@@ -1,9 +1,9 @@
-use std::cmp::Ordering;
-use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
-use std::hash::{Hash, Hasher};
 use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
+use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
+use std::hash::{Hash, Hasher};
 use uuid::Uuid;
 use yata::core::{ValueType, OHLCV};
 pub type TfTrades = Vec<TfTrade>;
@@ -290,19 +290,18 @@ pub enum OrderStatus {
 impl OrderStatus {
     pub fn order(&self) -> Order {
         match self {
-            OrderStatus::Pending(o) |
-            OrderStatus::Filled(o) |
-            OrderStatus::PartiallyFilled(o, _) |
-            OrderStatus::Canceled(o, _)  => {
-                o.clone()
-            }
+            OrderStatus::Pending(o)
+            | OrderStatus::Filled(o)
+            | OrderStatus::PartiallyFilled(o, _)
+            | OrderStatus::Canceled(o, _) => o.clone(),
         }
     }
 }
 
 impl PartialOrd<Self> for Order {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))                                                                                                                                                    }
+        Some(self.cmp(other))
+    }
 }
 
 impl Ord for Order {

@@ -174,7 +174,6 @@ impl BackTester {
             .unwrap_or(0);
         info!("{} Loading Data...", self.config.symbol.symbol);
 
-
         let count: u64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM klines WHERE symbol = ? AND close_time > ?")
                 .bind(&self.config.symbol.symbol)
@@ -225,20 +224,18 @@ impl BackTester {
                             break;
                         }
                         w.push_back(trade);
-
                     } else {
                         no_more_trades.store(true, Ordering::Relaxed);
                         break 'loader;
-                }
-
+                    }
                 }
             }),
             tokio::spawn(async move {
-                        let mut klines = SQLiteClient::get_kline_stream(
-                        &sqlite_client1.pool,
-                        symbol1.clone(),
-                        until.to_string(),
-                    );
+                let mut klines = SQLiteClient::get_kline_stream(
+                    &sqlite_client1.pool,
+                    symbol1.clone(),
+                    until.to_string(),
+                );
                 while let Some(Ok(kline)) = klines.next().await {
                     'i: loop {
                         let mut w = trades_q.lock().await;
@@ -287,12 +284,11 @@ impl BackTester {
                             if no_more_trades1.load(Ordering::Relaxed) {
                                 break 'i;
                             }
-
                         }
                     }
                     if !verbose {
-                            pb.inc(1);
-                        }
+                        pb.inc(1);
+                    }
                 }
             })
         );

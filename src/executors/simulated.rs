@@ -1,32 +1,35 @@
+use crate::db::client::SQLiteClient;
 /// This module implements a simulated trading account that processes trades and orders.
 /// It uses the `EventSink` trait to handle incoming trade and order events.
-
 use crate::events::EventSink;
-use crate::executors::{broadcast, broadcast_and_wait, ExchangeAccount, ExchangeAccountInfo, Position, Spread, TradeExecutor};
+use crate::executors::order_state_machine::OrderStateMachine;
+use crate::executors::{
+    broadcast, broadcast_and_wait, ExchangeAccount, ExchangeAccountInfo, Position, Spread,
+    TradeExecutor,
+};
 use crate::mongodb::MongoClient;
-use crate::types::{ExchangeId, Order, OrderStatus, OrderType, Side, Symbol, SymbolAccount, TfTrades, Trade, TradeEntry};
+use crate::types::{
+    ExchangeId, Order, OrderStatus, OrderType, Side, Symbol, SymbolAccount, TfTrades, Trade,
+    TradeEntry,
+};
 use async_broadcast::{InactiveReceiver, Receiver, Sender};
 use async_trait::async_trait;
 use dashmap::{DashMap, DashSet};
+use rayon::prelude::*;
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
 use std::sync::Arc;
-use rayon::prelude::*;
 use tokio::sync::{Mutex, Notify, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, trace};
 use uuid::Uuid;
-use crate::db::client::SQLiteClient;
-use crate::executors::order_state_machine::OrderStateMachine;
 
 // can't use dashmap because of https://github.com/xacrimon/dashmap/issues/79
 type ArcMap<K, V> = Arc<Mutex<HashMap<K, V>>>;
 type ArcSet<T> = Arc<Mutex<HashSet<T>>>;
-
-
 
 #[derive(Clone)]
 /// Represents a simulated trading account, which manages positions, orders, and trades.
@@ -58,7 +61,7 @@ impl SimulatedAccount {
         symbols: Vec<Symbol>,
         order_status_subscribers: Sender<(OrderStatus, Option<Arc<Notify>>)>,
         trade_subscribers: Sender<(Trade, Option<Arc<Notify>>)>,
-        sqlite_client: Arc<SQLiteClient>
+        sqlite_client: Arc<SQLiteClient>,
     ) -> Self {
         let symbol_accounts = Arc::new(Mutex::new(HashMap::new()));
         let open_orders = Arc::new(Mutex::new(HashMap::new()));
@@ -79,15 +82,30 @@ impl SimulatedAccount {
             };
             let position = Position::new(Side::Ask, symbol.clone(), Decimal::ZERO, Decimal::ZERO);
             let spread = Spread::new(symbol.clone());
-            symbol_accounts.lock().await.insert(symbol.clone(), symbol_account);
-            open_orders.lock().await.insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
+            symbol_accounts
+                .lock()
+                .await
+                .insert(symbol.clone(), symbol_account);
+            open_orders
+                .lock()
+                .await
+                .insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
             #[cfg(test)]
             {
-                order_history.lock().await.insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
-                trade_history.lock().await.insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
+                order_history
+                    .lock()
+                    .await
+                    .insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
+                trade_history
+                    .lock()
+                    .await
+                    .insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
             }
             positions.lock().await.insert(symbol.clone(), position);
-            spreads.lock().await.insert(symbol.clone(), Arc::new(RwLock::new(spread)));
+            spreads
+                .lock()
+                .await
+                .insert(symbol.clone(), Arc::new(RwLock::new(spread)));
         }
         Self {
             symbol_accounts,
@@ -107,7 +125,6 @@ impl SimulatedAccount {
         }
     }
 }
-
 
 #[async_trait]
 impl EventSink<TfTrades> for SimulatedAccount {
@@ -144,7 +161,14 @@ impl EventSink<TfTrades> for SimulatedAccount {
         // if any open orders are fillable move them to filled orders and update position and push a trade event to trade queue if it is a order opposite to position
         for tf_trade in event_msg {
             let symbol = tf_trade.symbol.clone();
-            let mut open_orders = open_orders.lock().await.get(&symbol).unwrap().lock().await.clone();
+            let mut open_orders = open_orders
+                .lock()
+                .await
+                .get(&symbol)
+                .unwrap()
+                .lock()
+                .await
+                .clone();
 
             if open_orders.is_empty() {
                 continue;
@@ -156,7 +180,6 @@ impl EventSink<TfTrades> for SimulatedAccount {
                 let len = oo.len();
 
                 for (index, mut order) in oo.clone().into_iter().enumerate() {
-
                     let mut state_machine = OrderStateMachine::new(
                         &mut order,
                         // account for orders removed on previous iterations
@@ -190,7 +213,14 @@ impl EventSink<Trade> for SimulatedAccount {
     async fn handle_event(&self, event_msg: Trade) -> anyhow::Result<()> {
         let sqlite_client = &self.sqlite_client;
         #[cfg(test)]
-        self.trade_history.lock().await.get(&event_msg.symbol).unwrap().lock().await.insert(event_msg.clone());
+        self.trade_history
+            .lock()
+            .await
+            .get(&event_msg.symbol)
+            .unwrap()
+            .lock()
+            .await
+            .insert(event_msg.clone());
         SQLiteClient::insert_trade(&sqlite_client.pool, event_msg).await;
         Ok(())
     }
@@ -209,14 +239,22 @@ impl EventSink<OrderStatus> for SimulatedAccount {
         let open_orders = self.open_orders.clone();
         #[cfg(test)]
         {
-            if let Some(orders) = self.order_history.lock().await.get(&event_msg.order().symbol) {
+            if let Some(orders) = self
+                .order_history
+                .lock()
+                .await
+                .get(&event_msg.order().symbol)
+            {
                 let mut lock = orders.lock().await;
                 lock.insert(event_msg.clone());
             } else {
                 let mut new_set = Arc::new(Mutex::new(HashSet::new()));
                 new_set.lock().await.insert(event_msg.clone());
 
-                self.order_history.lock().await.insert(event_msg.order().symbol.clone(), new_set);
+                self.order_history
+                    .lock()
+                    .await
+                    .insert(event_msg.order().symbol.clone(), new_set);
             }
         }
         match &event_msg {
@@ -228,9 +266,11 @@ impl EventSink<OrderStatus> for SimulatedAccount {
                 } else {
                     let mut new_set = Arc::new(Mutex::new(HashSet::new()));
                     new_set.lock().await.insert(order.clone());
-                    open_orders.lock().await.insert(order.symbol.clone(), new_set);
+                    open_orders
+                        .lock()
+                        .await
+                        .insert(order.symbol.clone(), new_set);
                 }
-
             }
             // valid types are limit
             OrderStatus::PartiallyFilled(order, delta) => {
@@ -246,9 +286,15 @@ impl EventSink<OrderStatus> for SimulatedAccount {
                         lock.insert(OrderStatus::Filled(order.clone()));
                     } else {
                         let mut new_set = Arc::new(Mutex::new(HashSet::new()));
-                        new_set.lock().await.insert(OrderStatus::Filled(order.clone()));
+                        new_set
+                            .lock()
+                            .await
+                            .insert(OrderStatus::Filled(order.clone()));
 
-                        self.order_history.lock().await.insert(order.symbol.clone(), new_set);
+                        self.order_history
+                            .lock()
+                            .await
+                            .insert(order.symbol.clone(), new_set);
                     }
                 }
                 trace!(
@@ -263,7 +309,10 @@ impl EventSink<OrderStatus> for SimulatedAccount {
                 } else {
                     let mut new_set = Arc::new(Mutex::new(HashSet::new()));
                     new_set.lock().await.insert(order.clone());
-                    open_orders.lock().await.insert(order.symbol.clone(), new_set);
+                    open_orders
+                        .lock()
+                        .await
+                        .insert(order.symbol.clone(), new_set);
                 }
             }
             // remove from order set
@@ -273,7 +322,6 @@ impl EventSink<OrderStatus> for SimulatedAccount {
                     SQLiteClient::insert_order(&self.sqlite_client.pool, order.clone()).await;
 
                     orders.lock().await.remove(order);
-
                 }
             }
             // log reason and remove
@@ -299,16 +347,39 @@ impl ExchangeAccountInfo for SimulatedAccount {
     }
 
     async fn get_open_orders(&self, symbol: &Symbol) -> Arc<HashSet<Order>> {
-        Arc::new(self.open_orders.lock().await.get(symbol).unwrap().lock().await.clone())
+        Arc::new(
+            self.open_orders
+                .lock()
+                .await
+                .get(symbol)
+                .unwrap()
+                .lock()
+                .await
+                .clone(),
+        )
     }
 
     async fn get_symbol_account(&self, symbol: &Symbol) -> SymbolAccount {
-        self.symbol_accounts.lock().await.get(symbol).unwrap().clone()
+        self.symbol_accounts
+            .lock()
+            .await
+            .get(symbol)
+            .unwrap()
+            .clone()
     }
 
     #[cfg(test)]
     async fn get_past_trades(&self, symbol: &Symbol, length: Option<usize>) -> Arc<HashSet<Trade>> {
-            Arc::new(self.trade_history.lock().await.get(symbol).unwrap().lock().await.clone())
+        Arc::new(
+            self.trade_history
+                .lock()
+                .await
+                .get(symbol)
+                .unwrap()
+                .lock()
+                .await
+                .clone(),
+        )
     }
 
     async fn get_position(&self, symbol: &Symbol) -> Arc<Position> {
@@ -328,13 +399,12 @@ impl ExchangeAccountInfo for SimulatedAccount {
     async fn get_order(&self, symbol: &Symbol, id: &Uuid) -> Vec<Order> {
         let order_history = self.order_history.lock().await.get(symbol).unwrap().clone();
         let mut res = vec![];
-        order_history
-            .lock().await.iter().for_each(|o|{
+        order_history.lock().await.iter().for_each(|o| {
             let or = o.order();
-                    if &or.id == id {
-                        res.push(or.clone())
-                    }
-                });
+            if &or.id == id {
+                res.push(or.clone())
+            }
+        });
         res
     }
 }
@@ -373,11 +443,22 @@ mod tests {
     };
     use rust_decimal::Decimal;
 
-    async fn setup_simulated_account(symbol: Symbol) -> (
+    async fn setup_simulated_account(
+        symbol: Symbol,
+    ) -> (
         Arc<SimulatedAccount>,
-        (Sender<(TfTrades, Option<Arc<Notify>>)>, InactiveReceiver<(TfTrades, Option<Arc<Notify>>)>),
-        (Sender<(Trade, Option<Arc<Notify>>)>, InactiveReceiver<(Trade, Option<Arc<Notify>>)>),
-        (Sender<(OrderStatus, Option<Arc<Notify>>)>, InactiveReceiver<(OrderStatus, Option<Arc<Notify>>)>),
+        (
+            Sender<(TfTrades, Option<Arc<Notify>>)>,
+            InactiveReceiver<(TfTrades, Option<Arc<Notify>>)>,
+        ),
+        (
+            Sender<(Trade, Option<Arc<Notify>>)>,
+            InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
+        ),
+        (
+            Sender<(OrderStatus, Option<Arc<Notify>>)>,
+            InactiveReceiver<(OrderStatus, Option<Arc<Notify>>)>,
+        ),
     ) {
         let tf_trades_channel = async_broadcast::broadcast(100);
         let trades_channel = async_broadcast::broadcast(100);
@@ -417,7 +498,7 @@ mod tests {
             simulated_account,
             (tf_trades_channel.0, tf),
             (trades_channel.0, t),
-            (order_statuses_channel.0, os)
+            (order_statuses_channel.0, os),
         )
     }
 
@@ -450,7 +531,10 @@ mod tests {
         let n = notifier.notified();
         order_statuses_channel
             .0
-            .broadcast((OrderStatus::Pending(market_order.clone()), Some(notifier.clone())))
+            .broadcast((
+                OrderStatus::Pending(market_order.clone()),
+                Some(notifier.clone()),
+            ))
             .await
             .unwrap();
         n.await;
@@ -472,7 +556,10 @@ mod tests {
         let n = notifier.notified();
         order_statuses_channel
             .0
-            .broadcast((OrderStatus::Pending(stop_loss_order.clone()), Some(notifier.clone())))
+            .broadcast((
+                OrderStatus::Pending(stop_loss_order.clone()),
+                Some(notifier.clone()),
+            ))
             .await
             .unwrap();
         n.await;
@@ -494,7 +581,10 @@ mod tests {
         let n = notifier.notified();
         order_statuses_channel
             .0
-            .broadcast((OrderStatus::Pending(take_profit_order.clone()), Some(notifier.clone())))
+            .broadcast((
+                OrderStatus::Pending(take_profit_order.clone()),
+                Some(notifier.clone()),
+            ))
             .await
             .unwrap();
         n.await;
@@ -502,7 +592,7 @@ mod tests {
         // Simulate a trade that hits the stop-loss
         let n = notifier.notified();
         let trade_entry = TradeEntry {
-            id: 1,
+            id: uuid::Uuid::new_v4().to_string(),
             price: Decimal::new(85, 1), // Price below stop-loss
             qty: Decimal::new(100, 1),
             timestamp: 0,
@@ -515,7 +605,7 @@ mod tests {
                 vec![TfTrade {
                     symbol: symbol.clone(),
                     tf: 1,
-                    id: 1,
+                    id: uuid::Uuid::new_v4().to_string(),
                     timestamp: 124,
                     trades: vec![trade_entry.clone()],
                     min_trade_time: 0,
@@ -532,15 +622,24 @@ mod tests {
 
         // Check if stop-loss is executed and take-profit is removed
         let open_orders = simulated_account.get_open_orders(&symbol).await;
-        assert!(open_orders.is_empty(), "Open orders should be empty after stop-loss is hit");
+        assert!(
+            open_orders.is_empty(),
+            "Open orders should be empty after stop-loss is hit"
+        );
 
         let position = simulated_account.get_position(&symbol).await;
-        assert!(!position.is_open(), "Position should be closed after stop-loss is hit");
+        assert!(
+            !position.is_open(),
+            "Position should be closed after stop-loss is hit"
+        );
 
         // Check trade history for negative realized PnL
         let trade_history = simulated_account.get_past_trades(&symbol, None).await;
         let trade = trade_history.iter().next().unwrap();
-        assert!(trade.realized_pnl < Decimal::ZERO, "Realized PnL should be negative");
+        assert!(
+            trade.realized_pnl < Decimal::ZERO,
+            "Realized PnL should be negative"
+        );
 
         Ok(())
     }
@@ -573,7 +672,10 @@ mod tests {
         let n = notifier.notified();
         order_statuses_channel
             .0
-            .broadcast((OrderStatus::Pending(market_order_1.clone()), Some(notifier.clone())))
+            .broadcast((
+                OrderStatus::Pending(market_order_1.clone()),
+                Some(notifier.clone()),
+            ))
             .await
             .unwrap();
         n.await;
@@ -595,7 +697,10 @@ mod tests {
         let n = notifier.notified();
         order_statuses_channel
             .0
-            .broadcast((OrderStatus::Pending(stop_loss_order_1.clone()), Some(notifier.clone())))
+            .broadcast((
+                OrderStatus::Pending(stop_loss_order_1.clone()),
+                Some(notifier.clone()),
+            ))
             .await
             .unwrap();
         n.await;
@@ -617,7 +722,10 @@ mod tests {
         let n = notifier.notified();
         order_statuses_channel
             .0
-            .broadcast((OrderStatus::Pending(take_profit_order_1.clone()), Some(notifier.clone())))
+            .broadcast((
+                OrderStatus::Pending(take_profit_order_1.clone()),
+                Some(notifier.clone()),
+            ))
             .await
             .unwrap();
         n.await;
@@ -667,7 +775,10 @@ mod tests {
         let n = notifier.notified();
         order_statuses_channel
             .0
-            .broadcast((OrderStatus::Pending(market_order_2.clone()), Some(notifier.clone())))
+            .broadcast((
+                OrderStatus::Pending(market_order_2.clone()),
+                Some(notifier.clone()),
+            ))
             .await
             .unwrap();
         n.await;
@@ -689,7 +800,10 @@ mod tests {
         let n = notifier.notified();
         order_statuses_channel
             .0
-            .broadcast((OrderStatus::Pending(stop_loss_order_2.clone()), Some(notifier.clone())))
+            .broadcast((
+                OrderStatus::Pending(stop_loss_order_2.clone()),
+                Some(notifier.clone()),
+            ))
             .await
             .unwrap();
         n.await;
@@ -711,7 +825,10 @@ mod tests {
         let n = notifier.notified();
         order_statuses_channel
             .0
-            .broadcast((OrderStatus::Pending(take_profit_order_2.clone()), Some(notifier.clone())))
+            .broadcast((
+                OrderStatus::Pending(take_profit_order_2.clone()),
+                Some(notifier.clone()),
+            ))
             .await
             .unwrap();
         n.await;
@@ -719,12 +836,12 @@ mod tests {
         // Simulate a trade that hits the take-profit of the second order
         let n = notifier.notified();
         let trade_entry_2 = TradeEntry {
-            id: 2,
+            id: uuid::Uuid::new_v4().to_string(),
             price: Decimal::new(120, 1), // Price above take-profit
             qty: Decimal::new(100, 1),
             timestamp: 0,
             delta: Decimal::new(0, 0),
-            symbol: symbol.clone(),
+            symbol: symbol.symbol.clone(),
         };
         tf_trades_channel
             .0
@@ -732,7 +849,7 @@ mod tests {
                 vec![TfTrade {
                     symbol: symbol.clone(),
                     tf: 1,
-                    id: 2,
+                    id: uuid::Uuid::new_v4().to_string(),
                     timestamp: 126,
                     trades: vec![trade_entry_2.clone()],
                     min_trade_time: 0,
@@ -751,7 +868,10 @@ mod tests {
         // Check trade history for positive realized PnL
         let trade_history = simulated_account.get_past_trades(&symbol, None).await;
         let trade = trade_history.iter().next().unwrap();
-        assert!(trade.realized_pnl > Decimal::ZERO, "Realized PnL should be positive");
+        assert!(
+            trade.realized_pnl > Decimal::ZERO,
+            "Realized PnL should be positive"
+        );
 
         Ok(())
     }
@@ -763,7 +883,8 @@ mod tests {
             base_asset_precision: 1,
             quote_asset_precision: 2,
         };
-        let (simulated_account, tf_trades_channel, _, _) = setup_simulated_account(symbol.clone()).await;
+        let (simulated_account, tf_trades_channel, _, _) =
+            setup_simulated_account(symbol.clone()).await;
 
         // Simulate an empty trade list
         let notifier = Arc::new(Notify::new());
@@ -776,7 +897,10 @@ mod tests {
         n.await;
 
         let open_orders = simulated_account.get_open_orders(&symbol).await;
-        assert!(open_orders.is_empty(), "Open orders should remain unchanged with empty trade list");
+        assert!(
+            open_orders.is_empty(),
+            "Open orders should remain unchanged with empty trade list"
+        );
 
         Ok(())
     }
@@ -789,7 +913,8 @@ mod tests {
             base_asset_precision: 1,
             quote_asset_precision: 2,
         };
-        let (simulated_account, tf_trades_channel, _, _) = setup_simulated_account(symbol.clone()).await;
+        let (simulated_account, tf_trades_channel, _, _) =
+            setup_simulated_account(symbol.clone()).await;
 
         // Simulate a trade with zero quantity
         let notifier = Arc::new(Notify::new());
@@ -800,7 +925,7 @@ mod tests {
             qty: Decimal::ZERO,
             timestamp: 0,
             delta: Decimal::ZERO,
-            symbol: symbol.clone(),
+            symbol: symbol.symbol.clone(),
         };
         tf_trades_channel
             .0
@@ -821,7 +946,10 @@ mod tests {
         n.await;
 
         let open_orders = simulated_account.get_open_orders(&symbol).await;
-        assert!(open_orders.is_empty(), "Open orders should remain unchanged with zero quantity trade");
+        assert!(
+            open_orders.is_empty(),
+            "Open orders should remain unchanged with zero quantity trade"
+        );
 
         Ok(())
     }
@@ -834,7 +962,8 @@ mod tests {
             base_asset_precision: 1,
             quote_asset_precision: 2,
         };
-        let (simulated_account, tf_trades_channel, _, _) = setup_simulated_account(symbol.clone()).await;
+        let (simulated_account, tf_trades_channel, _, _) =
+            setup_simulated_account(symbol.clone()).await;
 
         // Simulate a trade with a negative price
         let notifier = Arc::new(Notify::new());
@@ -845,7 +974,7 @@ mod tests {
             qty: Decimal::new(100, 1),
             timestamp: 0,
             delta: Decimal::ZERO,
-            symbol: symbol.clone(),
+            symbol: symbol.symbol.clone(),
         };
         tf_trades_channel
             .0
@@ -866,7 +995,10 @@ mod tests {
         n.await;
 
         let open_orders = simulated_account.get_open_orders(&symbol).await;
-        assert!(open_orders.is_empty(), "Open orders should remain unchanged with negative price trade");
+        assert!(
+            open_orders.is_empty(),
+            "Open orders should remain unchanged with negative price trade"
+        );
 
         Ok(())
     }
@@ -917,10 +1049,16 @@ mod tests {
         assert!(open_orders.is_empty(), "Order was not properly canceled");
 
         let order_history = simulated_account.get_order(&symbol, &os.order().id).await;
-        assert!(order_history.contains(&canceled_order.order()), "Order history does not contain the canceled order");
-        
+        assert!(
+            order_history.contains(&canceled_order.order()),
+            "Order history does not contain the canceled order"
+        );
+
         let position = simulated_account.get_position(&symbol).await;
-        assert!(!position.is_open(), "Position should remain unchanged after cancellation");
+        assert!(
+            !position.is_open(),
+            "Position should remain unchanged after cancellation"
+        );
         Ok(())
     }
 
@@ -967,7 +1105,7 @@ mod tests {
             qty: dec!(100.0),
             timestamp: 0,
             delta: dec!(0.0),
-            symbol: symbol.clone(),
+            symbol: symbol.symbol.clone(),
         };
         tf_trades_channel
             .0
@@ -1024,7 +1162,7 @@ mod tests {
             qty: dec!(100.0),
             timestamp: 0,
             delta: dec!(0.0),
-            symbol: symbol.clone(),
+            symbol: symbol.symbol.clone(),
         };
         tf_trades_channel
             .0
@@ -1049,10 +1187,13 @@ mod tests {
             open_orders.is_empty(),
             "Stop-loss order was not properly executed"
         );
-        
+
         let order_history = simulated_account.get_order(&symbol, &os.order().id).await;
-        assert!(order_history.contains(&os.order()), "Order history does not contain the stop-loss order");
-        
+        assert!(
+            order_history.contains(&os.order()),
+            "Order history does not contain the stop-loss order"
+        );
+
         let position = simulated_account.get_position(&symbol).await;
         assert!(!position.is_open(), "Position is still open");
         Ok(())
@@ -1100,7 +1241,7 @@ mod tests {
             qty: dec!(100.0),
             timestamp: 0,
             delta: dec!(0.0),
-            symbol: symbol.clone(),
+            symbol: symbol.symbol.clone(),
         };
         tf_trades_channel
             .0
@@ -1157,7 +1298,7 @@ mod tests {
             qty: dec!(100.0),
             timestamp: 0,
             delta: dec!(0.0),
-            symbol: symbol.clone(),
+            symbol: symbol.symbol.clone(),
         };
         tf_trades_channel
             .0
@@ -1182,10 +1323,13 @@ mod tests {
             open_orders.is_empty(),
             "take-profit order was not properly executed"
         );
-        
+
         let order_history = simulated_account.get_order(&symbol, &os.order().id).await;
-        assert!(order_history.contains(&os.order()), "Order history does not contain the take-profit order");
-        
+        assert!(
+            order_history.contains(&os.order()),
+            "Order history does not contain the take-profit order"
+        );
+
         let position = simulated_account.get_position(&symbol).await;
         assert!(!position.is_open(), "Position is still open");
         Ok(())
@@ -1200,7 +1344,6 @@ mod tests {
         };
         let (simulated_account, tf_trades_channel, trades_channel, order_statuses_channel) =
             setup_simulated_account(symbol.clone()).await;
-
 
         let os = OrderStatus::Pending(Order {
             id: Uuid::new_v4(),
@@ -1224,14 +1367,29 @@ mod tests {
 
         let open_orders = simulated_account.get_open_orders(&symbol).await;
         assert_eq!(open_orders.len(), 1);
-        
-        let order_history = simulated_account.order_history.lock().await.get(&symbol).unwrap().lock().await.clone();
+
+        let order_history = simulated_account
+            .order_history
+            .lock()
+            .await
+            .get(&symbol)
+            .unwrap()
+            .lock()
+            .await
+            .clone();
 
         let remaining_quantity = open_orders.iter().next().unwrap().quantity;
-        assert_eq!(remaining_quantity, dec!(10.0), "Remaining quantity should be correct after partial fill");
+        assert_eq!(
+            remaining_quantity,
+            dec!(10.0),
+            "Remaining quantity should be correct after partial fill"
+        );
         assert!(open_orders.contains(&os.order()));
-        
-        assert!(order_history.contains(&os), "Order history does not contain the pending order");
+
+        assert!(
+            order_history.contains(&os),
+            "Order history does not contain the pending order"
+        );
         Ok(())
     }
 
@@ -1245,7 +1403,6 @@ mod tests {
         };
         let (simulated_account, tf_trades_channel, trades_channel, order_statuses_channel) =
             setup_simulated_account(symbol.clone()).await;
-
 
         let os = OrderStatus::Pending(Order {
             id: Uuid::new_v4(),
@@ -1274,7 +1431,7 @@ mod tests {
             qty: dec!(100.0),
             timestamp: 0,
             delta: dec!(0.0),
-            symbol: symbol.clone(),
+            symbol: symbol.symbol.clone(),
         };
         tf_trades_channel
             .0
@@ -1297,11 +1454,25 @@ mod tests {
         let open_orders = simulated_account.get_open_orders(&symbol).await;
         assert_eq!(open_orders.len(), 0);
 
-        let order_history = simulated_account.order_history.lock().await.get(&symbol).unwrap().lock().await.clone();
-        assert!(order_history.contains(&OrderStatus::Filled(os.order())), "Order history does not contain the filled order");
-        
+        let order_history = simulated_account
+            .order_history
+            .lock()
+            .await
+            .get(&symbol)
+            .unwrap()
+            .lock()
+            .await
+            .clone();
+        assert!(
+            order_history.contains(&OrderStatus::Filled(os.order())),
+            "Order history does not contain the filled order"
+        );
+
         let position = simulated_account.get_position(&symbol).await;
-        assert!(position.is_long(), "Position should be updated after order fill");
+        assert!(
+            position.is_long(),
+            "Position should be updated after order fill"
+        );
         Ok(())
     }
 
@@ -1315,7 +1486,6 @@ mod tests {
         };
         let (simulated_account, tf_trades_channel, trades_channel, order_statuses_channel) =
             setup_simulated_account(symbol.clone()).await;
-
 
         let os = OrderStatus::Pending(Order {
             id: Uuid::new_v4(),
@@ -1344,7 +1514,7 @@ mod tests {
             qty: dec!(90.0),
             timestamp: 0,
             delta: dec!(0.0),
-            symbol: symbol.clone(),
+            symbol: symbol.symbol.clone(),
         };
         tf_trades_channel
             .0
@@ -1364,8 +1534,19 @@ mod tests {
             .unwrap();
 
         n.await;
-        let order_history = simulated_account.order_history.lock().await.get(&symbol).unwrap().lock().await.clone();
-        assert!(order_history.contains(&OrderStatus::PartiallyFilled(os.order(), dec!(90.0))), "Order history does not contain the partially filled order");
+        let order_history = simulated_account
+            .order_history
+            .lock()
+            .await
+            .get(&symbol)
+            .unwrap()
+            .lock()
+            .await
+            .clone();
+        assert!(
+            order_history.contains(&OrderStatus::PartiallyFilled(os.order(), dec!(90.0))),
+            "Order history does not contain the partially filled order"
+        );
 
         let open_orders = simulated_account.get_open_orders(&symbol).await;
         assert_eq!(open_orders.len(), 1);
@@ -1383,7 +1564,6 @@ mod tests {
         };
         let (simulated_account, tf_trades_channel, trades_channel, order_statuses_channel) =
             setup_simulated_account(symbol.clone()).await;
-
 
         let os = OrderStatus::Filled(Order {
             id: Uuid::new_v4(),
@@ -1439,7 +1619,7 @@ mod tests {
             .0
             .broadcast((
                 vec![TfTrade {
-                    symbol: symbol.symbol.clone(),
+                    symbol: symbol.clone(),
                     tf: 1,
                     id: uuid::Uuid::new_v4().to_string(),
                     timestamp: 124,

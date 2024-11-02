@@ -1,24 +1,23 @@
 #[allow(dead_code)]
-
 pub(crate) mod live;
 mod notification;
 mod position;
 pub mod simulated;
 
+mod order_state_machine;
 #[allow(dead_code)]
 mod spread;
-mod order_state_machine;
 
 use crate::events::{EventEmitter, EventSink};
 use crate::types::{ExchangeId, Order, OrderStatus, OrderType, Side, Symbol, SymbolAccount, Trade};
+use async_broadcast::Sender;
 use async_std::sync::Arc;
 use async_trait::async_trait;
+use dashmap::DashSet;
 pub use position::*;
 pub use spread::*;
-use dashmap::DashSet;
 use std::collections::HashSet;
 use std::fmt::Debug;
-use async_broadcast::Sender;
 use tokio::sync::{Notify, RwLock};
 use tracing::trace;
 

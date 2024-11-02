@@ -1,21 +1,22 @@
+use anyhow::Error;
 /// This module defines the `EventSink` trait, which is used to handle events
 /// asynchronously. It provides a mechanism to listen for events and process
 /// them using the `handle_event` method.
-
 use async_broadcast::Receiver;
 use async_std::sync::Arc;
-use std::fmt::Debug;
-use anyhow::Error;
 use async_trait::async_trait;
 use log::info;
+use std::fmt::Debug;
 use tokio::sync::Notify;
 use tracing::{debug, error};
 
-#[async_trait] 
+#[async_trait]
 /// The `EventSink` trait defines the interface for handling events of type `EventType`.
 /// It requires implementing the `get_receiver` and `handle_event` methods, and provides
 /// a default implementation for the `listen` method to continuously process incoming events.
-pub trait EventSink<EventType: Clone + Debug + Send + Sync + 'static>: Send + Sync + 'static {
+pub trait EventSink<EventType: Clone + Debug + Send + Sync + 'static>:
+    Send + Sync + 'static
+{
     /// Returns a receiver for the event channel, allowing the sink to receive events.
     fn get_receiver(&self) -> Receiver<(EventType, Option<Arc<Notify>>)>;
 
@@ -37,7 +38,7 @@ pub trait EventSink<EventType: Clone + Debug + Send + Sync + 'static>: Send + Sy
                     Err(async_broadcast::RecvError::Closed) => {
                         debug!("[-] Sender closed on {}. Shutting down", &name);
                         receiver.close();
-                        break
+                        break;
                     }
                     Err(async_broadcast::RecvError::Overflowed(e)) => {
                         error!("[-] Broadcast error: Overflowed {} on {}", e, &name);
@@ -50,30 +51,27 @@ pub trait EventSink<EventType: Clone + Debug + Send + Sync + 'static>: Send + Sy
                         if let Some(n) = notify {
                             n.notify_one()
                         }
-
                     }
-
                 }
             }
 
             Ok::<(), anyhow::Error>(())
         });
         Ok(())
-
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::{anyhow, Error};
     use async_broadcast::{broadcast, Receiver};
     use async_std::sync::Arc;
     use async_trait::async_trait;
-    use tokio::sync::Notify;
-    use anyhow::{anyhow, Error};
     use std::fmt::Debug;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
+    use tokio::sync::Notify;
 
     #[derive(Clone, Debug, PartialEq)]
     struct MockEvent {
@@ -128,7 +126,9 @@ mod tests {
         let event = MockEvent {
             message: "".to_string(),
         };
-        sender.broadcast((event.clone(), Some(notifier.clone()))).await?;
+        sender
+            .broadcast((event.clone(), Some(notifier.clone())))
+            .await?;
 
         n1.await;
 
@@ -150,12 +150,16 @@ mod tests {
         let event = MockEvent {
             message: "Event 1".to_string(),
         };
-        sender.broadcast((event.clone(), Some(notifier.clone()))).await?;
+        sender
+            .broadcast((event.clone(), Some(notifier.clone())))
+            .await?;
 
         let event = MockEvent {
             message: "Event 2".to_string(),
         };
-        sender.broadcast((event.clone(), Some(notifier.clone()))).await?;
+        sender
+            .broadcast((event.clone(), Some(notifier.clone())))
+            .await?;
         n1.await;
         n2.await;
 
@@ -172,11 +176,10 @@ mod tests {
 
         event_sink.clone().listen()?;
 
-            let event = MockEvent {
-                message: "Event 1".to_string(),
-            };
-            sender.broadcast((event.clone(), None)).await?;
-
+        let event = MockEvent {
+            message: "Event 1".to_string(),
+        };
+        sender.broadcast((event.clone(), None)).await?;
 
         let event2 = MockEvent {
             message: "Event 2".to_string(),

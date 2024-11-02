@@ -1,8 +1,6 @@
-
 #![feature(iterator_try_collect)]
 #![feature(async_closure)]
 #[allow(unused)]
-
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -10,44 +8,41 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 mod back_tester;
 
 #[allow(unused)]
-mod executors;
-#[allow(unused)]
 mod events;
+#[allow(unused)]
+mod executors;
 #[allow(unused)]
 mod managers;
 #[allow(unused)]
 mod mongodb;
 
-#[allow(dead_code, unused)]
-mod types;
-#[allow(unused)]
-mod utils;
 #[allow(unused)]
 mod db;
 #[allow(unused)]
 mod strategies;
+#[allow(dead_code, unused)]
+mod types;
+#[allow(unused)]
+mod utils;
 
 use crate::back_tester::{BackTester, BackTesterConfig, BackTesterMulti};
+use crate::db::loader::compile_agg_trades_for;
+use crate::types::OrderStatus;
 use async_broadcast::{Receiver, Sender};
 use async_std::sync::Arc;
 use clap::{arg, command, value_parser, Command};
-use events::{EventSink};
+use events::EventSink;
 use executors::simulated::SimulatedAccount;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use once_cell::sync::Lazy;
 use std::env;
 use std::fmt::Write;
-use std::time::{SystemTime};
+use std::time::SystemTime;
 use tokio::sync::Notify;
 use tracing::info;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
-use types::{
-    AccessKey, ExchangeId, GlobalConfig, Mode, Symbol, TfTrades,
-    Trade,
-};
-use crate::db::loader::{compile_agg_trades_for};
-use crate::types::OrderStatus;
+use types::{AccessKey, ExchangeId, GlobalConfig, Mode, Symbol, TfTrades, Trade};
 
 static KEY: Lazy<AccessKey> = Lazy::new(|| {
     let api_key = env::var("API_KEY")
@@ -60,13 +55,9 @@ static KEY: Lazy<AccessKey> = Lazy::new(|| {
     }
 });
 
-
 fn main() -> Result<(), anyhow::Error> {
     // console_subscriber::init();
     // or as an allow list (INFO, but drill into my crate's logs)
-
-
-
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -135,7 +126,8 @@ async fn async_main() -> anyhow::Result<()> {
                 .arg(arg!(--nokline "Don't download klines").required(false))
                 .arg(arg!(--noaggtrades "Don't download aggtrades").required(false))
                 .about("download candles"),
-        ).subcommand(
+        )
+        .subcommand(
             Command::new("compile")
                 .arg(
                     arg!(--tf <TF> "Chunk timeframe in seconds")
@@ -146,14 +138,14 @@ async fn async_main() -> anyhow::Result<()> {
                 .arg(
                     arg!(-s --symbol <SYMBOLS> "The instrument to compile for")
                         .required(true)
-                        .num_args(1)
+                        .num_args(1),
                 )
                 .arg(
                     arg!(-s --symbols <SYMBOLS> "The instruments to compile")
                         .required(false)
                         .num_args(1..)
                         .default_value("BTCUSDT"),
-                )
+                ),
         )
         .subcommand(
             Command::new("live")
@@ -182,7 +174,11 @@ async fn async_main() -> anyhow::Result<()> {
         )
         .get_matches();
 
-    let log_level = if main_matches.get_flag("verbose") {"binance_q=debug"} else {"binance_q=info"};
+    let log_level = if main_matches.get_flag("verbose") {
+        "binance_q=debug"
+    } else {
+        "binance_q=info"
+    };
     let filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::DEBUG.into())
         .parse(log_level)?;
@@ -214,10 +210,18 @@ async fn async_main() -> anyhow::Result<()> {
             .progress_chars("#>-"),
         );
 
-        let tf_trades_channel: (Sender<(TfTrades, Option<Arc<Notify>>)>, Receiver<(TfTrades, Option<Arc<Notify>>)>) =
-            async_broadcast::broadcast(10000);
-        let trades_channel: (Sender<(Trade, Option<Arc<Notify>>)>, Receiver<(Trade, Option<Arc<Notify>>)>) = async_broadcast::broadcast(1000);
-        let order_statuses_channel: (Sender<(OrderStatus, Option<Arc<Notify>>)>, Receiver<(OrderStatus, Option<Arc<Notify>>)>) = async_broadcast::broadcast(100);
+        let tf_trades_channel: (
+            Sender<(TfTrades, Option<Arc<Notify>>)>,
+            Receiver<(TfTrades, Option<Arc<Notify>>)>,
+        ) = async_broadcast::broadcast(10000);
+        let trades_channel: (
+            Sender<(Trade, Option<Arc<Notify>>)>,
+            Receiver<(Trade, Option<Arc<Notify>>)>,
+        ) = async_broadcast::broadcast(1000);
+        let order_statuses_channel: (
+            Sender<(OrderStatus, Option<Arc<Notify>>)>,
+            Receiver<(OrderStatus, Option<Arc<Notify>>)>,
+        ) = async_broadcast::broadcast(100);
         let client = Arc::new(db::client::SQLiteClient::new().await);
 
         if mode == "single" {
@@ -242,8 +246,7 @@ async fn async_main() -> anyhow::Result<()> {
                 grpc_server_port: 50011.to_string(),
                 _kline_tf: ktf.clone(),
             };
-            let back_tester =
-                BackTester::new(global_config, back_tester_config);
+            let back_tester = BackTester::new(global_config, back_tester_config);
 
             let start = SystemTime::now();
             let account = SimulatedAccount::new(
@@ -254,8 +257,8 @@ async fn async_main() -> anyhow::Result<()> {
                 order_statuses_channel.0.clone(),
                 trades_channel.0,
                 client.clone(),
-
-            ).await;
+            )
+            .await;
             let account = Arc::new(account);
             let ac = account.clone();
             tokio::spawn(async move {
@@ -270,7 +273,6 @@ async fn async_main() -> anyhow::Result<()> {
                 EventSink::<OrderStatus>::listen(ac).unwrap();
             });
 
-
             back_tester
                 .run(
                     pb.clone(),
@@ -278,15 +280,11 @@ async fn async_main() -> anyhow::Result<()> {
                     tf_trades_channel.0,
                     order_statuses_channel.0,
                     account,
-                    client
+                    client,
                 )
                 .await?;
 
-
-            info!(
-                "Back-test finished in {:?} seconds",
-                start.elapsed()?
-            );
+            info!("Back-test finished in {:?} seconds", start.elapsed()?);
         } else if mode == "multi" {
             let mut b_configs = vec![];
             let mut symbols_i: Vec<Symbol> = vec![];
@@ -325,8 +323,9 @@ async fn async_main() -> anyhow::Result<()> {
                 symbols_i,
                 order_statuses_channel.0.clone(),
                 trades_channel.0,
-                client.clone()
-            ).await;
+                client.clone(),
+            )
+            .await;
             let account = Arc::new(account);
             let ac = account.clone();
             tokio::spawn(async move {
@@ -349,20 +348,19 @@ async fn async_main() -> anyhow::Result<()> {
                     tf_trades_channel.0,
                     order_statuses_channel.0,
                     account,
-                    client
+                    client,
                 )
                 .await?;
 
-            info!(
-                "Back-test finished in {:?} seconds",
-                start.elapsed()?
-            );
+            info!("Back-test finished in {:?} seconds", start.elapsed()?);
         }
     }
 
     if let Some(matches) = main_matches.subcommand_matches("download") {
         let cpus = num_cpus::get_physical();
-        rayon::ThreadPoolBuilder::new().num_threads(cpus).build_global()?;
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(cpus)
+            .build_global()?;
         let symbols = matches.get_many::<String>("symbols").unwrap().clone();
         let tf1 = matches
             .get_one::<String>("ktf")
@@ -403,20 +401,19 @@ async fn async_main() -> anyhow::Result<()> {
             let lpb1 = pb.clone();
             let client = client.clone();
             let rt_handle = Arc::new(tokio::runtime::Handle::current());
-           threads.push( std::thread::spawn(move || {
-               let s = symbol.clone();
-               let c = client.clone();
+            threads.push(std::thread::spawn(move || {
+                let s = symbol.clone();
+                let c = client.clone();
                 if download_klines {
                     rt_handle.block_on(async move {
                         db::loader::load_klines_from_archive(s, ktf, l, lpb, verbose, c).await;
                     });
                 }
-               let client = client.clone();
-               let s = symbol.clone();
+                let client = client.clone();
+                let s = symbol.clone();
                 if download_trades {
                     rt_handle.block_on(async move {
                         db::loader::load_history_from_archive(s, l, lpb1, verbose, client).await;
-
                     });
                 }
                 info!("{} data downloaded", symbol.symbol.clone());
@@ -432,7 +429,9 @@ async fn async_main() -> anyhow::Result<()> {
 
     if let Some(matches) = main_matches.subcommand_matches("compile") {
         let cpus = num_cpus::get() * 2;
-        rayon::ThreadPoolBuilder::new().num_threads(cpus).build_global()?;
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(cpus)
+            .build_global()?;
         let symbols = matches.get_many::<String>("symbols").unwrap().clone();
         let tf = *matches
             .get_one::<u64>("tf")
@@ -444,11 +443,11 @@ async fn async_main() -> anyhow::Result<()> {
             ProgressStyle::with_template(
                 "[?] Progress [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}%}",
             )
-                .unwrap()
-                .with_key("eta", |state: &ProgressState, w: &mut dyn Write| {
-                    write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap()
-                })
-                .progress_chars("#>-"),
+            .unwrap()
+            .with_key("eta", |state: &ProgressState, w: &mut dyn Write| {
+                write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap()
+            })
+            .progress_chars("#>-"),
         );
 
         let client = Arc::new(db::client::SQLiteClient::new().await);
@@ -466,15 +465,14 @@ async fn async_main() -> anyhow::Result<()> {
             let pb = pb.clone();
             let client = client.clone();
             let semaphore = semaphore.clone();
-            threads.push(tokio::spawn(async move  {
-                    let _ = semaphore.acquire().await.unwrap();
-                    compile_agg_trades_for(&symbol, tf, pb, verbose, client.clone()).await;
+            threads.push(tokio::spawn(async move {
+                let _ = semaphore.acquire().await.unwrap();
+                compile_agg_trades_for(&symbol, tf, pb, verbose, client.clone()).await;
             }));
         }
         for thread in threads {
             let _ = thread.await;
         }
-
     }
     if let Some(_matches) = main_matches.subcommand_matches("live") {
         todo!()
