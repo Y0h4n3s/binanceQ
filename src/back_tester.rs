@@ -137,7 +137,7 @@ impl BackTester {
             self.config.symbol.symbol
         );
         // calculate position size based on risk tolerance and send orders to executors
-        let mut risk_manager = RiskManager::new(
+        let risk_manager = RiskManager::new(
             self.global_config.clone(),
             RiskManagerConfig {
                 max_daily_losses: 100,

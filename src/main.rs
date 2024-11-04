@@ -43,6 +43,7 @@ use tracing::info;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 use types::{AccessKey, ExchangeId, GlobalConfig, Mode, Symbol, TfTrades, Trade};
+use crate::db::client::SQLiteClient;
 
 static KEY: Lazy<AccessKey> = Lazy::new(|| {
     let api_key = env::var("API_KEY")
@@ -136,11 +137,6 @@ async fn async_main() -> anyhow::Result<()> {
                         .value_parser(value_parser!(u64)),
                 )
                 .arg(
-                    arg!(-s --symbol <SYMBOLS> "The instrument to compile for")
-                        .required(true)
-                        .num_args(1),
-                )
-                .arg(
                     arg!(-s --symbols <SYMBOLS> "The instruments to compile")
                         .required(false)
                         .num_args(1..)
@@ -223,7 +219,9 @@ async fn async_main() -> anyhow::Result<()> {
             Receiver<(OrderStatus, Option<Arc<Notify>>)>,
         ) = async_broadcast::broadcast(100);
         let client = Arc::new(db::client::SQLiteClient::new().await);
-
+        info!("Creating index...");
+        let c = client.clone();
+        SQLiteClient::create_backtest_indices(&client.conn);
         if mode == "single" {
             let symbol = Symbol {
                 symbol: symbols.next().unwrap().clone(),
@@ -354,6 +352,8 @@ async fn async_main() -> anyhow::Result<()> {
 
             info!("Back-test finished in {:?} seconds", start.elapsed()?);
         }
+        info!("Dropping index...");
+        SQLiteClient::drop_backtest_indices(&c.conn);
     }
 
     if let Some(matches) = main_matches.subcommand_matches("download") {
@@ -387,7 +387,10 @@ async fn async_main() -> anyhow::Result<()> {
 
         let mut threads = vec![];
         let client = Arc::new(std::sync::Mutex::new(db::client::SQLiteClient::new().await));
-
+        let w = client.lock().unwrap();
+        info!("Creating index...");
+        SQLiteClient::create_download_indices(&w.conn);
+        drop(w);
         info!("[?] Downloading...");
         for s in symbols.into_iter() {
             let symbol = Symbol {
@@ -422,9 +425,12 @@ async fn async_main() -> anyhow::Result<()> {
         for t in threads.into_iter() {
             t.join().unwrap();
         }
-
+        info!("Dropping index...");
+        let w = client.lock().unwrap();
+        SQLiteClient::drop_download_indices(&w.conn);
         info!("Cleaning up...");
-        client.lock().unwrap().vacuum().await;
+        w.vacuum().await;
+
     }
 
     if let Some(matches) = main_matches.subcommand_matches("compile") {
@@ -438,20 +444,20 @@ async fn async_main() -> anyhow::Result<()> {
             .ok_or(anyhow::anyhow!("Invalid timeframe"))?;
         let pb = ProgressBar::new(0);
         let verbose = main_matches.get_flag("verbose");
-
         pb.set_style(
             ProgressStyle::with_template(
-                "[?] Progress [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}%}",
+                "[?] [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}%|[ETA: {eta_precise}]",
             )
-            .unwrap()
-            .with_key("eta", |state: &ProgressState, w: &mut dyn Write| {
-                write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap()
-            })
-            .progress_chars("#>-"),
+                .unwrap()
+                .with_key("eta", |state: &ProgressState, w: &mut dyn Write| {
+                    write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap()
+                })
+                .progress_chars("#>-"),
         );
 
         let client = Arc::new(db::client::SQLiteClient::new().await);
-
+        info!("Creating index...");
+        SQLiteClient::create_compile_indices(&client.conn);
         let mut threads = vec![];
         let permits = 5;
         let semaphore = Arc::new(tokio::sync::Semaphore::new(permits));
@@ -473,6 +479,8 @@ async fn async_main() -> anyhow::Result<()> {
         for thread in threads {
             let _ = thread.await;
         }
+        info!("Dropping index...");
+        SQLiteClient::drop_compile_indices(&client.conn);
     }
     if let Some(_matches) = main_matches.subcommand_matches("live") {
         todo!()

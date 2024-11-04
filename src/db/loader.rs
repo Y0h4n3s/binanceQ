@@ -37,12 +37,11 @@ fn insert_trade_entries(
         let delta = ((trades[i].price - trades[i - 1].price) * 100.0) / trades[i - 1].price;
 
         let entry = SQLiteTradeEntry {
-            id: uuid::Uuid::new_v4().to_string(),
-            price: t.price.to_string(),
-            qty: t.quantity.to_string(),
-            timestamp: t.transact_time.to_string(),
+            price: t.price,
+            qty: t.quantity,
+            timestamp: t.transact_time,
             symbol: symbol.symbol.clone(),
-            delta: delta.to_string(),
+            delta: delta,
         };
         entries.push(entry);
     }
@@ -115,7 +114,8 @@ pub async fn compile_agg_trades_for_new(
     pb: ProgressBar,
     _verbose: bool,
     sqlite_client: Arc<SQLiteClient>,
-) {
+)
+{
     info!("Preparing data...");
     sqlite_client
         .reset_tf_trades_to_entries_by_tf(symbol, tf)
@@ -148,47 +148,40 @@ pub async fn compile_agg_trades_for_new(
                         (start_time + tf * 1000),
                     )
                 })
-                .collect::<Vec<Vec<(String, u64)>>>();
+                .collect::<Vec<Vec<(u64, u64)>>>();
 
             let results = results
                 .into_par_iter()
                 .filter(|v| !v.is_empty())
                 .map(|entries| {
-                    let mut tf_trades_to_entries = vec![];
-                    let tf_trade_id = uuid::Uuid::new_v4().to_string();
-                    for (entry_id, timestamp) in &entries {
-                        tf_trades_to_entries.push(SQliteTfTradeToTradeEntry {
-                            tf: tf as i64,
-                            symbol: symbol.symbol.clone(),
-                            tf_trade_id: tf_trade_id.clone(),
-                            trade_entry_id: entry_id.clone(),
-                        })
-                    }
+
                     let tf_trade = TfTrade {
                         symbol: symbol.clone(),
                         tf,
-                        id: tf_trade_id,
+                        id: 0,
                         timestamp: entries[0].1,
                         max_trade_time: entries.last().unwrap().1,
                         min_trade_time: entries.first().unwrap().1,
                         trades: vec![],
                     };
-
-                    (vec![tf_trade], tf_trades_to_entries)
+                    let tf_trade_id = SQLiteClient::insert_tf_trade(&sqlite_client.conn, tf_trade);
+                    let mut tf_trades_to_entries = vec![];
+                    for (entry_id, timestamp) in &entries {
+                        tf_trades_to_entries.push(SQliteTfTradeToTradeEntry {
+                            tf: tf as i64,
+                            symbol: symbol.symbol.clone(),
+                            tf_trade_id,
+                            trade_entry_id: *entry_id,
+                        })
+                    }
+                    tf_trades_to_entries
                 })
-                .reduce(
-                    || (vec![], vec![]),
-                    |mut a, mut b| {
-                        a.0.append(&mut b.0);
-                        a.1.append(&mut b.1);
-                        (a.0, a.1)
-                    },
-                );
+                .flatten()
+                .collect::<Vec<SQliteTfTradeToTradeEntry>>();
 
             let sqlite_client = sqlite_client.clone();
-            SQLiteClient::insert_tf_trades(&sqlite_client.conn, results.0);
-            let len = results.1.len();
-            SQLiteClient::insert_tf_trades_to_entries(&sqlite_client.conn, results.1);
+            let len = results.len();
+            SQLiteClient::insert_tf_trades_to_entries(&sqlite_client.conn, results);
             pb.inc(len as u64);
         });
 }
@@ -198,7 +191,8 @@ pub async fn compile_agg_trades_for(
     pb: ProgressBar,
     _verbose: bool,
     sqlite_client: Arc<SQLiteClient>,
-) {
+)
+{
     sqlite_client.reset_tf_trades_by_tf(symbol, tf).await;
     info!("Preparing data...");
 
@@ -248,41 +242,33 @@ pub async fn compile_agg_trades_for(
                     .into_par_iter()
                     .filter(|v| !v.is_empty())
                     .map(|entries| {
-                        let mut tf_trades_to_entries = vec![];
-                        let tf_trade_id = uuid::Uuid::new_v4().to_string();
-                        for entry in &entries {
-                            tf_trades_to_entries.push(SQliteTfTradeToTradeEntry {
-                                tf: tf as i64,
-                                symbol: symbol.symbol.clone(),
-                                tf_trade_id: tf_trade_id.clone(),
-                                trade_entry_id: entry.id.clone(),
-                            })
-                        }
+
                         let tf_trade = TfTrade {
                             symbol: symbol.clone(),
                             tf,
-                            id: tf_trade_id,
+                            id: 0,
                             timestamp: entries[0].timestamp,
                             max_trade_time: entries.last().unwrap().timestamp,
                             min_trade_time: entries.first().unwrap().timestamp,
                             trades: vec![],
                         };
-
-                        (vec![tf_trade], tf_trades_to_entries)
+                        let tf_trade_id = SQLiteClient::insert_tf_trade(&sqlite_client.conn, tf_trade);
+                        let mut tf_trades_to_entries = vec![];
+                        for entry in &entries {
+                            tf_trades_to_entries.push(SQliteTfTradeToTradeEntry {
+                                tf: tf as i64,
+                                symbol: symbol.symbol.clone(),
+                                tf_trade_id,
+                                trade_entry_id: entry.id.clone(),
+                            })
+                        }
+                        tf_trades_to_entries
                     })
-                    .reduce(
-                        || (vec![], vec![]),
-                        |mut a, mut b| {
-                            a.0.append(&mut b.0);
-                            a.1.append(&mut b.1);
-                            (a.0, a.1)
-                        },
-                    );
-
+                    .flatten()
+                    .collect::<Vec<SQliteTfTradeToTradeEntry>>();
                 tokio::task::spawn_blocking(move || {
-                    SQLiteClient::insert_tf_trades(&sqlite_client.conn, results.0);
-                    let len = results.1.len();
-                    SQLiteClient::insert_tf_trades_to_entries(&sqlite_client.conn, results.1);
+                    let len = results.len();
+                    SQLiteClient::insert_tf_trades_to_entries(&sqlite_client.conn, results);
                     pb.inc(len as u64);
                 })
                 .await
@@ -301,7 +287,8 @@ pub async fn load_klines_from_archive(
     pb: ProgressBar,
     verbose: bool,
     sqlite_client: Arc<std::sync::Mutex<SQLiteClient>>,
-) {
+)
+{
     let lock = sqlite_client.lock().unwrap();
     lock.reset_kline(&symbol).await;
     drop(lock);
@@ -435,12 +422,12 @@ pub async fn load_history_from_archive(
     verbose: bool,
     sqlite_client: Arc<std::sync::Mutex<SQLiteClient>>,
 ) {
+
     {
         let sqlite_client = sqlite_client.lock().unwrap();
-        sqlite_client.reset_trade_entries(&symbol).await;
-        sqlite_client.reset_tf_trades(&symbol).await;
-    }
+        SQLiteClient::reset_trade_entries(&sqlite_client.conn, &symbol);
 
+    }
     let today = chrono::DateTime::<Utc>::from(SystemTime::now());
     let symbol = Arc::new(symbol);
     let pb = Arc::new(pb);
@@ -467,35 +454,34 @@ pub async fn load_history_from_archive(
         tokio::spawn(async move {
             let rt = Handle::current();
             months.par_iter().for_each(|month| {
-                let month_str = month.format("%Y-%m").to_string();
-                let url = format!(
-                    "https://data.binance.vision/data/spot/monthly/aggTrades/{}/{}-aggTrades-{}.zip",
-                    symbol.symbol,
-                    symbol.symbol,
-                    month_str
-                );
-                if verbose {
-                    debug!("[+] fetching {}", url);
-                }
-                let path = PathBuf::from(tmp_dir.path());
-
-                if let Ok(res) = ripunzip::UnzipEngine::for_uri(&url, None, || {}) {
-                    if let Err(e) = res.unzip(ripunzip::UnzipOptions {
-                        output_directory: Some(path),
-                        password: None,
-                        single_threaded: false,
-                        filename_filter: None,
-                        progress_reporter: Box::new(ripunzip::NullProgressReporter),
-                    }) {
-                        warn!("[-] Failed to fetch {}. Reason: {}", url, e);
-                        return;
+                    let month_str = month.format("%Y-%m").to_string();
+                    let url = format!(
+                        "https://data.binance.vision/data/spot/monthly/aggTrades/{}/{}-aggTrades-{}.zip",
+                        symbol.symbol,
+                        symbol.symbol,
+                        month_str
+                    );
+                    if verbose {
+                        debug!("[+] fetching {}", url);
                     }
-                    rt.block_on(async  {
-                        process_channel.0.send(month_str).await.unwrap();
+                    let path = PathBuf::from(tmp_dir.path());
 
-                    });
-                }
-            });
+                    if let Ok(res) = ripunzip::UnzipEngine::for_uri(&url, None, || {}) {
+                        if let Err(e) = res.unzip(ripunzip::UnzipOptions {
+                            output_directory: Some(path),
+                            password: None,
+                            single_threaded: false,
+                            filename_filter: None,
+                            progress_reporter: Box::new(ripunzip::NullProgressReporter),
+                        }) {
+                            warn!("[-] Failed to fetch {}. Reason: {}", url, e);
+                            return;
+                        }
+                        rt.block_on(async {
+                            process_channel.0.send(month_str).await.unwrap();
+                        });
+                    }
+                });
             drop(process_channel.0);
             while let Some(_) = wait_channel.1.recv().await {}
         }),
@@ -504,6 +490,7 @@ pub async fn load_history_from_archive(
             let symbol = symbol1;
             let mut threads = vec![];
             let semaphore = Arc::new(tokio::sync::Semaphore::new(permits));
+
             while let Some(month_str) = process_channel.1.recv().await {
                 let symbol = symbol.clone();
                 let semaphore = semaphore.clone();
@@ -536,22 +523,28 @@ pub async fn load_history_from_archive(
                             "is_buyer_maker",
                             "was_best_price",
                         ]));
+                        let start = Instant::now();
 
-                        // let mut raw_record = csv::ByteRecord::new();
-                        // let headers = reader.byte_headers().unwrap().clone();
-                        //
-                        // let mut trades = vec![];
-                        // while let Ok(_) =  reader.read_byte_record(&mut raw_record) {
-                        //     if let Ok(record) = raw_record.deserialize::<ArchiveAggTrade>(Some(&headers)) {
-                        //      trades.push(record);
-                        //
-                        //     }
-                        // }
-                        let trades = reader
-                            .deserialize::<ArchiveAggTrade>()
-                            .filter_map(|result| result.ok())
-                            .collect::<Vec<_>>();
-                        drop(reader);
+                        let headers = reader.byte_headers().unwrap().clone();
+                        let thread_pool = rayon::ThreadPoolBuilder::new()
+                            .num_threads(num_cpus::get_physical())
+                            .build()
+                            .unwrap();
+
+                        let trades: Vec<ArchiveAggTrade> = thread_pool.install(|| {
+                            reader
+                                .into_byte_records()
+                                .filter_map(|result| result.ok())
+                                .collect::<Vec<_>>()
+                                .into_par_iter()
+                                .filter_map(|byte_record| {
+                                    byte_record
+                                        .deserialize::<ArchiveAggTrade>(Some(&headers))
+                                        .ok()
+                                })
+                                .collect()
+                        });
+
                         let symbol = Symbol {
                             symbol: symbol.symbol.clone(),
                             exchange: symbol.exchange.clone(),
@@ -569,7 +562,7 @@ pub async fn load_history_from_archive(
                         if !verbose {
                             pb.inc(1);
                         }
-                        // info!("done {} {}", symbol.symbol, month_str);
+                        info!("done {} {} in {:?}", symbol.symbol, month_str, start.elapsed());
                         drop(permit);
                     }
                 }));

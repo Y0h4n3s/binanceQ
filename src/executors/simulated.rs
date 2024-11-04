@@ -34,6 +34,7 @@ type ArcSet<T> = Arc<Mutex<HashSet<T>>>;
 #[derive(Clone)]
 /// Represents a simulated trading account, which manages positions, orders, and trades.
 /// It provides methods to create new accounts, handle events, and retrieve account information.
+
 pub struct SimulatedAccount {
     pub symbol_accounts: ArcMap<Symbol, SymbolAccount>,
     pub open_orders: ArcMap<Symbol, ArcSet<Order>>,

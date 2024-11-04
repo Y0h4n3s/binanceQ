@@ -1,6 +1,6 @@
 use crate::types::{Kline, Order, OrderType, Side, Symbol, TfTrade, TfTrades, Trade, TradeEntry};
 use futures::stream::BoxStream;
-use rusqlite::ToSql;
+use rusqlite::{params, ToSql};
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -14,9 +14,10 @@ use sqlx::{
 };
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use rayon::prelude::*;
 use tracing::info;
 use uuid::Uuid;
-
 #[derive(Clone)]
 pub struct SQLiteClient {
     pub pool: SqlitePool,
@@ -25,11 +26,10 @@ pub struct SQLiteClient {
 
 #[derive(Serialize, Deserialize, Debug, Clone, FromRow, Decode, Type)]
 pub struct SQLiteTradeEntry {
-    pub id: String,
-    pub price: String,
-    pub qty: String,
-    pub timestamp: String,
-    pub delta: String,
+    pub price: f64,
+    pub qty: f64,
+    pub timestamp: u64,
+    pub delta: f64,
     pub symbol: String,
 }
 #[derive(Serialize, Deserialize, Debug, Clone, FromRow, Decode)]
@@ -56,8 +56,8 @@ pub struct TfTradeToTradeEntry {
 pub struct SQliteTfTradeToTradeEntry {
     pub tf: i64,
     pub symbol: String,
-    pub tf_trade_id: String,
-    pub trade_entry_id: String,
+    pub tf_trade_id: u64,
+    pub trade_entry_id: u64,
 }
 fn deserialize_trade_entry<'de, D>(deserializer: D) -> Result<Vec<SQLiteTradeEntry>, D::Error>
 where
@@ -338,7 +338,7 @@ impl SQLiteClient {
         sqlx::query(
             r#"
         CREATE TABLE IF NOT EXISTS trade_entries (
-            id TEXT PRIMARY KEY,
+            id INTEGER PRIMARY KEY,
             price REAL,
             qty REAL,
             timestamp INTEGER,
@@ -355,7 +355,7 @@ impl SQLiteClient {
         sqlx::query(
             r#"
         CREATE TABLE IF NOT EXISTS tf_trades (
-            id TEXT PRIMARY KEY,
+            id INTEGER PRIMARY KEY,
             symbol TEXT,
             tf INTEGER,
             timestamp INTEGER,
@@ -441,8 +441,8 @@ impl SQLiteClient {
         sqlx::query(
             r#"
         CREATE TABLE IF NOT EXISTS tf_trades_to_entries (
-            tf_trade_id TEXT,
-            trade_entry_id TEXT,
+            tf_trade_id INTEGER,
+            trade_entry_id INTEGER,
             symbol TEXT,
             tf INTEGER,
             PRIMARY KEY (tf_trade_id, trade_entry_id),
@@ -454,53 +454,54 @@ impl SQLiteClient {
         .execute(pool)
         .await
         .unwrap();
-        // sqlx::query(
-        //     r#"CREATE INDEX IF NOT EXISTS timestamps ON trade_entries(timestamp);"#
-        // ).execute(pool).await.unwrap();
-        // sqlx::query(
-        //     r#"CREATE INDEX IF NOT EXISTS trade_entries_symbols ON trade_entries(symbol);"#
-        // ).execute(pool).await.unwrap();
-        // // compiler
-        // sqlx::query(
-        //     r#"CREATE INDEX IF NOT EXISTS trade_entries_timestamps_symbols ON trade_entries(symbol, timestamp);"#
-        // ).execute(pool).await.unwrap();
-        // sqlx::query(
-        //     r#"CREATE INDEX IF NOT EXISTS tf_timestamps ON tf_trades(timestamp);"#
-        // ).execute(pool).await.unwrap();
+    }
+
+    pub fn create_download_indices(pool: &Arc<Mutex<rusqlite::Connection>>) {
+        let conn = pool.lock().unwrap();
+        // initial delete
+        conn.execute("CREATE INDEX IF NOT EXISTS trade_entries_symbols ON trade_entries(symbol);", ())
+            .unwrap();
+
+    }
+    pub fn drop_download_indices(pool: &Arc<Mutex<rusqlite::Connection>>) {
+        let conn = pool.lock().unwrap();
+        conn.execute_batch("DROP INDEX trade_entries_symbols;")
+            .unwrap();
+
+    }
+    pub fn create_compile_indices(pool: &Arc<Mutex<rusqlite::Connection>>) {
+        let conn = pool.lock().unwrap();
         // compiler initial delete
-        sqlx::query(r#"CREATE INDEX IF NOT EXISTS tf_symbols_tf ON tf_trades(symbol, tf);"#)
-            .execute(pool)
-            .await
+        conn.execute("CREATE INDEX IF NOT EXISTS tf_symbols_tf ON tf_trades(symbol, tf);", ())
             .unwrap();
-        // backtester
-        sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS tf_symbols_timestamps ON tf_trades(symbol, timestamp);"#,
-        )
-        .execute(pool)
-        .await
-        .unwrap();
-        sqlx::query(r#"CREATE INDEX IF NOT EXISTS kline_symbols ON klines(symbol);"#)
-            .execute(pool)
-            .await
+        // compiler min max select
+        conn.execute("CREATE INDEX IF NOT EXISTS trade_entries_symbols_timestamps ON trade_entries(symbol, timestamp);", ())
             .unwrap();
-        sqlx::query(r#"CREATE INDEX IF NOT EXISTS kline_close_times ON klines(close_time);"#)
-            .execute(pool)
-            .await
+
+    }
+    pub fn drop_compile_indices(pool: &Arc<Mutex<rusqlite::Connection>>) {
+        let conn = pool.lock().unwrap();
+        conn.execute_batch("DROP INDEX tf_symbols_tf;\
+                                DROP INDEX trade_entries_symbols_timestamps;")
             .unwrap();
-        // backtester
-        sqlx::query(r#"CREATE INDEX IF NOT EXISTS tf_trades_id ON tf_trades(id);"#)
-            .execute(pool)
-            .await
+
+    }
+  pub fn create_backtest_indices(pool: &Arc<Mutex<rusqlite::Connection>>) {
+        let conn = pool.lock().unwrap();
+        // initial count and main iterator
+        conn.execute("CREATE INDEX IF NOT EXISTS kline_symbols_close_times ON klines(symbol, close_time);", ())
             .unwrap();
-        // sqlx::query(
-        //         r#"CREATE INDEX IF NOT EXISTS trade_entries_id ON trade_entries(id);"#
-        // ).execute(pool).await.unwrap();
-        // sqlx::query(
-        //     r#"CREATE INDEX IF NOT EXISTS tf_trades_to_trade_entries_tf_trades_id ON tf_trades_to_entries(tf_trade_id);"#
-        // ).execute(pool).await.unwrap();
-        // sqlx::query(
-        //     r#"CREATE INDEX IF NOT EXISTS tf_trades_to_trade_entries_trade_entries_id ON tf_trades_to_entries(trade_entry_id);"#
-        // ).execute(pool).await.unwrap();
+        // join select statement
+        conn.execute("CREATE INDEX IF NOT EXISTS tf_trades_to_trade_entries_tf_trades_id ON tf_trades_to_entries(tf_trade_id);", ())
+            .unwrap();
+
+    }
+    pub fn drop_backtest_indices(pool: &Arc<Mutex<rusqlite::Connection>>) {
+        let conn = pool.lock().unwrap();
+        conn.execute_batch("DROP INDEX kline_symbols_close_times;\
+                                DROP INDEX tf_trades_to_trade_entries_tf_trades_id;")
+            .unwrap();
+
     }
 
     pub async fn insert_order(pool: &SqlitePool, order: Order) {
@@ -672,7 +673,7 @@ impl SQLiteClient {
         symbol: &String,
         min: u64,
         max: u64,
-    ) -> Vec<(String, u64)> {
+    ) -> Vec<(u64, u64)> {
         let s = format!(
             "SELECT id, timestamp FROM trade_entries
         WHERE symbol = '{}' AND timestamp BETWEEN {} AND {} ORDER BY timestamp ASC;",
@@ -685,11 +686,11 @@ impl SQLiteClient {
 
         let rows = stmt
             .query_and_then((), |row| {
-                Ok::<(String, u64), rusqlite::Error>((row.get(0).unwrap(), row.get(1).unwrap()))
+                Ok::<(u64, u64), rusqlite::Error>((row.get(0).unwrap(), row.get(1).unwrap()))
             })
             .unwrap()
-            .map(|r: Result<(String, u64), _>| r.unwrap())
-            .collect::<Vec<(String, u64)>>();
+            .map(|r: Result<(u64, u64), _>| r.unwrap())
+            .collect::<Vec<(u64, u64)>>();
         rows
     }
 
@@ -724,57 +725,139 @@ impl SQLiteClient {
             drop(s)
         }
     }
-    pub fn insert_trade_entries(
+    // pub fn insert_trade_entries(
+    //     pool: &Arc<Mutex<rusqlite::Connection>>,
+    //     trade_entries: &Vec<SQLiteTradeEntry>,
+    // ) {
+    //         let start = Instant::now();
+    //
+    //     let statement =
+    //         "INSERT INTO trade_entries (id, price, qty, timestamp, delta, symbol) VALUES "
+    //             .to_string();
+    //     for trade_entries in trade_entries.chunks(100000) {
+    //         let mut rows = "".to_string();
+    //         for s_entry in trade_entries {
+    //             rows += &format!(
+    //                 "('{}', '{}','{}','{}','{}','{}'),\n",
+    //                 s_entry.id,
+    //                 s_entry.price,
+    //                 s_entry.qty,
+    //                 s_entry.timestamp,
+    //                 s_entry.delta,
+    //                 s_entry.symbol
+    //             )
+    //         }
+    //
+    //         let s = statement.clone() + &rows[..rows.len() - 2];
+    //         let pool = pool.lock().unwrap();
+    //         pool.execute_batch(&s).unwrap();
+    //
+    //         drop(s)
+    //     }
+    //     info!("inserted {} entries in {:?}", trade_entries.len(), start.elapsed());
+    //
+    //
+    // }
+        pub fn insert_trade_entries(
         pool: &Arc<Mutex<rusqlite::Connection>>,
         trade_entries: &Vec<SQLiteTradeEntry>,
     ) {
-        let statement =
-            "INSERT INTO trade_entries (id, price, qty, timestamp, delta, symbol) VALUES "
-                .to_string();
-        for trade_entries in trade_entries.chunks(10000) {
-            let mut rows = "".to_string();
-            for s_entry in trade_entries {
-                rows += &format!(
-                    "('{}', '{}','{}','{}','{}','{}'),\n",
-                    s_entry.id,
-                    s_entry.price,
-                    s_entry.qty,
-                    s_entry.timestamp,
-                    s_entry.delta,
-                    s_entry.symbol
-                )
+        let start = Instant::now();
+                let mut conn = pool.lock().unwrap();
+                let tx = conn.transaction().unwrap();
+                {
+                    let mut stmt = tx.prepare_cached(
+                        "INSERT INTO trade_entries (price, qty, timestamp, delta, symbol) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    ).unwrap();
+                    for s_entry in trade_entries {
+                        stmt.execute(params![
+                            s_entry.price,
+                            s_entry.qty,
+                            s_entry.timestamp,
+                            s_entry.delta,
+                            s_entry.symbol
+                        ]).unwrap();
+                    }
+                }
+                tx.commit().unwrap();
+
+        info!("inserted {} entries in {:?}", trade_entries.len(), start.elapsed());
+    }
+    //  pub fn insert_trade_entries(
+    //     pool: &Arc<Mutex<rusqlite::Connection>>,
+    //     trade_entries: &Vec<SQLiteTradeEntry>,
+    // ) {
+    //     let start = Instant::now();
+    //     let thread_pool = rayon::ThreadPoolBuilder::new()
+    //         .num_threads(num_cpus::get_physical())
+    //         .build()
+    //         .unwrap();
+    //     thread_pool.install(|| {
+    //         trade_entries.into_par_iter().chunks(10_000).for_each(|chunk| {
+    //             let mut conn = pool.lock().unwrap();
+    //             let tx = conn.transaction().unwrap();
+    //
+    //             {
+    //                 let mut stmt = tx.prepare_cached(
+    //                     "INSERT INTO trade_entries (id, price, qty, timestamp, delta, symbol) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    //                 ).unwrap();
+    //                 for s_entry in chunk {
+    //                     stmt.execute(params![
+    //                         s_entry.id,
+    //                         s_entry.price,
+    //                         s_entry.qty,
+    //                         s_entry.timestamp,
+    //                         s_entry.delta,
+    //                         s_entry.symbol
+    //                     ]).unwrap();
+    //                 }
+    //             }
+    //
+    //             tx.commit().unwrap();
+    //         });
+    //     });
+    //     info!("inserted {} entries in {:?}", trade_entries.len(), start.elapsed());
+    // }
+
+
+    pub fn insert_tf_trades(pool: &Arc<Mutex<rusqlite::Connection>>, trades: TfTrades) -> Vec<u64>{
+        let mut conn = pool.lock().unwrap();
+        let tx = conn.transaction().unwrap();
+        let mut row_ids = vec![];
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO tf_trades (symbol, tf, timestamp, min_trade_time, max_trade_time, trades) VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING id",
+            ).unwrap();
+            for trade in trades {
+                let row = stmt.query_row::<u64, _, _>(params![
+                    trade.symbol.symbol,
+                    trade.tf,
+                    trade.timestamp,
+                    trade.min_trade_time,
+                    trade.max_trade_time,
+                    serde_json::to_string(&trade.trades).unwrap()
+                ], |row| row.get(0)).unwrap();
+                row_ids.push(row);
             }
-            let s = statement.clone() + &rows[..rows.len() - 2];
-            let pool = pool.lock().unwrap();
-            pool.execute_batch(&s).unwrap();
-            drop(s)
         }
+        tx.commit().unwrap();
+        row_ids
     }
 
-    pub fn insert_tf_trades(pool: &Arc<Mutex<rusqlite::Connection>>, trades: TfTrades) {
-        let statement = "INSERT INTO tf_trades (id, symbol, tf, timestamp, min_trade_time, max_trade_time, trades) VALUES ".to_string();
-        for trades in trades.chunks(10000) {
-            let mut rows = "".to_string();
-            for trade in trades.to_owned() {
-                let id = trade.id.clone();
-                let s_trade: SQLiteTfTrade = trade.into();
-                rows += &format!(
-                    "('{}', '{}',{},'{}','{}','{}', '{}'),\n",
-                    id.to_string(),
-                    s_trade.symbol,
-                    s_trade.tf,
-                    s_trade.timestamp,
-                    s_trade.min_trade_time,
-                    s_trade.max_trade_time,
-                    s_trade.trades
-                )
-            }
-            let s = statement.clone() + &rows[..rows.len() - 2];
-            let pool = pool.lock().unwrap();
-            pool.execute_batch(&s).unwrap();
-            // sqlx::raw_sql(&s).execute(pool).await.unwrap();
-            drop(s)
-        }
+    pub fn insert_tf_trade(pool: &Arc<Mutex<rusqlite::Connection>>, trade: TfTrade) -> u64{
+        let mut conn = pool.lock().unwrap();
+            let mut stmt = conn.prepare_cached(
+                "INSERT INTO tf_trades (symbol, tf, timestamp, min_trade_time, max_trade_time, trades) VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING id",
+            ).unwrap();
+                let row = stmt.query_row::<u64, _, _>(params![
+                    trade.symbol.symbol,
+                    trade.tf,
+                    trade.timestamp,
+                    trade.min_trade_time,
+                    trade.max_trade_time,
+                    serde_json::to_string(&trade.trades).unwrap()
+                ], |row| row.get(0)).unwrap();
+        row
     }
 
     pub fn insert_tf_trades_to_entries(
@@ -830,12 +913,9 @@ impl SQLiteClient {
     }
 
     // Reset trades by symbol
-    pub async fn reset_trade_entries(&self, symbol: &Symbol) {
-        sqlx::query("DELETE FROM trade_entries WHERE symbol = ?")
-            .bind(&symbol.symbol)
-            .execute(&self.pool)
-            .await
-            .unwrap();
+    pub fn reset_trade_entries(conn: &Arc<Mutex<rusqlite::Connection>>, symbol: &Symbol) {
+        let conn = conn.lock().unwrap();
+        conn.execute("DELETE FROM trade_entries WHERE symbol = ?1", params![symbol.symbol]).unwrap();
     }
     // Reset trades by symbol
     pub async fn reset_tf_trades(&self, symbol: &Symbol) {

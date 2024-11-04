@@ -151,7 +151,7 @@ pub struct BookSideEntry {
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TradeEntry {
-    pub id: String,
+    pub id: u64,
     pub price: Decimal,
     pub qty: Decimal,
     pub timestamp: u64,
@@ -163,7 +163,7 @@ pub struct TradeEntry {
 pub struct TfTrade {
     pub symbol: Symbol,
     pub tf: u64,
-    pub id: String,
+    pub id: u64,
     pub timestamp: u64,
     pub min_trade_time: u64,
     pub max_trade_time: u64,
