@@ -15,9 +15,11 @@ def main():
     parser = argparse.ArgumentParser(description='Visualize backtest trades.')
     parser.add_argument('symbol', type=str, help='Symbol to filter data')
     parser.add_argument('trades', type=int, help='Number of trades to display')
+    parser.add_argument('tf', type=str, help='timeframe for charts')
     args = parser.parse_args()
 
     symbol = args.symbol
+    tf = args.tf
     num_trades = args.trades
 
     # Connect to the SQLite database
@@ -26,7 +28,7 @@ def main():
 
     # Load data into DataFrames
     trades_df = pd.read_sql_query("SELECT * FROM trades WHERE symbol = ?", conn, params=(symbol,))
-    klines_df = pd.read_sql_query("SELECT * FROM klines WHERE symbol = ?", conn, params=(symbol,))
+    klines_df = pd.read_sql_query("SELECT * FROM tf_trades WHERE symbol = ? AND tf = ?", conn, params=(symbol,tf))
     orders_df = pd.read_sql_query("SELECT * FROM orders WHERE symbol = ?", conn, params=(symbol,))
     conn.close()
     print(f"Loaded data for symbol: {symbol}")

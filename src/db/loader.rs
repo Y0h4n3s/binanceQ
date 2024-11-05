@@ -1,4 +1,5 @@
 use crate::db;
+#[cfg(feature = "trades")]
 use crate::db::client::{SQLiteTradeEntry, SQliteTfTradeToTradeEntry};
 use crate::types::Symbol;
 use crate::types::{Kline, TfTrade, TfTrades};
@@ -22,7 +23,7 @@ use tokio::runtime::Handle;
 use tokio_retry::strategy::ExponentialBackoff;
 use tokio_retry::RetryIf;
 use tracing::{debug, error, info, warn};
-
+#[cfg(feature = "trades")]
 fn insert_trade_entries(
     trades: Vec<ArchiveAggTrade>,
     symbol: &Symbol,
@@ -108,6 +109,8 @@ where
     }
 }
 
+
+#[cfg(feature = "trades")]
 pub async fn compile_agg_trades_for_new(
     symbol: &Symbol,
     tf: u64,
@@ -185,6 +188,8 @@ pub async fn compile_agg_trades_for_new(
             pb.inc(len as u64);
         });
 }
+
+#[cfg(feature = "trades")]
 pub async fn compile_agg_trades_for(
     symbol: &Symbol,
     tf: u64,
@@ -280,6 +285,9 @@ pub async fn compile_agg_trades_for(
         .await;
 }
 
+
+
+#[cfg(feature = "trades")]
 pub async fn load_klines_from_archive(
     symbol: Symbol,
     tf: String,
@@ -415,6 +423,146 @@ pub async fn load_klines_from_archive(
         .await;
 }
 
+
+#[cfg(feature = "candles")]
+pub async fn load_klines_from_archive(
+    symbol: Symbol,
+    tf: String,
+    fetch_history_span: i64,
+    pb: ProgressBar,
+    verbose: bool,
+    sqlite_client: Arc<std::sync::Mutex<SQLiteClient>>,
+)
+{
+    let lock = sqlite_client.lock().unwrap();
+    lock.reset_tf_trades_by_tf(&symbol, &tf).await;
+    drop(lock);
+    let today = chrono::DateTime::<Utc>::from(SystemTime::now());
+    let tf = Arc::new(tf);
+    let symbol = Arc::new(symbol);
+    let pb = Arc::new(pb);
+    let months = if fetch_history_span == -1 {
+        (0..(12 * 20))
+            .map(|i| today - chrono::Duration::weeks(4 * i))
+            .collect::<Vec<_>>()
+    } else {
+        let span = ((fetch_history_span as f64) / (4.0 * 7.0 * 24.0 * 3600.0)).ceil() as i64;
+        (0..span)
+            .map(|i| today - chrono::Duration::weeks(4 * i))
+            .collect::<Vec<_>>()
+    };
+
+    if !verbose {
+        pb.inc_length(months.len() as u64);
+    }
+    let concurrency_limit = num_cpus::get_physical();
+
+    stream::iter(months)
+        .map(|month| {
+            let tf = tf.clone();
+            let symbol = symbol.clone();
+            let sqlite_client = sqlite_client.clone();
+            let pb = pb.clone();
+            async move {
+                let month_str = month.format("%Y-%m").to_string();
+                let url = format!(
+                    "https://data.binance.vision/data/spot/monthly/klines/{}/{}/{}-{}-{}.zip",
+                    symbol.symbol, tf, symbol.symbol, tf, month_str
+                );
+                if verbose {
+                    debug!("[+] fetching {}", url);
+                }
+                let retry_strategy = ExponentialBackoff::from_millis(100).take(3);
+
+                let res = RetryIf::spawn(
+                    retry_strategy,
+                    || reqwest::get(&url),
+                    |e: &reqwest::Error| e.is_connect() || e.is_timeout(),
+                )
+                .await;
+                if let Ok(res) = res {
+                    if !res.status().is_success() {
+                        warn!("[-] Failed to fetch {}. Reason: {}", url, res.status());
+                        return;
+                    }
+                    if let Ok(bytes) = res.bytes().await {
+                        let buf = bytes.to_vec();
+                        let reader = std::io::Cursor::new(buf);
+                        let mut archive = zip::ZipArchive::new(reader).unwrap();
+                        let mut file_contents = String::new();
+                        archive
+                            .by_index(0)
+                            .unwrap()
+                            .read_to_string(&mut file_contents)
+                            .expect("failed to read archive contents");
+                        let mut reader = csv::Reader::from_reader(file_contents.as_bytes());
+
+                        reader.set_headers(StringRecord::from(vec![
+                            "open_time",
+                            "open",
+                            "high",
+                            "low",
+                            "close",
+                            "volume",
+                            "close_time",
+                            "quote_volume",
+                            "count",
+                            "taker_buy_volume",
+                            "taker_buy_quote_volume",
+                            "ignore",
+                        ]));
+                        let mut trades = vec![];
+
+                        for record in reader
+                            .deserialize::<ArchiveKline>()
+                            .filter_map(|result| result.ok())
+                        {
+                            let symbol: Symbol = (*symbol).clone();
+                            let r = TfTrade {
+                                open_time: record.open_time,
+                                close_time: record.close_time,
+                                quote_volume: record.quote_volume,
+                                count: record.count,
+                                taker_buy_volume: record.taker_buy_volume,
+                                taker_buy_quote_volume: record.taker_buy_quote_volume,
+                                symbol,
+                                open: record.open,
+                                close: record.close,
+                                high: record.high,
+                                low: record.low,
+                                volume: record.volume,
+                                ignore: record.ignore,
+                                tf: tf.to_string()
+                            };
+                            trades.push(r);
+                        }
+
+                        if trades.is_empty() {
+                            info!("[-] No Kline found");
+                        } else {
+                            SQLiteClient::insert_tf_trades(
+                                &sqlite_client.lock().unwrap().conn,
+                                trades,
+                            );
+                        }
+                    } else if verbose {
+                        warn!("[-] failed to deserialize {}", url);
+                    }
+                } else if verbose {
+                    warn!("[-] failed to fetch {}", url);
+                }
+                if !verbose {
+                    pb.inc(1);
+                }
+            }
+        })
+        .buffer_unordered(concurrency_limit)
+        .collect::<Vec<_>>()
+        .await;
+}
+
+
+#[cfg(feature = "trades")]
 pub async fn load_history_from_archive(
     symbol: Symbol,
     fetch_history_span: i64,

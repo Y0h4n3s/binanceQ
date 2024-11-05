@@ -2,11 +2,17 @@
 pub(crate) mod live;
 mod notification;
 mod position;
-pub mod simulated;
 
+#[cfg(feature = "trades")]
+pub mod simulated;
+#[cfg(feature = "trades")]
 mod order_state_machine;
 #[allow(dead_code)]
 mod spread;
+#[cfg(feature = "candles")]
+pub(crate) mod simulated_candle;
+#[cfg(feature = "candles")]
+mod order_state_machine_candle;
 
 use crate::events::{EventEmitter, EventSink};
 use crate::types::{ExchangeId, Order, OrderStatus, OrderType, Side, Symbol, SymbolAccount, Trade};

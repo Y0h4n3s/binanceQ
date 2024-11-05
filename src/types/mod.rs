@@ -17,67 +17,8 @@ pub struct Candle {
     pub volume: Decimal,
 }
 
-impl OHLCV for Candle {
-    fn open(&self) -> ValueType {
-        self.open.to_f64().unwrap()
-    }
 
-    fn high(&self) -> ValueType {
-        self.high.to_f64().unwrap()
-    }
 
-    fn low(&self) -> ValueType {
-        self.low.to_f64().unwrap()
-    }
-
-    fn close(&self) -> ValueType {
-        self.close.to_f64().unwrap()
-    }
-
-    fn volume(&self) -> ValueType {
-        self.volume.to_f64().unwrap()
-    }
-}
-
-impl From<&TfTrade> for Candle {
-    fn from(tf_trade: &TfTrade) -> Self {
-        if tf_trade.trades.is_empty() {
-            return Candle::default();
-        }
-        Self {
-            open: tf_trade
-                .trades
-                .iter()
-                .min_by(|a, b| a.timestamp.partial_cmp(&b.timestamp).unwrap())
-                .unwrap()
-                .price,
-            high: tf_trade
-                .trades
-                .iter()
-                .max_by(|a, b| a.price.partial_cmp(&b.price).unwrap())
-                .unwrap()
-                .price,
-            low: tf_trade
-                .trades
-                .iter()
-                .min_by(|a, b| a.price.partial_cmp(&b.price).unwrap())
-                .unwrap()
-                .price,
-            close: tf_trade
-                .trades
-                .iter()
-                .max_by(|a, b| a.timestamp.partial_cmp(&b.timestamp).unwrap())
-                .unwrap()
-                .price,
-            volume: tf_trade
-                .trades
-                .iter()
-                .map(|t| t.qty)
-                .reduce(|a, b| a + b)
-                .unwrap_or(dec!(0.0)),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Default)]
 pub struct AccessKey {
@@ -92,7 +33,6 @@ pub enum Mode {
 }
 #[derive(Debug, Clone, Default)]
 pub struct GlobalConfig {
-    pub tf1: u64,
     pub key: AccessKey,
     pub verbose: bool,
     pub symbol: Symbol,
@@ -159,6 +99,7 @@ pub struct TradeEntry {
     pub symbol: String,
 }
 
+#[cfg(feature = "trades")]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TfTrade {
     pub symbol: Symbol,
@@ -168,6 +109,25 @@ pub struct TfTrade {
     pub min_trade_time: u64,
     pub max_trade_time: u64,
     pub trades: Vec<TradeEntry>,
+}
+
+#[cfg(feature = "candles")]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TfTrade {
+    pub symbol: Symbol,
+    pub open_time: u64,
+    pub open: Decimal,
+    pub high: Decimal,
+    pub low: Decimal,
+    pub close: Decimal,
+    pub volume: Decimal,
+    pub close_time: u64,
+    pub quote_volume: Decimal,
+    pub count: u64,
+    pub taker_buy_volume: Decimal,
+    pub taker_buy_quote_volume: Decimal,
+    pub ignore: u64,
+    pub tf: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

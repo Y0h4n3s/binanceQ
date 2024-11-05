@@ -1,10 +1,14 @@
 use crate::db::client::SQLiteClient;
 use crate::events::EventSink;
+#[cfg(feature = "trades")]
 use crate::executors::simulated::SimulatedAccount;
+#[cfg(feature = "candles")]
+use crate::executors::simulated_candle::SimulatedCandleAccount as SimulatedAccount;
+
 use crate::executors::{ExchangeAccount, ExchangeAccountInfo, TradeExecutor};
 use crate::managers::risk_manager::{RiskManager, RiskManagerConfig};
 use crate::managers::strategy_manager::StrategyManager;
-use crate::mongodb::MongoClient;
+use crate::strategies::consolidation_accumulator::BreakoutAccumulationStrategy;
 use crate::strategies::rsi_basic::SimpleRSIStrategy;
 use crate::types::{GlobalConfig, Kline, Order, OrderStatus, Symbol, TfTrades, Trade};
 use async_broadcast::{InactiveReceiver, Sender};
@@ -53,6 +57,8 @@ impl BackTesterMulti {
         orders_tx: Sender<(OrderStatus, Option<Arc<Notify>>)>,
         account: Arc<SimulatedAccount>,
         sqlite_client: Arc<SQLiteClient>,
+        #[cfg(feature = "candles")] tf1: String,
+        #[cfg(feature = "candles")] tf2: String,
     ) -> anyhow::Result<()> {
         stream::iter(self.config.clone())
             .map(|config| {
@@ -65,9 +71,11 @@ impl BackTesterMulti {
                 let o_t = orders_tx.clone();
                 let a = account.clone();
                 let sqlite_client = sqlite_client.clone();
+                let tf1 = tf1.clone();
+                let tf2 = tf2.clone();
                 async move {
                     back_tester
-                        .run(p, t_r, t_t, o_t, a, sqlite_client)
+                        .run(p, t_r, t_t, o_t, a, sqlite_client, tf1, tf2)
                         .await
                         .unwrap()
                 }
@@ -97,6 +105,8 @@ impl BackTester {
         orders_tx: Sender<(OrderStatus, Option<Arc<Notify>>)>,
         account: Arc<SimulatedAccount>,
         sqlite_client: Arc<SQLiteClient>,
+        #[cfg(feature = "candles")] tf1: String,
+        #[cfg(feature = "candles")] tf2: String,
     ) -> anyhow::Result<()> {
         // Start the python signal generator for this symbol
         let config = self.config.clone();
@@ -163,7 +173,7 @@ impl BackTester {
             klines_channel.1.deactivate(),
             risk_manager,
         );
-        let strategy = SimpleRSIStrategy::new(14);
+        let strategy = BreakoutAccumulationStrategy::new(14);
         strategy_manager.load_strategy(Box::new(strategy)).await;
 
         let until = SystemTime::now()
@@ -174,128 +184,262 @@ impl BackTester {
             .unwrap_or(0);
         info!("{} Loading Data...", self.config.symbol.symbol);
 
-        let count: u64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM klines WHERE symbol = ? AND close_time > ?")
-                .bind(&self.config.symbol.symbol)
-                .bind(until.to_string())
-                .fetch_one(&sqlite_client.pool)
-                .await
-                .unwrap();
-        info!(
-            "Starting backtest for {} on {}  Klines",
-            self.config.symbol.symbol, count
-        );
-        if !self.global_config.verbose {
-            pb.inc_length(count);
-        }
+        #[cfg(feature = "trades")]
+        {
+            let count: u64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM klines WHERE symbol = ? AND close_time > ?",
+            )
+            .bind(&self.config.symbol.symbol)
+            .bind(until.to_string())
+            .fetch_one(&sqlite_client.pool)
+            .await
+            .unwrap();
+            info!(
+                "Starting backtest for {} on {}  Klines",
+                self.config.symbol.symbol, count
+            );
+            if !self.global_config.verbose {
+                pb.inc_length(count);
+            }
+            // preload tf_trades on another thread
+            let mut tf_trades_que = Arc::new(Mutex::new(VecDeque::new()));
+            let load_window = 10000;
+            let symbol = self.config.symbol.clone();
+            let symbol1 = self.config.symbol.clone();
+            let sqlite_client = sqlite_client.clone();
+            let sqlite_client1 = sqlite_client.clone();
+            let trades_q = tf_trades_que.clone();
+            let no_more_trades = Arc::new(AtomicBool::new(false));
+            let no_more_trades1 = no_more_trades.clone();
+            let verbose = self.global_config.verbose;
+            let sm = Arc::new(strategy_manager.clone());
 
-        // preload tf_trades on another thread
-        let mut tf_trades_que = Arc::new(Mutex::new(VecDeque::new()));
-        let load_window = 10000;
-        let symbol = self.config.symbol.clone();
-        let symbol1 = self.config.symbol.clone();
-        let sqlite_client = sqlite_client.clone();
-        let sqlite_client1 = sqlite_client.clone();
-        let trades_q = tf_trades_que.clone();
-        let no_more_trades = Arc::new(AtomicBool::new(false));
-        let no_more_trades1 = no_more_trades.clone();
-        let verbose = self.global_config.verbose;
-        let sm = Arc::new(strategy_manager.clone());
-
-        let (res1, res2, res3) = tokio::join!(
-            tokio::spawn(async move {
-                if let Err(e) = EventSink::<Kline>::listen(sm) {
-                    eprintln!("Error in Kline listener: {}", e);
-                }
-            }),
-            tokio::spawn(async move {
-                let mut tf_trade_steps = SQLiteClient::get_tf_trades_stream_new(
-                    &sqlite_client.pool,
-                    &symbol,
-                    until.to_string(),
-                );
-
-                'loader: loop {
-                    if let Some(Ok(trade)) = tf_trade_steps.next().await {
-                        let mut w = tf_trades_que.lock().await;
-                        if w.len() > load_window {
-                            drop(w);
-                            // tokio::time::sleep(Duration::from_millis(200)).await;
-                            break;
-                        }
-                        w.push_back(trade);
-                    } else {
-                        no_more_trades.store(true, Ordering::Relaxed);
-                        break 'loader;
+            let (res1, res2, res3) = tokio::join!(
+                tokio::spawn(async move {
+                    if let Err(e) = EventSink::<Kline>::listen(sm) {
+                        eprintln!("Error in Kline listener: {}", e);
                     }
-                }
-            }),
-            tokio::spawn(async move {
-                let mut klines = SQLiteClient::get_kline_stream(
-                    &sqlite_client1.pool,
-                    symbol1.clone(),
-                    until.to_string(),
-                );
-                while let Some(Ok(kline)) = klines.next().await {
-                    'i: loop {
-                        let mut w = trades_q.lock().await;
+                }),
+                tokio::spawn(async move {
+                    let mut tf_trade_steps = SQLiteClient::get_tf_trades_stream_new(
+                        &sqlite_client.pool,
+                        &symbol,
+                        until.to_string(),
+                    );
 
-                        if let Some(trade) = w.pop_front() {
-                            drop(w);
-                            if trade.timestamp >= kline.close_time {
+                    'loader: loop {
+                        if let Some(Ok(trade)) = tf_trade_steps.next().await {
+                            let mut w = tf_trades_que.lock().await;
+                            if w.len() > load_window {
+                                drop(w);
+                                // tokio::time::sleep(Duration::from_millis(200)).await;
+                                break;
+                            }
+                            w.push_back(trade);
+                        } else {
+                            no_more_trades.store(true, Ordering::Relaxed);
+                            break 'loader;
+                        }
+                    }
+                }),
+                tokio::spawn(async move {
+                    let mut klines = SQLiteClient::get_kline_stream(
+                        &sqlite_client1.pool,
+                        symbol1.clone(),
+                        until.to_string(),
+                    );
+                    while let Some(Ok(kline)) = klines.next().await {
+                        'i: loop {
+                            let mut w = trades_q.lock().await;
+
+                            if let Some(trade) = w.pop_front() {
+                                drop(w);
+                                if trade.timestamp >= kline.close_time {
+                                    let notify = Arc::new(Notify::new());
+                                    let sm_notifer = notify.notified();
+                                    // let rm_notifier = notify.notified();
+                                    // send this kline to the strategy manager and let it decide what to do
+                                    match klines_channel
+                                        .0
+                                        .broadcast((kline.clone(), Some(notify.clone())))
+                                        .await
+                                    {
+                                        Ok(_) => {
+                                            sm_notifer.await;
+                                            // rm_notifier.await;
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[-] {} Error sending kline to strategy manager {}",
+                                                symbol1.symbol, e
+                                            );
+                                        }
+                                    }
+                                    break 'i;
+                                }
                                 let notify = Arc::new(Notify::new());
                                 let sm_notifer = notify.notified();
-                                // let rm_notifier = notify.notified();
-                                // send this kline to the strategy manager and let it decide what to do
-                                match klines_channel
-                                    .0
-                                    .broadcast((kline.clone(), Some(notify.clone())))
+                                match tf_trades_tx
+                                    .broadcast((vec![trade], Some(notify.clone())))
                                     .await
                                 {
                                     Ok(_) => {
                                         sm_notifer.await;
-                                        // rm_notifier.await;
                                     }
                                     Err(e) => {
-                                        eprintln!(
-                                            "[-] {} Error sending kline to strategy manager {}",
-                                            symbol1.symbol, e
-                                        );
+                                        // don't do anything, print and continue
+                                        error!("Error {}: {}", symbol1.symbol, e);
                                     }
                                 }
-                                break 'i;
-                            }
-                            let notify = Arc::new(Notify::new());
-                            let sm_notifer = notify.notified();
-                            match tf_trades_tx
-                                .broadcast((vec![trade], Some(notify.clone())))
-                                .await
-                            {
-                                Ok(_) => {
-                                    sm_notifer.await;
+                            } else {
+                                drop(w);
+                                if no_more_trades1.load(Ordering::Relaxed) {
+                                    break 'i;
                                 }
-                                Err(e) => {
-                                    // don't do anything, print and continue
-                                    error!("Error {}: {}", symbol1.symbol, e);
-                                }
-                            }
-                        } else {
-                            drop(w);
-                            if no_more_trades1.load(Ordering::Relaxed) {
-                                break 'i;
                             }
                         }
+                        if !verbose {
+                            pb.inc(1);
+                        }
                     }
-                    if !verbose {
-                        pb.inc(1);
+                })
+            );
+            res1.unwrap();
+            res2.unwrap();
+            res3.unwrap();
+            info!("{} Backtest done", self.config.symbol.symbol);
+            Ok(())
+        }
+
+        #[cfg(feature = "candles")]
+        {
+            let count: u64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM tf_trades WHERE symbol = ? AND close_time > ? AND tf = ?",
+            )
+            .bind(&self.config.symbol.symbol)
+            .bind(until.to_string())
+            .bind(&tf1)
+            .fetch_one(&sqlite_client.pool)
+            .await
+            .unwrap();
+            info!(
+                "Starting backtest for {} on {}  Klines",
+                self.config.symbol.symbol, count
+            );
+            if !self.global_config.verbose {
+                pb.inc_length(count);
+            }
+            // preload tf_trades on another thread
+            let mut tf_trades_que = Arc::new(Mutex::new(VecDeque::new()));
+            let load_window = 10000;
+            let symbol = self.config.symbol.clone();
+            let symbol1 = self.config.symbol.clone();
+            let sqlite_client = sqlite_client.clone();
+            let sqlite_client1 = sqlite_client.clone();
+            let trades_q = tf_trades_que.clone();
+            let no_more_trades = Arc::new(AtomicBool::new(false));
+            let no_more_trades1 = no_more_trades.clone();
+            let verbose = self.global_config.verbose;
+            let sm = Arc::new(strategy_manager.clone());
+
+            let (res1, res2, res3) = tokio::join!(
+                tokio::spawn(async move {
+                    if let Err(e) = EventSink::<Kline>::listen(sm) {
+                        eprintln!("Error in Kline listener: {}", e);
                     }
-                }
-            })
-        );
-        res1.unwrap();
-        res2.unwrap();
-        res3.unwrap();
-        info!("{} Backtest done", self.config.symbol.symbol);
-        Ok(())
+                }),
+                tokio::spawn(async move {
+                    let mut kline_steps = SQLiteClient::get_tf_trade_stream_with_tf(
+                        &sqlite_client.pool,
+                        symbol.clone(),
+                        until.to_string(),
+                        tf2,
+                    );
+
+                    'loader: loop {
+                        if let Some(Ok(trade)) = kline_steps.next().await {
+                            let mut w = tf_trades_que.lock().await;
+                            if w.len() > load_window {
+                                drop(w);
+                                break;
+                            }
+                            w.push_back(trade);
+                        } else {
+                            no_more_trades.store(true, Ordering::Relaxed);
+                            break 'loader;
+                        }
+                    }
+                }),
+                tokio::spawn(async move {
+                    let mut klines = SQLiteClient::get_kline_stream_with_tf(
+                        &sqlite_client1.pool,
+                        symbol1.clone(),
+                        until.to_string(),
+                        tf1,
+                    );
+                    while let Some(Ok(kline)) = klines.next().await {
+                            let mut trades = vec![];
+                        'i: loop {
+                            let mut w = trades_q.lock().await;
+                            if let Some(trade) = w.pop_front() {
+                                drop(w);
+                                if trade.close_time >= kline.close_time {
+                                    let notify = Arc::new(Notify::new());
+                                    let sm_notifer = notify.notified();
+                                    match tf_trades_tx
+                                        .broadcast((trades, Some(notify.clone())))
+                                        .await
+                                    {
+                                        Ok(_) => {
+                                            sm_notifer.await;
+                                        }
+                                        Err(e) => {
+                                            // don't do anything, print and continue
+                                            error!("Error {}: {}", symbol1.symbol, e);
+                                        }
+                                    }
+                                    let notify = Arc::new(Notify::new());
+                                    let sm_notifer = notify.notified();
+                                    // let rm_notifier = notify.notified();
+                                    // send this kline to the strategy manager and let it decide what to do
+                                    match klines_channel
+                                        .0
+                                        .broadcast((kline.clone(), Some(notify.clone())))
+                                        .await
+                                    {
+                                        Ok(_) => {
+                                            sm_notifer.await;
+                                            // rm_notifier.await;
+                                        }
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[-] {} Error sending kline to strategy manager {}",
+                                                symbol1.symbol, e
+                                            );
+                                        }
+                                    }
+                                    break 'i;
+                                } else {
+                                    trades.push(trade);
+                                }
+                            } else {
+                                drop(w);
+                                if no_more_trades1.load(Ordering::Relaxed) {
+                                    break 'i;
+                                }
+                            }
+                        }
+                        if !verbose {
+                            pb.inc(1);
+                        }
+                    }
+                })
+            );
+            res1.unwrap();
+            res2.unwrap();
+            res3.unwrap();
+            info!("{} Backtest done", self.config.symbol.symbol);
+            Ok(())
+        }
     }
 }
