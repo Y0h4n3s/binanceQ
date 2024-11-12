@@ -317,8 +317,8 @@ impl EventSink<OrderStatus> for SimulatedCandleAccount {
                 trace!("Removing filled order from order set: {:?}", order);
                 if let Some(orders) = open_orders.lock().await.get(&order.symbol) {
                     SQLiteClient::insert_order(&self.sqlite_client.pool, order.clone()).await;
-
                     orders.lock().await.remove(order);
+
                 }
             }
             // log reason and remove

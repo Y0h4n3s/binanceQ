@@ -13,6 +13,7 @@ mod spread;
 pub(crate) mod simulated_candle;
 #[cfg(feature = "candles")]
 mod order_state_machine_candle;
+mod binance_live;
 
 use crate::events::{EventEmitter, EventSink};
 use crate::types::{ExchangeId, Order, OrderStatus, OrderType, Side, Symbol, SymbolAccount, Trade};

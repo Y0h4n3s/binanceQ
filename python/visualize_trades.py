@@ -77,7 +77,7 @@ def main():
         entry_price = trade['entry_price']
         entry_time = trade['entry_time']
         exit_price = trade['price']
-        side = trade['side'].upper()
+        side = trade['position_side'].upper()
 
         # Define time window around the trade
         start_time = entry_time - 15*span[0]
@@ -124,15 +124,76 @@ def main():
         )
 
         # Set title for each subplot
-        fig.update_yaxes(title_text=f"Trade {idx+1}: {side}")
+        fig.update_xaxes(title_text=f"Trade {idx+1} PNL: {trade['realized_pnl']}")
 
         fig.show()
 
 
 
 
+
+    # Define time window around the trade
+    start_time = list(trades_df.head(1)['trade_time'])[0]
+    end_time = list(trades_df.tail(1)['trade_time'])[-1]
+    # Filter klines data for this time window
+    klines_subset = klines_df[(klines_df['open_time'] >= start_time) & (klines_df['open_time'] <= end_time)]
+    figure = go.Figure(data=[go.Candlestick(
+        x=klines_subset['close_time'],
+        open=klines_subset['open'],
+        high=klines_subset['high'],
+        low=klines_subset['low'],
+        close=klines_subset['close'],
+        showlegend=False,
+    )])
+
+    for idx, trade in trades_df.iterrows():
+        # Prepare data for each trade
+        trade_time = trade['trade_time']
+        entry_price = trade['entry_price']
+        entry_time = trade['entry_time']
+        exit_price = trade['price']
+        side = trade['position_side'].upper()
+
+
+
+
+        figure.add_trace(
+            go.Scatter(
+                x=[entry_time],
+                y=[entry_price],
+                mode='markers',
+                marker=dict(
+                    symbol='triangle-up' if side == 'BID' else 'triangle-down',
+                    color='green' if side == 'BID' else 'red',
+                    size=12
+                ),
+                showlegend=False
+            ),
+        )
+
+        figure.add_trace(
+            go.Scatter(
+                x=[trade_time],
+                y=[exit_price],
+                mode='markers',
+                marker=dict(
+                    symbol='triangle-down' if side == 'BID' else 'triangle-up',
+                    color='red' if side == 'BID' else 'green',
+                    size=12
+                ),
+                showlegend=False
+            ),
+        )
+
+    # Set title for each subplot
+    figure.update_xaxes(title_text=f"PNL: {sum(trades_df['realized_pnl'])}")
+
+    figure.show()
+
+
     # Show the figure
     plt.show()
+
 
 
 

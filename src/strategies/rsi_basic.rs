@@ -1,6 +1,6 @@
 use crate::executors::ExchangeAccountInfo;
 use crate::managers::strategy_manager::SignalGenerator;
-use crate::types::{ClosePolicy, Kline, Order, OrderType, Side};
+use crate::types::{ClosePolicy, Kline, Order, OrderType, Side, Trade};
 use async_trait::async_trait;
 use log::debug;
 use rust_decimal::prelude::ToPrimitive;
@@ -97,5 +97,9 @@ impl SignalGenerator for SimpleRSIStrategy {
         }
 
         Some(orders)
+    }
+
+    async fn handle_trade(&mut self, kline: &Trade, account: &Box<Arc<dyn ExchangeAccountInfo>>) -> Option<Vec<Order>> {
+        None
     }
 }

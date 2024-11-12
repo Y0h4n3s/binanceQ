@@ -7,7 +7,7 @@ use rust_decimal_macros::dec;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::{Mutex, Notify, RwLock};
-use tracing::debug;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 pub struct OrderStateMachine<'a> {
@@ -90,42 +90,43 @@ impl<'a> OrderStateMachine<'a> {
         let mut lock = self.positions.lock().await;
         let position = lock.get_mut(&self.order.symbol).unwrap();
         if self.order.side == Side::Bid {
-                if let Some(trade) = position.apply_order(self.order, trade.close_time) {
-                    broadcast(&self.trade_subscribers, trade).await;
-                }
-                drop(lock);
-                self.open_orders.remove(self.index);
-                if trade.volume.lt(&self.order.quantity) {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::PartiallyFilled(self.order.clone(), trade.volume),
-                    )
-                    .await;
-                } else {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::Filled(self.order.clone()),
-                    )
-                    .await;
-                }
+            if let Some(trade) = position.apply_order(self.order, trade.close_time) {
+                broadcast(&self.trade_subscribers, trade).await;
+            }
+            drop(lock);
+            self.open_orders.remove(self.index);
+            if trade.volume.lt(&self.order.quantity) {
+                broadcast_and_wait(
+                    &self.order_status_subscribers,
+                    OrderStatus::PartiallyFilled(self.order.clone(), trade.volume),
+                )
+                .await;
+            } else {
+                broadcast_and_wait(
+                    &self.order_status_subscribers,
+                    OrderStatus::Filled(self.order.clone()),
+                )
+                .await;
+
+            }
         } else {
-                if let Some(trade) = position.apply_order(self.order, trade.close_time) {
-                    broadcast(&self.trade_subscribers, trade).await;
-                }
-                drop(lock);
-                self.open_orders.remove(self.index);
-                if trade.volume.lt(&self.order.quantity) {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::PartiallyFilled(self.order.clone(), trade.volume),
-                    )
-                    .await;
-                } else {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::Filled(self.order.clone()),
-                    )
-                    .await;
+            if let Some(trade) = position.apply_order(self.order, trade.close_time) {
+                broadcast(&self.trade_subscribers, trade).await;
+            }
+            drop(lock);
+            self.open_orders.remove(self.index);
+            if trade.volume.lt(&self.order.quantity) {
+                broadcast_and_wait(
+                    &self.order_status_subscribers,
+                    OrderStatus::PartiallyFilled(self.order.clone(), trade.volume),
+                )
+                .await;
+            } else {
+                broadcast_and_wait(
+                    &self.order_status_subscribers,
+                    OrderStatus::Filled(self.order.clone()),
+                )
+                .await;
             }
         }
     }
@@ -150,26 +151,25 @@ impl<'a> OrderStateMachine<'a> {
         }
 
         self.order.quantity = self.order.quantity.min(position.qty);
-            if let Some(trade) = position.apply_order(self.order, trade.close_time) {
-                self.open_orders.remove(self.index);
-                if trade.qty.lt(&self.order.quantity) {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::PartiallyFilled(self.order.clone(), trade.qty),
-                    )
-                    .await;
-                } else {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::Filled(self.order.clone()),
-                    )
-                    .await;
-                }
-                let lock = self.trade_subscribers.read().await;
-                drop(lock);
-                broadcast(&self.trade_subscribers, trade).await;
+        if let Some(trade) = position.apply_order(self.order, trade.close_time) {
+            self.open_orders.remove(self.index);
+            if trade.qty.lt(&self.order.quantity) {
+                broadcast_and_wait(
+                    &self.order_status_subscribers,
+                    OrderStatus::PartiallyFilled(self.order.clone(), trade.qty),
+                )
+                .await;
+            } else {
+                broadcast_and_wait(
+                    &self.order_status_subscribers,
+                    OrderStatus::Filled(self.order.clone()),
+                )
+                .await;
             }
-
+            let lock = self.trade_subscribers.read().await;
+            drop(lock);
+            broadcast(&self.trade_subscribers, trade).await;
+        }
     }
 
     async fn process_take_profit_limit_order(&mut self, trade: &TfTrade) {
@@ -191,25 +191,24 @@ impl<'a> OrderStateMachine<'a> {
             return;
         }
 
-            self.order.quantity = self.order.quantity.min(position.qty);
-            if let Some(trade) = position.apply_order(self.order, trade.close_time) {
-                self.open_orders.remove(self.index);
-                if trade.qty.lt(&self.order.quantity) {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::PartiallyFilled(self.order.clone(), trade.qty),
-                    )
-                    .await;
-                } else {
-                    broadcast_and_wait(
-                        &self.order_status_subscribers,
-                        OrderStatus::Filled(self.order.clone()),
-                    )
-                    .await;
-                }
-                broadcast(&self.trade_subscribers, trade).await;
+        self.order.quantity = self.order.quantity.min(position.qty);
+        if let Some(trade) = position.apply_order(self.order, trade.close_time) {
+            self.open_orders.remove(self.index);
+            if trade.qty.lt(&self.order.quantity) {
+                broadcast_and_wait(
+                    &self.order_status_subscribers,
+                    OrderStatus::PartiallyFilled(self.order.clone(), trade.qty),
+                )
+                .await;
+            } else {
+                broadcast_and_wait(
+                    &self.order_status_subscribers,
+                    OrderStatus::Filled(self.order.clone()),
+                )
+                .await;
             }
-
+            broadcast(&self.trade_subscribers, trade).await;
+        }
     }
     pub fn intersects(&self, trade: &TfTrade) -> bool {
         self.order

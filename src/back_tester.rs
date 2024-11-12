@@ -154,7 +154,7 @@ impl BackTester {
                 max_risk_per_trade: 0.01,
             },
             klines_channel.1.clone().deactivate(),
-            trades_receiver,
+            trades_receiver.clone(),
             execution_commands_channel.1.deactivate(),
             inner_account,
         );
@@ -171,6 +171,7 @@ impl BackTester {
             orders_tx,
             inner_account,
             klines_channel.1.deactivate(),
+            trades_receiver,
             risk_manager,
         );
         let strategy = BreakoutAccumulationStrategy::new(14);
@@ -230,12 +231,12 @@ impl BackTester {
                     'loader: loop {
                         if let Some(Ok(trade)) = tf_trade_steps.next().await {
                             let mut w = tf_trades_que.lock().await;
+
+                            w.push_back(trade);
                             if w.len() > load_window {
                                 drop(w);
-                                // tokio::time::sleep(Duration::from_millis(200)).await;
-                                break;
+                                tokio::time::sleep(Duration::from_millis(400)).await;
                             }
-                            w.push_back(trade);
                         } else {
                             no_more_trades.store(true, Ordering::Relaxed);
                             break 'loader;
@@ -331,7 +332,7 @@ impl BackTester {
             }
             // preload tf_trades on another thread
             let mut tf_trades_que = Arc::new(Mutex::new(VecDeque::new()));
-            let load_window = 10000;
+            let load_window = 100000;
             let symbol = self.config.symbol.clone();
             let symbol1 = self.config.symbol.clone();
             let sqlite_client = sqlite_client.clone();
@@ -341,11 +342,17 @@ impl BackTester {
             let no_more_trades1 = no_more_trades.clone();
             let verbose = self.global_config.verbose;
             let sm = Arc::new(strategy_manager.clone());
+            let sm1 = Arc::new(strategy_manager.clone());
 
-            let (res1, res2, res3) = tokio::join!(
+            let (res1, res2, res3, res4) = tokio::join!(
                 tokio::spawn(async move {
                     if let Err(e) = EventSink::<Kline>::listen(sm) {
                         eprintln!("Error in Kline listener: {}", e);
+                    }
+                }),
+                tokio::spawn(async move {
+                    if let Err(e) = EventSink::<Trade>::listen(sm1) {
+                        eprintln!("Error in Trade listener: {}", e);
                     }
                 }),
                 tokio::spawn(async move {
@@ -359,11 +366,13 @@ impl BackTester {
                     'loader: loop {
                         if let Some(Ok(trade)) = kline_steps.next().await {
                             let mut w = tf_trades_que.lock().await;
-                            if w.len() > load_window {
-                                drop(w);
-                                break;
-                            }
+
                             w.push_back(trade);
+                             if w.len() > load_window {
+                                drop(w);
+                                tokio::time::sleep(Duration::from_millis(400)).await;
+
+                            }
                         } else {
                             no_more_trades.store(true, Ordering::Relaxed);
                             break 'loader;
@@ -438,6 +447,7 @@ impl BackTester {
             res1.unwrap();
             res2.unwrap();
             res3.unwrap();
+            res4.unwrap();
             info!("{} Backtest done", self.config.symbol.symbol);
             Ok(())
         }
