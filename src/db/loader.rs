@@ -4,7 +4,6 @@ use crate::db::client::{SQLiteTradeEntry, SQliteTfTradeToTradeEntry};
 use crate::types::Symbol;
 use crate::types::{Kline, TfTrade, TfTrades};
 use async_std::sync::Arc;
-use binance::model::AggTrade;
 use chrono::prelude::*;
 use csv::StringRecord;
 use db::client::SQLiteClient;

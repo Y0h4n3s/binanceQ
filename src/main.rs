@@ -29,7 +29,7 @@ mod utils;
 use crate::back_tester::{BackTester, BackTesterConfig, BackTesterMulti};
 #[cfg(feature = "trades")]
 use crate::db::loader::compile_agg_trades_for;
-use crate::types::OrderStatus;
+use crate::types::{Kline, OrderStatus};
 use async_broadcast::{Receiver, Sender};
 use async_std::sync::Arc;
 use clap::{arg, command, value_parser, Command};
@@ -43,6 +43,7 @@ use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use once_cell::sync::Lazy;
 use std::env;
 use std::fmt::Write;
+use std::sync::atomic::AtomicBool;
 use std::time::SystemTime;
 use tokio::sync::Notify;
 use tracing::info;
@@ -50,6 +51,11 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 use types::{AccessKey, ExchangeId, GlobalConfig, Mode, Symbol, TfTrades, Trade};
 use crate::db::client::SQLiteClient;
+use crate::executors::binance_live::BinanceLiveAccount;
+use crate::executors::ExchangeAccountInfo;
+use crate::managers::risk_manager::{RiskManager, RiskManagerConfig};
+use crate::managers::strategy_manager::StrategyManager;
+use crate::strategies::consolidation_accumulator::BreakoutAccumulationStrategy;
 
 static KEY: Lazy<AccessKey> = Lazy::new(|| {
     let api_key = env::var("API_KEY")
@@ -155,12 +161,7 @@ async fn async_main() -> anyhow::Result<()> {
                 Command::new("live")
                     .about("Live mode")
                     .arg(
-                        arg!(-l --length <SECONDS> "The span of the backtest in seconds")
-                            .required(true)
-                            .value_parser(value_parser!(u64)),
-                    )
-                    .arg(
-                        arg!(--timeframe1 <SECONDS> "The first timeframe to use")
+                        arg!(--timeframe <SECONDS> "The first timeframe to use")
                             .required(true)
                             .value_parser(value_parser!(u64)),
                     )
@@ -241,14 +242,9 @@ async fn async_main() -> anyhow::Result<()> {
                 Command::new("live")
                     .about("Live mode")
                     .arg(
-                        arg!(-l --length <SECONDS> "The span of the backtest in seconds")
+                        arg!(--timeframe <SECONDS> "The first timeframe to use")
                             .required(true)
-                            .value_parser(value_parser!(u64)),
-                    )
-                    .arg(
-                        arg!(--timeframe1 <SECONDS> "The first timeframe to use")
-                            .required(true)
-                            .value_parser(value_parser!(u64)),
+                            .value_parser(value_parser!(String)),
                     )
                     .arg(
                         arg!(-s --symbols <SYMBOLS> "The instruments to backtest")
@@ -816,8 +812,154 @@ async fn async_main() -> anyhow::Result<()> {
         info!("Dropping index...");
         SQLiteClient::drop_compile_indices(&client.conn);
     }
-    if let Some(_matches) = main_matches.subcommand_matches("live") {
-        todo!()
+    #[cfg(feature = "candles")]
+    if let Some(matches) = main_matches.subcommand_matches("live") {
+        use binance::api::*;
+        use binance::userstream::*;
+        use binance::websockets::*;
+        use binance::ws_model::{CombinedStreamEvent, WebsocketEvent, WebsocketEventUntag};
+        let symbols = matches.get_many::<String>("symbols").unwrap().clone();
+        let ktf = matches.get_one::<String>("ktf").unwrap();
+        let tf = matches
+            .get_one::<String>("timeframe")
+            .unwrap_or(ktf);
+        let tf_trades_channel: (
+            Sender<(TfTrades, Option<Arc<Notify>>)>,
+            Receiver<(TfTrades, Option<Arc<Notify>>)>,
+        ) = async_broadcast::broadcast(10000);
+        let trades_channel: (
+            Sender<(Trade, Option<Arc<Notify>>)>,
+            Receiver<(Trade, Option<Arc<Notify>>)>,
+        ) = async_broadcast::broadcast(1000);
+        let order_statuses_channel: (
+            Sender<(OrderStatus, Option<Arc<Notify>>)>,
+            Receiver<(OrderStatus, Option<Arc<Notify>>)>,
+        ) = async_broadcast::broadcast(100);
+        let mut symbols_i: Vec<Symbol> = vec![];
+        for s in symbols.into_iter() {
+            let symbol = Symbol {
+                symbol: s.clone(),
+                exchange: ExchangeId::Simulated,
+                base_asset_precision: 0,
+                quote_asset_precision: 0,
+            };
+            symbols_i.push(symbol);
+        }
+
+        let client = Arc::new(db::client::SQLiteClient::new().await);
+
+        let account = BinanceLiveAccount::new(
+            tf_trades_channel.1.deactivate(),
+            order_statuses_channel.1.deactivate(),
+            trades_channel.1.clone().deactivate(),
+            symbols_i.clone(),
+            order_statuses_channel.0.clone(),
+            trades_channel.0,
+            client.clone(),
+        )
+            .await;
+        let account = Arc::new(account);
+        let ac = account.clone();
+        tokio::spawn(async move {
+            EventSink::<Trade>::listen(ac).unwrap();
+        });
+        let ac = account.clone();
+        tokio::spawn(async move {
+            EventSink::<TfTrades>::listen(ac).unwrap();
+        });
+        let ac = account.clone();
+        tokio::spawn(async move {
+            EventSink::<OrderStatus>::listen(ac).unwrap();
+        });
+        let mut threads = vec![];
+
+        let trades_rx = trades_channel.1.deactivate();
+        for symbol in symbols_i {
+            let global_config = GlobalConfig {
+                symbol: symbol.clone(),
+                key: KEY.clone(),
+                mode: Mode::Backtest,
+                verbose: main_matches.get_flag("verbose"),
+            };
+            let orders_tx = order_statuses_channel.0.clone();
+
+            let trades_receiver = trades_rx.clone();
+            let account = account.clone();
+            threads.push(tokio::spawn(async move {
+                let klines_channel = async_broadcast::broadcast(10000);
+                let execution_commands_channel = async_broadcast::broadcast(100);
+
+                let inner_account: Box<Arc<dyn ExchangeAccountInfo>> = Box::new(account.clone());
+                let risk_manager = RiskManager::new(
+                    global_config.clone(),
+                    RiskManagerConfig {
+                        max_daily_losses: 100,
+                        max_risk_per_trade: 0.01,
+                    },
+                    klines_channel.1.clone().deactivate(),
+                    trades_receiver.clone(),
+                    execution_commands_channel.1.deactivate(),
+                    inner_account,
+                );
+                let inner_account: Box<Arc<dyn ExchangeAccountInfo>> = Box::new(account.clone());
+
+                let mut strategy_manager = StrategyManager::new(
+                    global_config.clone(),
+                    orders_tx,
+                    inner_account,
+                    klines_channel.1.deactivate(),
+                    trades_receiver,
+                    risk_manager,
+                );
+                let strategy = BreakoutAccumulationStrategy::new(14);
+                strategy_manager.load_strategy(Box::new(strategy)).await;
+
+                let sm = Arc::new(strategy_manager.clone());
+                let sm1 = Arc::new(strategy_manager.clone());
+
+                let (res1, res2, res3, res4) = tokio::join!(
+                tokio::spawn(async move {
+                    if let Err(e) = EventSink::<Kline>::listen(sm) {
+                        eprintln!("Error in Kline listener: {}", e);
+                    }
+                }),
+                tokio::spawn(async move {
+                    if let Err(e) = EventSink::<Trade>::listen(sm1) {
+                        eprintln!("Error in Trade listener: {}", e);
+                    }
+                }),
+                    tokio::spawn(async move {
+
+                    }),
+                    tokio::spawn(async move {
+
+                    })
+                    );
+
+                res1.unwrap();
+                res2.unwrap();
+                res3.unwrap();
+                res4.unwrap();
+            }));
+
+        }
+
+        let kline = kline_stream("ethbtc", "1m");
+        let keep_running = AtomicBool::new(true);
+
+        let mut web_socket: WebSockets<'_, WebsocketEvent> = WebSockets::new(|event: WebsocketEvent| {
+            if let WebsocketEvent::Kline(kline_event) = event {
+                println!(
+                    "evt: {:?}",
+                    kline_event
+                );
+            }
+            Ok(())
+        });
+        web_socket.connect(&kline).await.unwrap(); // check error
+        if let Err(e) = web_socket.event_loop(&keep_running).await {
+            println!("Error: {e}");
+        }
     }
 
     Ok(())
