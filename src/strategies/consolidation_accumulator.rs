@@ -132,6 +132,8 @@ impl SignalGenerator for BreakoutAccumulationStrategy {
         kline: &Kline,
         account: &Box<Arc<dyn ExchangeAccountInfo>>,
     ) -> Option<Vec<Order>> {
+        info!("{:?}", kline);
+
         // Extract values from kline
         let close = kline.close;
         let low = kline.low;

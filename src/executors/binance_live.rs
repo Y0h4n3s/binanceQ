@@ -38,38 +38,22 @@ type ArcSet<T> = Arc<Mutex<HashSet<T>>>;
 pub struct BinanceLiveAccount {
     pub symbol_accounts: ArcMap<Symbol, SymbolAccount>,
     pub open_orders: ArcMap<Symbol, ArcSet<Order>>,
-    #[cfg(test)]
-    pub order_history: ArcMap<Symbol, ArcSet<OrderStatus>>,
-    #[cfg(test)]
-    pub trade_history: ArcMap<Symbol, ArcSet<Trade>>,
-    pub trade_subscribers: Arc<RwLock<Sender<(Trade, Option<Arc<Notify>>)>>>,
     pub positions: ArcMap<Symbol, Position>,
-    tf_trades: InactiveReceiver<(TfTrades, Option<Arc<Notify>>)>,
     order_statuses: InactiveReceiver<(OrderStatus, Option<Arc<Notify>>)>,
-    new_trades: InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
     spreads: ArcMap<Symbol, Arc<RwLock<Spread>>>,
     pub order_status_subscribers: Arc<RwLock<Sender<(OrderStatus, Option<Arc<Notify>>)>>>,
-    sqlite_client: Arc<SQLiteClient>,
 }
 
 impl BinanceLiveAccount {
     /// Creates a new `BinanceLiveAccount` with the specified parameters.
     /// Initializes symbol accounts, open orders, positions, and spreads for the given symbols.
     pub async fn new(
-        tf_trades: InactiveReceiver<(TfTrades, Option<Arc<Notify>>)>,
         order_statuses: InactiveReceiver<(OrderStatus, Option<Arc<Notify>>)>,
-        trades: InactiveReceiver<(Trade, Option<Arc<Notify>>)>,
         symbols: Vec<Symbol>,
         order_status_subscribers: Sender<(OrderStatus, Option<Arc<Notify>>)>,
-        trade_subscribers: Sender<(Trade, Option<Arc<Notify>>)>,
-        sqlite_client: Arc<SQLiteClient>,
     ) -> Self {
         let symbol_accounts = Arc::new(Mutex::new(HashMap::new()));
         let open_orders = Arc::new(Mutex::new(HashMap::new()));
-        #[cfg(test)]
-        let order_history = Arc::new(Mutex::new(HashMap::new()));
-        #[cfg(test)]
-        let trade_history = Arc::new(Mutex::new(HashMap::new()));
         let positions = Arc::new(Mutex::new(HashMap::new()));
         let spreads = Arc::new(Mutex::new(HashMap::new()));
 
@@ -91,17 +75,7 @@ impl BinanceLiveAccount {
                 .lock()
                 .await
                 .insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
-            #[cfg(test)]
-            {
-                order_history
-                    .lock()
-                    .await
-                    .insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
-                trade_history
-                    .lock()
-                    .await
-                    .insert(symbol.clone(), Arc::new(Mutex::new(HashSet::new())));
-            }
+
             positions.lock().await.insert(symbol.clone(), position);
             spreads
                 .lock()
@@ -111,116 +85,11 @@ impl BinanceLiveAccount {
         Self {
             symbol_accounts,
             open_orders,
-            #[cfg(test)]
-            order_history,
-            #[cfg(test)]
-            trade_history,
             positions,
             spreads,
-            tf_trades,
-            trade_subscribers: Arc::new(RwLock::new(trade_subscribers)),
             order_statuses,
             order_status_subscribers: Arc::new(RwLock::new(order_status_subscribers)),
-            new_trades: trades,
-            sqlite_client,
         }
-    }
-}
-
-#[async_trait]
-impl EventSink<TfTrades> for BinanceLiveAccount {
-    fn get_receiver(&self) -> Receiver<(TfTrades, Option<Arc<Notify>>)> {
-        self.tf_trades.clone().activate()
-    }
-    async fn name(&self) -> String {
-        "BinanceLiveAccount TfTrades Sink".to_string()
-    }
-
-    /// Handles an incoming trade event by updating open orders and positions.
-    /// Processes each trade in the event message and updates the account state accordingly.
-    async fn handle_event(&self, event_msg: TfTrades) -> anyhow::Result<()> {
-        if event_msg.is_empty() {
-            return Ok(());
-        }
-        let open_orders = self.open_orders.clone();
-
-
-        let spreads = self.spreads.clone();
-        // update spread first with the last trade
-        if let Some(last_trade) = event_msg.last() {
-            if let Some(spread_lock) = spreads.lock().await.get(&last_trade.symbol) {
-                let mut spread = spread_lock.write().await;
-                spread.update(last_trade.close, last_trade.close_time);
-            } else {
-                // Handle missing spread for the symbol
-            }
-        }
-
-        // TODO: remove used orders to avoid trade reuse inconsistencies
-        // TODO: wait for all order status wakes to be notified to increase reliability
-        // if any open orders are fillable move them to filled orders and update position and push a trade event to trade queue if it is a order opposite to position
-
-        for tf_trade in event_msg {
-            let symbol = tf_trade.symbol.clone();
-            let mut open_orders = open_orders
-                .lock()
-                .await
-                .get(&symbol)
-                .unwrap()
-                .lock()
-                .await
-                .clone();
-
-            if open_orders.is_empty() {
-                return Ok(())
-            }
-            let mut oo: Vec<_> = open_orders.iter().cloned().collect();
-            drop(open_orders);
-            oo.sort();
-            let len = oo.len();
-
-            for (index, mut order) in oo.clone().into_iter().enumerate() {
-                let mut state_machine = OrderStateMachine::new(
-                    &mut order,
-                    // account for orders removed on previous iterations
-                    index - (len - oo.len()),
-                    &self.positions,
-                    &mut oo,
-                    &self.trade_subscribers,
-                    &self.order_status_subscribers,
-                );
-                state_machine.process_order(&tf_trade).await;
-            }
-
-
-        }
-
-
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl EventSink<Trade> for BinanceLiveAccount {
-    fn get_receiver(&self) -> Receiver<(Trade, Option<Arc<Notify>>)> {
-        self.new_trades.activate_cloned()
-    }
-    async fn name(&self) -> String {
-        "BinanceLiveAccount Trade Sink".to_string()
-    }
-    async fn handle_event(&self, event_msg: Trade) -> anyhow::Result<()> {
-        let sqlite_client = &self.sqlite_client;
-        #[cfg(test)]
-        self.trade_history
-            .lock()
-            .await
-            .get(&event_msg.symbol)
-            .unwrap()
-            .lock()
-            .await
-            .insert(event_msg.clone());
-        SQLiteClient::insert_trade(&sqlite_client.pool, event_msg).await;
-        Ok(())
     }
 }
 
@@ -239,68 +108,24 @@ impl EventSink<OrderStatus> for BinanceLiveAccount {
             // add to order set
             OrderStatus::Pending(order) => {
                 trace!("Adding pending order to order set: {:?}", order);
-                if let Some(orders) = open_orders.lock().await.get(&order.symbol) {
-                    orders.lock().await.insert(order.clone());
-                } else {
-                    let mut new_set = Arc::new(Mutex::new(HashSet::new()));
-                    new_set.lock().await.insert(order.clone());
-                    open_orders
-                        .lock()
-                        .await
-                        .insert(order.symbol.clone(), new_set);
-                }
+
             }
             // valid types are limit
             OrderStatus::PartiallyFilled(order, delta) => {
                 let mut new_order = order.clone();
                 new_order.quantity = order.quantity - delta;
                 new_order.id = Uuid::new_v4();
-                SQLiteClient::insert_order(&self.sqlite_client.pool, order.clone()).await;
-
-                #[cfg(test)]
-                {
-                    if let Some(orders) = self.order_history.lock().await.get(&order.symbol) {
-                        let mut lock = orders.lock().await;
-                        lock.insert(OrderStatus::Filled(order.clone()));
-                    } else {
-                        let mut new_set = Arc::new(Mutex::new(HashSet::new()));
-                        new_set
-                            .lock()
-                            .await
-                            .insert(OrderStatus::Filled(order.clone()));
-
-                        self.order_history
-                            .lock()
-                            .await
-                            .insert(order.symbol.clone(), new_set);
-                    }
-                }
                 trace!(
                     "adding new order {:?} for partially filled order: {:?}",
                     new_order,
                     order
                 );
-                if let Some(orders) = open_orders.lock().await.get(&order.symbol) {
-                    let mut lock = orders.lock().await;
-                    lock.remove(order);
-                    lock.insert(new_order);
-                } else {
-                    let mut new_set = Arc::new(Mutex::new(HashSet::new()));
-                    new_set.lock().await.insert(order.clone());
-                    open_orders
-                        .lock()
-                        .await
-                        .insert(order.symbol.clone(), new_set);
-                }
+
             }
             // remove from order set
             OrderStatus::Filled(order) => {
                 trace!("Removing filled order from order set: {:?}", order);
-                if let Some(orders) = open_orders.lock().await.get(&order.symbol) {
-                    SQLiteClient::insert_order(&self.sqlite_client.pool, order.clone()).await;
-                    orders.lock().await.remove(order);
 
-                }
             }
             // log reason and remove
             OrderStatus::Canceled(order, reason) => {
@@ -309,9 +134,7 @@ impl EventSink<OrderStatus> for BinanceLiveAccount {
                     reason,
                     order
                 );
-                if let Some(orders) = open_orders.lock().await.get(&order.symbol) {
-                    orders.lock().await.remove(order);
-                }
+
             }
         }
         Ok(())
@@ -348,17 +171,9 @@ impl ExchangeAccountInfo for BinanceLiveAccount {
 
     #[cfg(test)]
     async fn get_past_trades(&self, symbol: &Symbol, length: Option<usize>) -> Arc<HashSet<Trade>> {
-        Arc::new(
-            self.trade_history
-                .lock()
-                .await
-                .get(symbol)
-                .unwrap()
-                .lock()
-                .await
-                .clone(),
-        )
+        todo!()
     }
+
 
     async fn get_position(&self, symbol: &Symbol) -> Arc<Position> {
         let lock = self.positions.lock().await;
@@ -375,15 +190,7 @@ impl ExchangeAccountInfo for BinanceLiveAccount {
 
     #[cfg(test)]
     async fn get_order(&self, symbol: &Symbol, id: &Uuid) -> Vec<Order> {
-        let order_history = self.order_history.lock().await.get(symbol).unwrap().clone();
-        let mut res = vec![];
-        order_history.lock().await.iter().for_each(|o| {
-            let or = o.order();
-            if &or.id == id {
-                res.push(or.clone())
-            }
-        });
-        res
+        todo!()
     }
 }
 

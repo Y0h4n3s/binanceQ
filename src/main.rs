@@ -29,16 +29,22 @@ mod utils;
 use crate::back_tester::{BackTester, BackTesterConfig, BackTesterMulti};
 #[cfg(feature = "trades")]
 use crate::db::loader::compile_agg_trades_for;
+#[cfg(feature = "trades")]
+use crate::executors::simulated::SimulatedAccount;
+#[cfg(feature = "candles")]
+use crate::executors::simulated_candle::SimulatedCandleAccount as SimulatedAccount;
 use crate::types::{Kline, OrderStatus};
 use async_broadcast::{Receiver, Sender};
 use async_std::sync::Arc;
 use clap::{arg, command, value_parser, Command};
 use events::EventSink;
-#[cfg(feature = "trades")]
-use crate::executors::simulated::SimulatedAccount;
-#[cfg(feature = "candles")]
-use crate::executors::simulated_candle::SimulatedCandleAccount as SimulatedAccount;
 
+use crate::db::client::SQLiteClient;
+use crate::executors::binance_live::BinanceLiveAccount;
+use crate::executors::ExchangeAccountInfo;
+use crate::managers::risk_manager::{RiskManager, RiskManagerConfig};
+use crate::managers::strategy_manager::StrategyManager;
+use crate::strategies::consolidation_accumulator::BreakoutAccumulationStrategy;
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
 use once_cell::sync::Lazy;
 use std::env;
@@ -50,12 +56,6 @@ use tracing::info;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 use types::{AccessKey, ExchangeId, GlobalConfig, Mode, Symbol, TfTrades, Trade};
-use crate::db::client::SQLiteClient;
-use crate::executors::binance_live::BinanceLiveAccount;
-use crate::executors::ExchangeAccountInfo;
-use crate::managers::risk_manager::{RiskManager, RiskManagerConfig};
-use crate::managers::strategy_manager::StrategyManager;
-use crate::strategies::consolidation_accumulator::BreakoutAccumulationStrategy;
 
 static KEY: Lazy<AccessKey> = Lazy::new(|| {
     let api_key = env::var("API_KEY")
@@ -181,7 +181,8 @@ async fn async_main() -> anyhow::Result<()> {
     };
 
     #[cfg(feature = "candles")]
-    let main_matches = { command!()
+    let main_matches = {
+        command!()
             .arg(arg!( -v --verbose "Verbose output"))
             .subcommand(
                 Command::new("backtest")
@@ -451,9 +452,7 @@ async fn async_main() -> anyhow::Result<()> {
         let backtest_span = *matches
             .get_one::<u64>("length")
             .ok_or(anyhow::anyhow!("Invalid span"))?;
-        let tf = matches
-            .get_one::<String>("timeframe")
-            .unwrap_or(ktf);
+        let tf = matches.get_one::<String>("timeframe").unwrap_or(ktf);
         let pb = ProgressBar::new(0);
         pb.set_style(
             ProgressStyle::with_template(
@@ -539,7 +538,7 @@ async fn async_main() -> anyhow::Result<()> {
                     account,
                     client,
                     ktf.to_string(),
-                    tf.to_string()
+                    tf.to_string(),
                 )
                 .await?;
 
@@ -608,7 +607,7 @@ async fn async_main() -> anyhow::Result<()> {
                     account,
                     client,
                     ktf.to_string(),
-                    tf.to_string()
+                    tf.to_string(),
                 )
                 .await?;
 
@@ -692,7 +691,6 @@ async fn async_main() -> anyhow::Result<()> {
         SQLiteClient::drop_download_indices(&w.conn);
         info!("Cleaning up...");
         w.vacuum().await;
-
     }
 
     #[cfg(feature = "candles")]
@@ -745,9 +743,9 @@ async fn async_main() -> anyhow::Result<()> {
             threads.push(std::thread::spawn(move || {
                 let s = symbol.clone();
                 let c = client.clone();
-                    rt_handle.block_on(async move {
-                        db::loader::load_klines_from_archive(s, ktf, l, lpb, verbose, c).await;
-                    });
+                rt_handle.block_on(async move {
+                    db::loader::load_klines_from_archive(s, ktf, l, lpb, verbose, c).await;
+                });
                 info!("{} data downloaded", symbol.symbol.clone());
             }));
         }
@@ -759,11 +757,10 @@ async fn async_main() -> anyhow::Result<()> {
         SQLiteClient::drop_download_indices(&w.conn);
         info!("Cleaning up...");
         w.vacuum().await;
-
     }
 
     #[cfg(feature = "trades")]
-        if let Some(matches) = main_matches.subcommand_matches("compile") {
+    if let Some(matches) = main_matches.subcommand_matches("compile") {
         let cpus = num_cpus::get() * 2;
         rayon::ThreadPoolBuilder::new()
             .num_threads(cpus)
@@ -778,11 +775,11 @@ async fn async_main() -> anyhow::Result<()> {
             ProgressStyle::with_template(
                 "[?] [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}%|[ETA: {eta_precise}]",
             )
-                .unwrap()
-                .with_key("eta", |state: &ProgressState, w: &mut dyn Write| {
-                    write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap()
-                })
-                .progress_chars("#>-"),
+            .unwrap()
+            .with_key("eta", |state: &ProgressState, w: &mut dyn Write| {
+                write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap()
+            })
+            .progress_chars("#>-"),
         );
 
         let client = Arc::new(db::client::SQLiteClient::new().await);
@@ -820,9 +817,7 @@ async fn async_main() -> anyhow::Result<()> {
         use binance::ws_model::{CombinedStreamEvent, WebsocketEvent, WebsocketEventUntag};
         let symbols = matches.get_many::<String>("symbols").unwrap().clone();
         let ktf = matches.get_one::<String>("ktf").unwrap();
-        let tf = matches
-            .get_one::<String>("timeframe")
-            .unwrap_or(ktf);
+        let tf = matches.get_one::<String>("timeframe").unwrap_or(ktf);
         let tf_trades_channel: (
             Sender<(TfTrades, Option<Arc<Notify>>)>,
             Receiver<(TfTrades, Option<Arc<Notify>>)>,
@@ -849,24 +844,12 @@ async fn async_main() -> anyhow::Result<()> {
         let client = Arc::new(db::client::SQLiteClient::new().await);
 
         let account = BinanceLiveAccount::new(
-            tf_trades_channel.1.deactivate(),
             order_statuses_channel.1.deactivate(),
-            trades_channel.1.clone().deactivate(),
             symbols_i.clone(),
             order_statuses_channel.0.clone(),
-            trades_channel.0,
-            client.clone(),
         )
-            .await;
+        .await;
         let account = Arc::new(account);
-        let ac = account.clone();
-        tokio::spawn(async move {
-            EventSink::<Trade>::listen(ac).unwrap();
-        });
-        let ac = account.clone();
-        tokio::spawn(async move {
-            EventSink::<TfTrades>::listen(ac).unwrap();
-        });
         let ac = account.clone();
         tokio::spawn(async move {
             EventSink::<OrderStatus>::listen(ac).unwrap();
@@ -885,6 +868,7 @@ async fn async_main() -> anyhow::Result<()> {
 
             let trades_receiver = trades_rx.clone();
             let account = account.clone();
+            let ktf = ktf.clone();
             threads.push(tokio::spawn(async move {
                 let klines_channel = async_broadcast::broadcast(10000);
                 let execution_commands_channel = async_broadcast::broadcast(100);
@@ -916,49 +900,70 @@ async fn async_main() -> anyhow::Result<()> {
 
                 let sm = Arc::new(strategy_manager.clone());
                 let sm1 = Arc::new(strategy_manager.clone());
-
+                // binance lib doesn't support async closures
+                let sync_kline_channel = std::sync::mpsc::sync_channel(10);
+                let stream_symbol = symbol.symbol.to_lowercase();
                 let (res1, res2, res3, res4) = tokio::join!(
-                tokio::spawn(async move {
-                    if let Err(e) = EventSink::<Kline>::listen(sm) {
-                        eprintln!("Error in Kline listener: {}", e);
-                    }
-                }),
-                tokio::spawn(async move {
-                    if let Err(e) = EventSink::<Trade>::listen(sm1) {
-                        eprintln!("Error in Trade listener: {}", e);
-                    }
-                }),
                     tokio::spawn(async move {
-
+                        if let Err(e) = EventSink::<Kline>::listen(sm) {
+                            eprintln!("Error in Kline listener: {}", e);
+                        }
                     }),
                     tokio::spawn(async move {
+                        if let Err(e) = EventSink::<Trade>::listen(sm1) {
+                            eprintln!("Error in Trade listener: {}", e);
+                        }
+                    }),
+                    tokio::spawn(async move {
+                        let kline = kline_stream(&stream_symbol, &ktf);
+                        let keep_running = AtomicBool::new(true);
+                        let mut web_socket: WebSockets<'_, WebsocketEvent> =
+                            WebSockets::new(|event: WebsocketEvent| {
+                                if let WebsocketEvent::Kline(kline_event) = event {
+                                    if kline_event.kline.is_final_bar {
+                                        let kline = Kline::from(kline_event.kline);
+                                        sync_kline_channel.0.send(kline).unwrap();
+                                    }
+                                }
+                                Ok(())
+                            });
+                        web_socket.connect(&kline).await.unwrap(); // check error
+                        if let Err(e) = web_socket.event_loop(&keep_running).await {
+                            println!("Error: {e}");
+                        }
+                    }),
+                    tokio::spawn(async move {
+                        while let Ok(kline) = sync_kline_channel.1.recv() {
+                            let notify = Arc::new(Notify::new());
 
+                            let sm_notifer = notify.notified();
+                            match klines_channel
+                                .0
+                                .broadcast((kline, Some(notify.clone())))
+                                .await
+                            {
+                                Ok(_) => {
+                                    sm_notifer.await;
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[-] {} Error sending kline to strategy manager {}",
+                                        symbol.symbol, e
+                                    );
+                                }
+                            }
+                        }
                     })
-                    );
+                );
 
                 res1.unwrap();
                 res2.unwrap();
                 res3.unwrap();
                 res4.unwrap();
             }));
-
         }
-
-        let kline = kline_stream("ethbtc", "1m");
-        let keep_running = AtomicBool::new(true);
-
-        let mut web_socket: WebSockets<'_, WebsocketEvent> = WebSockets::new(|event: WebsocketEvent| {
-            if let WebsocketEvent::Kline(kline_event) = event {
-                println!(
-                    "evt: {:?}",
-                    kline_event
-                );
-            }
-            Ok(())
-        });
-        web_socket.connect(&kline).await.unwrap(); // check error
-        if let Err(e) = web_socket.event_loop(&keep_running).await {
-            println!("Error: {e}");
+        for thread in threads {
+            thread.await.unwrap();
         }
     }
 

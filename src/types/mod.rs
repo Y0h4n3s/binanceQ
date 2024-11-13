@@ -1,4 +1,4 @@
-use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
@@ -320,6 +320,29 @@ pub struct Kline {
     pub ignore: u64,
 }
 
+impl From<binance::ws_model::Kline> for Kline {
+    fn from(value: binance::ws_model::Kline) -> Self {
+        let symbol = Symbol {
+            symbol: value.symbol,
+            ..Default::default()
+        };
+        Self {
+            symbol,
+            open_time: value.start_time as u64,
+            open: Decimal::from_f64(value.open).unwrap(),
+            high: Decimal::from_f64(value.high).unwrap(),
+            low: Decimal::from_f64(value.low).unwrap(),
+            close: Decimal::from_f64(value.close).unwrap(),
+            volume: Decimal::from_f64(value.volume).unwrap(),
+            close_time: value.end_time as u64,
+            quote_volume: Decimal::from_f64(value.quote_volume).unwrap(),
+            count: value.number_of_trades as u64,
+            taker_buy_volume: Decimal::from_f64(value.active_buy_volume).unwrap(),
+            taker_buy_quote_volume: Decimal::from_f64(value.active_volume_buy_quote).unwrap(),
+            ignore: 0,
+        }
+    }
+}
 #[derive(Clone, Hash, Eq, Ord, PartialOrd, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Trade {
     pub id: u64,
